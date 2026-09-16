@@ -1,6 +1,6 @@
 # Audigo AI API
 
-**모든 명령은 이 `development/` 폴더에서 실행합니다.** 먼저 [V1 개발 가이드](V1%20개발%20가이드.md)를 확인하세요.
+**모든 명령은 이 저장소의 루트 폴더에서 실행합니다.** 먼저 [V1 개발 가이드](https://github.com/baek-seunghwan/AI-parking-assignment/blob/main/문서/V1%20개발%20가이드.md)를 확인하세요.
 
 Google Sheets의 `[AUDIGO] AI 인공지능` 탭에 적힌 URL·요청·응답을 기준으로 만든 개발용 API다.
 
@@ -75,7 +75,7 @@ uv run --extra dev pytest
 
 ## 후속 버전을 포함한 기존 2개월 로드맵
 
-V1 당장 할 일은 [V1 개발 가이드](V1%20개발%20가이드.md)의 순서를 따릅니다.
+V1 당장 할 일은 [V1 개발 가이드](https://github.com/baek-seunghwan/AI-parking-assignment/blob/main/문서/V1%20개발%20가이드.md)의 순서를 따릅니다.
 
 1. **1주차:** 현재 API 계약, 인증, 정상·오류 응답을 demo 모드로 통합 확인한다.
 2. **2주차:** Gemini Flash-Lite·Flash를 같은 일정 입력으로 비교하고 일정 모델을 결정한다.
