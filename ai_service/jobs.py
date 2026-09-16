@@ -29,7 +29,7 @@ class JobBackend(Protocol):
 
 
 class LocalJobBackend:
-    """Development backend. Replace with Modal calls or a durable queue in production."""
+    """In-memory job storage used for local development and API tests."""
 
     def __init__(self, *, synchronous: bool = False) -> None:
         self._jobs: dict[str, dict[str, Any]] = {}
@@ -161,4 +161,3 @@ class LocalJobBackend:
             if job_id not in self._jobs:
                 raise JobNotFound()
             return dict(self._jobs[job_id])
-
