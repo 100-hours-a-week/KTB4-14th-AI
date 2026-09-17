@@ -18,8 +18,8 @@ class Settings:
     openai_model: str = "gpt-4o-mini"
     model_timeout_seconds: float = 60.0
     kakao_timeout_seconds: float = 10.0
-    generation_timeout_seconds: float = 150.0
-    stream_timeout_seconds: float = 240.0
+    generation_timeout_seconds: float = 300.0
+    stream_timeout_seconds: float = 300.0
     stream_heartbeat_seconds: float = 10.0
 
     @classmethod
@@ -34,4 +34,13 @@ class Settings:
             openai_api_key=values.get("OPENAI_API_KEY") or values.get("OPEN_API_KEY"),
             kakao_rest_api_key=values.get("KAKAO_REST_API_KEY"),
             openai_model=values.get("OPENAI_MODEL") or "gpt-4o-mini",
+            generation_timeout_seconds=float(
+                values.get("GENERATION_TIMEOUT_SECONDS") or 300.0
+            ),
+            stream_timeout_seconds=float(
+                values.get("STREAM_TIMEOUT_SECONDS") or 300.0
+            ),
+            stream_heartbeat_seconds=float(
+                values.get("STREAM_HEARTBEAT_SECONDS") or 10.0
+            ),
         )
