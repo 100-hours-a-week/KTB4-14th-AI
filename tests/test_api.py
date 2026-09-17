@@ -50,6 +50,17 @@ def itinerary() -> dict:
     }
 
 
+def assert_hidden_fields_absent(value) -> None:
+    if isinstance(value, dict):
+        assert "reason" not in value
+        assert "source_category" not in value
+        for item in value.values():
+            assert_hidden_fields_absent(item)
+    elif isinstance(value, list):
+        for item in value:
+            assert_hidden_fields_absent(item)
+
+
 def test_health_is_public():
     response = make_client().get("/health")
     assert response.status_code == 200
@@ -72,10 +83,39 @@ def test_itinerary_job_and_result_follow_sheet_contract():
     assert response.status_code == 202
     accepted = response.json()
     assert accepted["job_type"] == "ITINERARY_GENERATION"
+    assert accepted["events_url"].endswith("/events")
     result = client.get(accepted["status_url"], headers=AUTH)
     assert result.status_code == 200
     assert result.json()["status"] == "SUCCEEDED"
+    assert result.json()["stage"] == "COMPLETED"
     assert result.json()["result"]["days"][0]["date"] == "2026-10-10"
+    assert result.json()["result"]["music"]["track"]["provider_track_id"] == "demo_track_001"
+    assert_hidden_fields_absent(result.json())
+
+
+def test_itinerary_sse_emits_pipeline_stages_in_order():
+    client = make_client()
+    response = client.post(
+        "/api/ai/v1/itinerary-jobs",
+        json=itinerary(),
+        headers={**AUTH, "Idempotency-Key": "request-key-sse-0001"},
+    )
+    events = client.get(response.json()["events_url"], headers=AUTH)
+    assert events.status_code == 200
+    assert events.headers["content-type"].startswith("text/event-stream")
+
+    text = events.text
+    expected_stages = [
+        "PLACES_AND_RESTAURANTS",
+        "ACCOMMODATION_LOCATION",
+        "ROUTE_CONNECTION",
+        "TRAVEL_MUSIC",
+        "COMPLETED",
+    ]
+    positions = [text.index(f'"stage":"{stage}"') for stage in expected_stages]
+    assert positions == sorted(positions)
+    assert "reason" not in text
+    assert "source_category" not in text
 
 
 def test_itinerary_idempotency_and_conflict():
@@ -102,6 +142,7 @@ def test_invalid_body_uses_common_error_schema():
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "INVALID_REQUEST"
     assert response.json()["request_id"].startswith("req_")
+    assert_hidden_fields_absent(response.json())
 
 
 def test_music_recommendation():
@@ -114,11 +155,15 @@ def test_music_recommendation():
                 "season": "AUTUMN",
                 "mood_tags": ["청량한", "드라이브"],
             },
-            "music_preferences": {"genres": ["INDIE", "POP"], "excluded_track_ids": []},
+            "music_preferences": {
+                "genres": ["INDIE", "POP"],
+                "excluded_track_ids": [],
+            },
         },
     )
     assert response.status_code == 200
     assert response.json()["track"]["provider_track_id"] == "demo_track_001"
+    assert_hidden_fields_absent(response.json())
 
 
 def test_matching_job():
@@ -192,6 +237,7 @@ def test_openapi_contains_all_sheet_endpoints():
     assert {
         "/api/ai/v1/itinerary-jobs",
         "/api/ai/v1/jobs/{job_id}",
+        "/api/ai/v1/jobs/{job_id}/events",
         "/api/ai/v1/music-recommendations",
         "/api/ai/v1/traveler-match-jobs",
         "/api/ai/v1/checklists",
