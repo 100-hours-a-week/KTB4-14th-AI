@@ -5,6 +5,7 @@ from ai_service.errors import GenerationFailed, InvalidModelOutput
 from ai_service.features import (
     PACE_POLICIES,
     build_context,
+    complete_selection,
     day_windows,
     make_itinerary_response,
     schedule_selection,
@@ -13,6 +14,7 @@ from ai_service.features import (
 )
 from ai_service.model import OpenAIPlanner
 from ai_service.places import KakaoPlaces, distance_km, travel_minutes
+from ai_service.routing import KakaoRoutes, schedule_with_routes
 from ai_service.schemas import (
     Accommodation,
     AccommodationsResult,
@@ -30,6 +32,7 @@ from ai_service.schemas import (
     RouteSegment,
     RoutesResult,
     SelectionItem,
+    TRANSPORT_ALIASES,
 )
 
 
@@ -175,6 +178,7 @@ async def recommend_places(
     for _ in range(2):
         try:
             selection = await planner.generate(context, feedback, places_only=True)
+            selection = complete_selection(request, selection, places, places_only=True)
             validate_places_selection(request, selection, places)
             return selection
         except InvalidModelOutput as exc:
@@ -293,12 +297,23 @@ async def recommend_accommodations(
     )
 
 
-def connect_routes(
+async def connect_routes(
     request: ItineraryRequest,
     selection: ModelSelection,
     places: list[Place],
     model: str,
+    router: KakaoRoutes,
 ) -> RoutesResult:
+    if TRANSPORT_ALIASES[request.preference.transport_type] in {
+        "PUBLIC_TRANSPORT",
+        "WALK",
+    }:
+        try:
+            return await schedule_with_routes(request, selection, places, model, router)
+        except InvalidModelOutput as exc:
+            raise GenerationFailed(
+                "조회한 이동시간과 필수 장소를 여행 시간 안에 배치할 수 없습니다. 여행 시간을 늘리거나 장소를 줄여주세요."
+            ) from exc
     generated = schedule_selection(request, selection, places)
     days = validate_itinerary(request, generated, places)
     itinerary = make_itinerary_response(request, generated, days, model)
@@ -332,7 +347,10 @@ def connect_routes(
 
 
 async def generation_stages(
-    body: ItineraryStreamRequest, client: KakaoPlaces, planner: OpenAIPlanner
+    body: ItineraryStreamRequest,
+    client: KakaoPlaces,
+    planner: OpenAIPlanner,
+    router: KakaoRoutes | None = None,
 ):
     """Each yield is sent before executing the next phase; no database/job store."""
     request = body.itinerary_request()
@@ -350,7 +368,10 @@ async def generation_stages(
     yield "ACCOMMODATIONS", "COMPLETED", accommodations
 
     yield "ROUTES", "STARTED", None
-    routes = connect_routes(request, selection, places, planner.settings.openai_model)
+    router = router or KakaoRoutes(planner.client, planner.settings)
+    routes = await connect_routes(
+        request, selection, places, planner.settings.openai_model, router
+    )
     yield "ROUTES", "COMPLETED", routes
 
     yield "MUSIC", "STARTED", None

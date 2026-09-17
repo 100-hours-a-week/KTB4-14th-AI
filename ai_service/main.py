@@ -17,6 +17,7 @@ from ai_service.errors import ApiError, ServiceUnavailable
 from ai_service.features import generate_itinerary
 from ai_service.model import OpenAIPlanner
 from ai_service.places import KakaoPlaces
+from ai_service.routing import KakaoRoutes
 from ai_service.schemas import (
     ErrorResponse,
     ItineraryRequest,
@@ -42,6 +43,7 @@ def create_app(
         async with httpx.AsyncClient(transport=transport) as client:
             app.state.places = KakaoPlaces(client, settings)
             app.state.planner = OpenAIPlanner(client, settings)
+            app.state.routes = KakaoRoutes(client, settings)
             yield
 
     app = FastAPI(title="Audigo AI API", version="1.0.0", lifespan=lifespan)
@@ -57,11 +59,10 @@ def create_app(
     async def handle_api_error(request: Request, exc: ApiError):
         data = None
         if exc.status_code == 503:
-            data = {"user_message": "잠시 후 다시 시도해주세요."}
+            data = {"user_message": exc.message}
         elif exc.status_code == 422:
             data = {
                 "generation_job_id": request.state.generation_job_id,
-                "client_draft_id": request.state.client_draft_id,
                 "error_message": exc.message,
             }
         return JSONResponse(
@@ -123,13 +124,13 @@ def create_app(
     )
     async def create_itinerary(body: ItineraryRequest, request: Request):
         request.state.generation_job_id = body.generation_job_id
-        request.state.client_draft_id = body.client_draft_id
         if not settings.openai_api_key or not settings.kakao_rest_api_key:
             raise ServiceUnavailable()
+        app.state.routes.require_configured(body.preference.transport_type)
         try:
             async with asyncio.timeout(settings.generation_timeout_seconds):
                 return await generate_itinerary(
-                    body, app.state.places, app.state.planner
+                    body, app.state.places, app.state.planner, app.state.routes
                 )
         except TimeoutError as exc:
             raise ServiceUnavailable() from exc
@@ -145,9 +146,9 @@ def create_app(
     )
     async def stream_itinerary(body: ItineraryStreamRequest, request: Request):
         request.state.generation_job_id = body.generation_job_id
-        request.state.client_draft_id = body.client_draft_id
         if not settings.openai_api_key or not settings.kakao_rest_api_key:
             raise ServiceUnavailable()
+        app.state.routes.require_configured(body.preference.transport_type)
         return StreamingResponse(
             stream_generation(
                 body,
@@ -155,6 +156,7 @@ def create_app(
                 app.state.planner,
                 settings,
                 request.state.request_id,
+                app.state.routes,
             ),
             media_type="text/event-stream",
             headers={

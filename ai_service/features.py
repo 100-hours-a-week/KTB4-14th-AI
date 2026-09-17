@@ -17,6 +17,9 @@ from ai_service.schemas import (
     ModelSelection,
     PACE_ALIASES,
     Place,
+    RouteDetails,
+    SelectionItem,
+    TRANSPORT_ALIASES,
 )
 
 
@@ -112,6 +115,148 @@ def select_candidates(request: ItineraryRequest, places: list[Place]) -> list[Pl
         else:
             chosen = candidates[:limit]
         result.extend(chosen)
+    return result
+
+
+def complete_selection(
+    request: ItineraryRequest,
+    selection: ModelSelection,
+    places: list[Place],
+    *,
+    places_only: bool = False,
+) -> ModelSelection:
+    """Complete required categories using real candidates before time validation.
+
+    Keep the model's title and relative visit order. Only optional places may be
+    removed to make room; missing required IDs still require model correction.
+    """
+    windows = day_windows(request)
+    if [day.date for day in selection.days] != [w["date"] for w in windows]:
+        raise InvalidModelOutput("include every requested date exactly once")
+    by_id = {p.provider_place_id: p for p in places}
+    selected_ids = [
+        item.provider_place_id for day in selection.days for item in day.items
+    ]
+    if any(pid not in by_id for pid in selected_ids):
+        raise InvalidModelOutput("use only provided candidate IDs")
+    required = {
+        p.provider_place_id
+        for p in places
+        if p.is_required and (not places_only or p.category != "숙소")
+    }
+    if not required.issubset(selected_ids):
+        raise InvalidModelOutput("include ALL required candidate IDs")
+    used = {pid for pid in selected_ids if by_id[pid].category != "숙소"}
+    seen = set()
+    result = selection.model_copy(deep=True)
+    previous = None
+    required_day_hotel = len(windows) == 1 and any(
+        p.is_required and p.category == "숙소" for p in places
+    )
+    for day, window in zip(result.days, windows):
+        needs_hotel = window["needs_accommodation"] or required_day_hotel
+        reserve = int(places_only and needs_hotel)
+        minimum, maximum = (
+            max(0, window["min_items"] - reserve),
+            max(0, window["max_items"] - reserve),
+        )
+        chosen, hotels = [], []
+        for item in day.items:
+            place = by_id[item.provider_place_id]
+            if place.category == "숙소":
+                if not places_only and (needs_hotel or place.is_required):
+                    hotels.append(place)
+            elif place.provider_place_id not in seen:
+                chosen.append(place)
+                seen.add(place.provider_place_id)
+        fixed_hotels = {p.provider_place_id: p for p in hotels if p.is_required}
+        if len(fixed_hotels) > 1:
+            raise InvalidModelOutput(
+                "assign required hotels to separate eligible dates"
+            )
+        if hotels:
+            chosen.append(
+                next(iter(fixed_hotels.values())) if fixed_hotels else hotels[0]
+            )
+        needed = {"관광", "식당"} if window["needs_tour_and_restaurant"] else set()
+        if not places_only and needs_hotel:
+            needed.add("숙소")
+
+        def add_candidate(category):
+            options = [
+                p
+                for p in places
+                if not p.is_required
+                and (category is None or p.category == category)
+                and (
+                    p.category == "숙소" if category == "숙소" else p.category != "숙소"
+                )
+                and (p.category == "숙소" or p.provider_place_id not in used)
+            ]
+            proposals = []
+            for place in options:
+                last_position = len(chosen) - int(
+                    bool(chosen) and chosen[-1].category == "숙소"
+                )
+                positions = (
+                    [len(chosen)]
+                    if place.category == "숙소"
+                    else range(last_position + 1)
+                )
+                for position in positions:
+                    before = chosen[position - 1] if position else previous
+                    after = chosen[position] if position < len(chosen) else None
+                    cost = (distance_km(before, place) if before else 0) + (
+                        distance_km(place, after) if after else 0
+                    )
+                    if before and after:
+                        cost -= distance_km(before, after)
+                    proposals.append((cost, len(proposals), position, place))
+            if not proposals:
+                raise InvalidModelOutput(
+                    f"{day.date}: insufficient unused candidates for {category or 'daily visits'}"
+                )
+            _, _, position, place = min(proposals, key=lambda entry: entry[:2])
+            chosen.insert(position, place)
+            if place.category != "숙소":
+                used.add(place.provider_place_id)
+                seen.add(place.provider_place_id)
+
+        for category in ("관광", "식당", "숙소"):
+            if category in needed and not any(p.category == category for p in chosen):
+                add_candidate(category)
+        while len(chosen) > maximum:
+            removable = [
+                (index, place)
+                for index, place in enumerate(chosen)
+                if not place.is_required
+                and (
+                    place.category not in needed
+                    or sum(p.category == place.category for p in chosen) > 1
+                )
+            ]
+            if not removable:
+                raise InvalidModelOutput(
+                    f"{day.date}: required visits and categories exceed daily capacity"
+                )
+
+            # Remove an optional detour, preserving all required visits/categories.
+            def detour(entry):
+                index, place = entry
+                before = chosen[index - 1] if index else previous
+                after = chosen[index + 1] if index + 1 < len(chosen) else None
+                return (distance_km(before, place) if before else 0) + (
+                    distance_km(place, after) if after else 0
+                )
+
+            index, _ = max(removable, key=detour)
+            chosen.pop(index)
+        while len(chosen) < minimum:
+            add_candidate(None)
+        day.items = [
+            SelectionItem(provider_place_id=p.provider_place_id) for p in chosen
+        ]
+        previous = chosen[-1] if chosen else previous
     return result
 
 
@@ -213,6 +358,8 @@ def validate_itinerary(
     request: ItineraryRequest,
     generated: ModelItinerary,
     places: list[Place],
+    *,
+    routes: dict[tuple[int, int], RouteDetails] | None = None,
 ) -> list[ItineraryDay]:
     windows = day_windows(request)
     if [day.date for day in generated.days] != [w["date"] for w in windows]:
@@ -257,10 +404,21 @@ def validate_itinerary(
                 )
             visit_start = datetime.fromisoformat(f"{window['date']}T{item.start_time}")
             visit_end = visit_start + timedelta(minutes=item.stay_minutes)
+            route = (
+                routes.get((len(result) + 1, sequence)) if routes is not None else None
+            )
+            if previous_place and routes is not None and route is None:
+                raise InvalidModelOutput("missing verified route")
             transfer = (
-                travel_minutes(previous_place, place, request.preference.transport_type)
-                if previous_place
-                else 0
+                route.duration_minutes
+                if route
+                else (
+                    travel_minutes(
+                        previous_place, place, request.preference.transport_type
+                    )
+                    if previous_place
+                    else 0
+                )
             )
             earliest = previous_end + timedelta(minutes=transfer)
             if visit_start < earliest or visit_end > end:
@@ -286,6 +444,7 @@ def validate_itinerary(
                     end_time=visit_end.strftime("%H:%M"),
                     stay_minutes=item.stay_minutes,
                     travel_minutes_from_previous=transfer,
+                    route_from_previous=route,
                 )
             )
             previous_place, previous_end = place, visit_end
@@ -323,6 +482,7 @@ async def generate_itinerary(
     request: ItineraryRequest,
     places_client: KakaoPlaces,
     planner: OpenAIPlanner,
+    router=None,
 ) -> ItineraryResponse:
     windows = day_windows(request)
     if not any(w["max_items"] for w in windows):
@@ -345,11 +505,25 @@ async def generate_itinerary(
     for attempt in range(2):
         try:
             selection = await planner.generate(context, feedback)
+            selection = complete_selection(request, selection, places)
+            if TRANSPORT_ALIASES[request.preference.transport_type] in {
+                "PUBLIC_TRANSPORT",
+                "WALK",
+            }:
+                from ai_service.routing import KakaoRoutes, schedule_with_routes
+
+                router = router or KakaoRoutes(planner.client, planner.settings)
+                result = await schedule_with_routes(
+                    request, selection, places, planner.settings.openai_model, router
+                )
+                return result.itinerary
             generated = schedule_selection(request, selection, places)
             days = validate_itinerary(request, generated, places)
             break
         except InvalidModelOutput as exc:
-            logger.warning("Itinerary validation failed on attempt %s", attempt + 1)
+            logger.warning(
+                "Itinerary validation failed on attempt %s: %s", attempt + 1, str(exc)
+            )
             feedback = str(exc)
     else:
         raise GenerationFailed(
@@ -365,9 +539,15 @@ def make_itinerary_response(
     generated: ModelItinerary,
     days: list[ItineraryDay],
     model_version: str,
+    *,
+    routed: bool = False,
 ) -> ItineraryResponse:
     warnings = [
-        "이동시간은 좌표와 이동수단에 따른 추정치이며 실제 길찾기 결과가 아닙니다.",
+        (
+            "이동시간은 카카오 길찾기의 예상 소요시간입니다. 예정 여행일의 운행·막차·심야버스 여부는 확인되지 않았으므로 출발 전에 카카오맵에서 확인해주세요."
+            if routed
+            else "이동시간은 좌표와 이동수단에 따른 추정치이며 실제 길찾기 결과가 아닙니다."
+        ),
         "영업시간·휴무일·입장료·예약 가능 여부는 방문 전에 확인해 주세요.",
         "숙소 체류시간은 체크인·휴식 시간입니다.",
     ]

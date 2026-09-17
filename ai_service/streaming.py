@@ -17,8 +17,10 @@ def encode_event(name: str, sequence: int, payload: dict) -> str:
     return f"id: {sequence}\nevent: {name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
-async def stream_generation(body, places, planner, settings, request_id: str):
-    generator = generation_stages(body, places, planner)
+async def stream_generation(
+    body, places, planner, settings, request_id: str, router=None
+):
+    generator = generation_stages(body, places, planner, router)
     pending = None
     sequence = 0
     stage = STAGES[0]
@@ -26,7 +28,6 @@ async def stream_generation(body, places, planner, settings, request_id: str):
     deadline = asyncio.get_running_loop().time() + settings.stream_timeout_seconds
     identity = {
         "generation_job_id": body.generation_job_id,
-        "client_draft_id": body.client_draft_id,
         "request_id": request_id,
     }
     try:
@@ -39,6 +40,9 @@ async def stream_generation(body, places, planner, settings, request_id: str):
             done, _ = await asyncio.wait(
                 {pending}, timeout=min(settings.stream_heartbeat_seconds, remaining)
             )
+            # A result arriving after the deadline must not be emitted as success.
+            if asyncio.get_running_loop().time() >= deadline:
+                raise ServiceUnavailable()
             if not done:
                 yield ": keep-alive\n\n"
                 continue

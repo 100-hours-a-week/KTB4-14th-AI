@@ -21,6 +21,15 @@ class GenerationFailed(ApiError):
         super().__init__(422, "ai_itinerary_generation_failed", message)
 
 
+class RoutingUnavailable(ApiError):
+    def __init__(self) -> None:
+        super().__init__(
+            503,
+            "routing_service_unavailable",
+            "길찾기 정보를 확인할 수 없습니다. 잠시 후 다시 시도해주세요.",
+        )
+
+
 class InvalidModelOutput(ValueError):
     """Safe validation feedback for one bounded model repair attempt."""
 

@@ -122,7 +122,6 @@ class RequiredPlace(StrictModel):
 
 class ItineraryRequest(StrictModel):
     generation_job_id: int = Field(gt=0)
-    client_draft_id: int = Field(gt=0)
     region: Region
     duration: Duration
     headcount: int = Field(ge=1, le=30)
@@ -188,6 +187,67 @@ class ModelItinerary(StrictModel):
     days: list[ModelDay] = Field(min_length=1, max_length=8)
 
 
+class Coordinate(StrictModel):
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+
+
+class RouteStop(StrictModel):
+    name: str
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+    station_id: str | None = None
+
+
+class WalkingInstruction(StrictModel):
+    description: str
+    distance_meter: int = Field(ge=0)
+    path: list[Coordinate] = Field(default_factory=list)
+
+
+class RouteVehicle(StrictModel):
+    name: str
+    type: str
+
+
+class RouteLeg(StrictModel):
+    mode: Literal[
+        "WALK", "BUS", "SUBWAY", "EXPRESSBUS", "TRAIN", "AIRPLANE", "FERRY", "CAR"
+    ]
+    duration_seconds: int = Field(ge=0)
+    distance_meter: int = Field(ge=0)
+    start: RouteStop
+    end: RouteStop
+    departure_datetime: datetime
+    arrival_datetime: datetime
+    route_name: str | None = None
+    route_id: str | None = None
+    bus_number: str | None = None
+    service_checked_at: datetime | None = None
+    is_night_travel: bool = False
+    stops: list[RouteStop] = Field(default_factory=list)
+    path: list[Coordinate] = Field(default_factory=list)
+    instructions: list[WalkingInstruction] = Field(default_factory=list)
+    vehicles: list[RouteVehicle] = Field(default_factory=list)
+
+
+class RouteDetails(StrictModel):
+    transport_type: str
+    duration_minutes: int = Field(ge=0)
+    distance_meter: int = Field(ge=0)
+    is_estimated: bool = True
+    provider: Literal["KAKAO", "GEOGRAPHIC_ESTIMATE"] = "GEOGRAPHIC_ESTIMATE"
+    schedule_verified: bool = False
+    map_url: str | None = None
+    departure_datetime: datetime | None = None
+    arrival_datetime: datetime | None = None
+    duration_seconds: int | None = Field(default=None, ge=0)
+    transit_available: bool | None = None
+    walking_fallback: bool = False
+    message: str | None = None
+    legs: list[RouteLeg] = Field(default_factory=list)
+
+
 class ItineraryItem(PlaceResponse):
     sequence: int
     item_type: Literal["TOUR", "RESTAURANT", "ACCOMMODATION"]
@@ -195,6 +255,7 @@ class ItineraryItem(PlaceResponse):
     end_time: str
     stay_minutes: int
     travel_minutes_from_previous: int
+    route_from_previous: RouteDetails | None = None
 
 
 class ItineraryDay(StrictModel):
@@ -217,7 +278,6 @@ class RequiredPlaceResponse(StrictModel):
 
 class ItineraryResponse(StrictModel):
     generation_job_id: int
-    client_draft_id: int
     region: Region
     duration: Duration
     headcount: int
@@ -263,11 +323,6 @@ class MusicSelection(StrictModel):
     music_id: int
 
 
-class Coordinate(StrictModel):
-    latitude: float
-    longitude: float
-
-
 class RecommendedItem(PlaceResponse):
     sequence: int
 
@@ -294,7 +349,7 @@ class AccommodationsResult(StrictModel):
     accommodations: list[Accommodation]
 
 
-class RouteSegment(StrictModel):
+class RouteSegment(RouteDetails):
     from_day_number: int
     to_day_number: int
     from_sequence: int
@@ -303,10 +358,6 @@ class RouteSegment(StrictModel):
     to_provider_place_id: str
     origin: Coordinate
     destination: Coordinate
-    transport_type: str
-    duration_minutes: int
-    distance_meter: int
-    is_estimated: Literal[True] = True
 
 
 class RoutesResult(StrictModel):
