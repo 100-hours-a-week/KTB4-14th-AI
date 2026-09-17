@@ -2,7 +2,7 @@
 
 여행 조건과 필수 방문 장소를 받아 날짜별 여행 일정과 방문 순서를 생성하는 FastAPI 기반 V1 AI 서비스입니다. 카카오에서 장소 후보를 조회하고 OpenAI로 일정과 여행 제목을 생성합니다. 대중교통·도보 경로는 카카오맵 REST API를 사용하며, 음악은 백엔드에서 전달한 후보 중 한 곡을 선택합니다.
 
-이 README는 AI 레포지토리의 설정·실행·API 연동 안내입니다. 날짜별 개발 기록과 발표 자료는 별도로 관리합니다.
+이 README는 AI 레포지토리의 설정·실행·API 연동 안내입니다. 응답 필드와 경로 좌표의 의미는 [여행 일정 API 용어 설명](API_TERMS.md)에 정리했습니다. 날짜별 개발 기록과 발표 자료는 별도로 관리합니다.
 
 ## 서비스 범위
 
@@ -18,18 +18,20 @@
 ## 실행 환경
 
 - Python 3.11 이상, 3.15 미만
-- 패키지 관리: `uv` 및 `uv.lock`
+- 패키지 설치: `pip` 및 `requirements.txt`
 - FastAPI, Uvicorn, Pydantic, HTTPX
 - 외부 API: OpenAI, Kakao Local, 카카오맵 경로 조회
 
-현재 저장소에서는 서버 파일이 `development/`에 있습니다. AI 전용 레포지토리로 옮길 때는 **이 폴더의 내용을 레포지토리 루트에 배치**할 수 있습니다. 아래 명령은 `pyproject.toml`이 있는 디렉터리에서 실행합니다.
+현재 저장소에서는 서버 파일이 `development/`에 있습니다. AI 전용 레포지토리로 옮길 때는 **이 폴더의 내용을 레포지토리 루트에 배치**할 수 있습니다. 아래 명령은 `requirements.txt`가 있는 디렉터리에서 실행합니다.
 
 ## 설치 및 실행
 
 현재 저장소에서 작업한다면 먼저 `cd development`로 이동합니다. AI 전용 레포지토리 루트에 서버 파일을 배치했다면 디렉터리를 추가로 이동할 필요가 없습니다.
 
 ```bash
-uv sync --frozen --no-dev
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
 
 # 최초 설정에만 복사합니다. 기존 .env는 덮어쓰지 않습니다.
 test -f .env || cp .env.example .env
@@ -38,7 +40,7 @@ test -f .env || cp .env.example .env
 `.env`에 아래 환경변수를 설정한 후 실행합니다.
 
 ```bash
-uv run --no-sync uvicorn ai_service.main:app --host 0.0.0.0 --port 8000
+python -m uvicorn ai_service.main:app --host 0.0.0.0 --port 8000
 ```
 
 - 상태 확인: `GET http://localhost:8000/health`
@@ -215,9 +217,9 @@ curl --no-buffer --fail-with-body http://localhost:8000/internal/ai/itineraries/
 ```text
 .
 ├── README.md
+├── API_TERMS.md    # 응답 필드·좌표·화면 연결 설명
 ├── .env.example
-├── pyproject.toml
-├── uv.lock
+├── requirements.txt
 └── ai_service/
     ├── __init__.py
     ├── main.py        # API 진입점 및 공통 응답 처리
@@ -233,6 +235,6 @@ curl --no-buffer --fail-with-body http://localhost:8000/internal/ai/itineraries/
     └── streaming.py   # SSE 전송·오류 종료
 ```
 
-실행에는 `ai_service/`, `pyproject.toml`, `uv.lock`과 배포 환경의 설정이 필요합니다. README와 `.env.example`은 레포지토리에 함께 포함하는 안내 자료입니다. `.env`, `.venv`, 캐시, 개인 개발 기록은 배포 이미지에 포함하지 않습니다. 별도 AI 레포지토리에도 `.env`·가상환경·캐시를 제외하는 `.gitignore`를 적용해야 합니다.
+실행에는 `ai_service/`, `requirements.txt`와 배포 환경의 설정이 필요합니다. `uv` 설치는 필요하지 않습니다. README와 `.env.example`은 레포지토리에 함께 포함하는 안내 자료입니다. `.env`, `.venv`, 캐시, 개인 개발 기록은 배포 이미지에 포함하지 않습니다. 별도 AI 레포지토리에도 `.env`·가상환경·캐시를 제외하는 `.gitignore`를 적용해야 합니다.
 
 테스트는 서버 실행에 필수인 파일이 아니므로 배포 이미지에서 제외할 수 있습니다. 현재 이 폴더에는 테스트 디렉터리가 포함되어 있지 않습니다.
