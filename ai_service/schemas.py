@@ -145,9 +145,17 @@ class JobStatus(str, Enum):
     FAILED = "FAILED"
 
 
+class PipelineStage(str, Enum):
+    PLACES_AND_RESTAURANTS = "PLACES_AND_RESTAURANTS"
+    ACCOMMODATION_LOCATION = "ACCOMMODATION_LOCATION"
+    ROUTE_CONNECTION = "ROUTE_CONNECTION"
+    TRAVEL_MUSIC = "TRAVEL_MUSIC"
+    COMPLETED = "COMPLETED"
+
+
 class ErrorDetail(StrictModel):
     field: str
-    reason: str
+    message: str
 
 
 class ErrorInfo(StrictModel):
@@ -172,7 +180,6 @@ class MusicTrack(StrictModel):
 
 class MusicResponse(StrictModel):
     track: MusicTrack
-    reason: str
     model_version: str
 
 
@@ -195,6 +202,7 @@ class JobAccepted(StrictModel):
     job_type: JobType
     status: Literal["QUEUED"]
     status_url: str
+    events_url: str
 
 
 class JobResponse(StrictModel):
@@ -202,6 +210,7 @@ class JobResponse(StrictModel):
     job_type: JobType
     status: JobStatus
     progress: int = Field(ge=0, le=100)
+    stage: str | None
     result: dict[str, Any] | None
     error: ErrorInfo | None
     model_version: str | None
