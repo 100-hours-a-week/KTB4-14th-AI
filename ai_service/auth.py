@@ -23,7 +23,9 @@ def require_api_token(
         if (
             credentials is None
             or credentials.scheme.lower() != "bearer"
-            or not hmac.compare_digest(credentials.credentials, expected_token)
+            or not hmac.compare_digest(
+                credentials.credentials.encode(), expected_token.encode()
+            )
         ):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -32,4 +34,3 @@ def require_api_token(
             )
 
     return dependency
-

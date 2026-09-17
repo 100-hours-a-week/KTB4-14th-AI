@@ -2,38 +2,33 @@ from __future__ import annotations
 
 
 class ApiError(Exception):
-    def __init__(
-        self,
-        status_code: int,
-        code: str,
-        message: str,
-        *,
-        retryable: bool = False,
-        details: list[dict[str, str]] | None = None,
-    ) -> None:
+    def __init__(self, status_code: int, code: str, message: str) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.code = code
         self.message = message
-        self.retryable = retryable
-        self.details = details or []
 
 
-class JobNotFound(ApiError):
+class ServiceUnavailable(ApiError):
     def __init__(self) -> None:
-        super().__init__(404, "JOB_NOT_FOUND", "작업을 찾을 수 없습니다.")
+        super().__init__(503, "ai_service_unavailable", "잠시 후 다시 시도해주세요.")
 
 
-class IdempotencyConflict(ApiError):
+class GenerationFailed(ApiError):
+    def __init__(
+        self, message: str = "추천 가능한 여행 일정을 생성하지 못했습니다."
+    ) -> None:
+        super().__init__(422, "ai_itinerary_generation_failed", message)
+
+
+class InvalidModelOutput(ValueError):
+    """Safe validation feedback for one bounded model repair attempt."""
+
+
+class MusicRecommendationFailed(ApiError):
     def __init__(self) -> None:
         super().__init__(
-            409,
-            "IDEMPOTENCY_CONFLICT",
-            "같은 키에 다른 요청을 사용할 수 없습니다.",
+            422,
+            "ai_music_recommendation_failed",
+            "추천 가능한 음악을 선택하지 못했습니다.",
         )
-
-
-class FeatureNotConfigured(ApiError):
-    def __init__(self, message: str) -> None:
-        super().__init__(503, "FEATURE_NOT_CONFIGURED", message, retryable=False)
-

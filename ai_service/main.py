@@ -1,83 +1,50 @@
 from __future__ import annotations
 
-from functools import partial
-from typing import Any
+import asyncio
+from contextlib import asynccontextmanager
+import logging
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, FastAPI, Header, Request
+import httpx
+from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from ai_service.auth import require_api_token
 from ai_service.config import Settings
-from ai_service.errors import ApiError
-from ai_service.features import (
-    generate_checklist,
-    generate_itinerary,
-    generate_video,
-    rank_travelers,
-    recommend_music,
-)
-from ai_service.jobs import JobBackend, LocalJobBackend
+from ai_service.errors import ApiError, ServiceUnavailable
+from ai_service.features import generate_itinerary
+from ai_service.model import OpenAIPlanner
+from ai_service.places import KakaoPlaces
 from ai_service.schemas import (
-    ChecklistRequest,
-    ChecklistResponse,
     ErrorResponse,
     ItineraryRequest,
-    JobAccepted,
-    JobResponse,
-    JobType,
-    MatchRequest,
-    MusicRequest,
-    MusicResponse,
-    VideoRequest,
+    ItineraryResponse,
+    ItineraryStreamRequest,
 )
+from ai_service.streaming import stream_generation
 
 
-ERROR_RESPONSES = {
-    400: {"model": ErrorResponse},
-    401: {"model": ErrorResponse},
-    404: {"model": ErrorResponse},
-    409: {"model": ErrorResponse},
-    422: {"model": ErrorResponse},
-    503: {"model": ErrorResponse},
-}
-
-
-def _error_body(
-    request: Request,
-    code: str,
-    message: str,
-    retryable: bool = False,
-    details: list[dict[str, str]] | None = None,
-) -> dict[str, Any]:
-    return {
-        "error": {
-            "code": code,
-            "message": message,
-            "retryable": retryable,
-            "details": details or [],
-        },
-        "request_id": getattr(request.state, "request_id", f"req_{uuid4().hex}"),
-    }
+logger = logging.getLogger(__name__)
+ERROR_RESPONSES = {code: {"model": ErrorResponse} for code in (400, 401, 422, 500, 503)}
 
 
 def create_app(
     *,
     settings: Settings | None = None,
-    jobs: JobBackend | None = None,
+    transport: httpx.AsyncBaseTransport | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
-    jobs = jobs or LocalJobBackend()
-    app = FastAPI(
-        title="Audigo AI API",
-        version="0.1.0",
-        description=(
-            "Google Sheets의 [AUDIGO] AI 인공지능 탭을 기준으로 한 개발용 API. "
-            "demo 모드 결과는 실제 추천이 아닙니다."
-        ),
-    )
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        async with httpx.AsyncClient(transport=transport) as client:
+            app.state.places = KakaoPlaces(client, settings)
+            app.state.planner = OpenAIPlanner(client, settings)
+            yield
+
+    app = FastAPI(title="Audigo AI API", version="1.0.0", lifespan=lifespan)
 
     @app.middleware("http")
     async def attach_request_id(request: Request, call_next):
@@ -88,148 +55,112 @@ def create_app(
 
     @app.exception_handler(ApiError)
     async def handle_api_error(request: Request, exc: ApiError):
+        data = None
+        if exc.status_code == 503:
+            data = {"user_message": "잠시 후 다시 시도해주세요."}
+        elif exc.status_code == 422:
+            data = {
+                "generation_job_id": request.state.generation_job_id,
+                "client_draft_id": request.state.client_draft_id,
+                "error_message": exc.message,
+            }
         return JSONResponse(
-            status_code=exc.status_code,
-            content=_error_body(
-                request, exc.code, exc.message, exc.retryable, exc.details
-            ),
+            status_code=exc.status_code, content={"message": exc.code, "data": data}
         )
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(request: Request, exc: RequestValidationError):
-        details = []
-        for item in exc.errors():
-            location = [str(part) for part in item["loc"] if part != "body"]
-            details.append(
-                {"field": ".".join(location), "reason": item["msg"]}
-            )
         return JSONResponse(
-            status_code=400,
-            content=_error_body(
-                request,
-                "INVALID_REQUEST",
-                "입력값을 확인해 주세요.",
-                details=details,
-            ),
+            status_code=400, content={"message": "invalid_request", "data": None}
         )
 
     @app.exception_handler(StarletteHTTPException)
     async def handle_http_error(request: Request, exc: StarletteHTTPException):
         code = {
-            401: "UNAUTHORIZED",
-            404: "NOT_FOUND",
-            503: "SERVICE_NOT_CONFIGURED",
-        }.get(exc.status_code, "HTTP_ERROR")
+            401: "unauthorized",
+            404: "not_found",
+            503: "ai_service_unavailable",
+        }.get(exc.status_code, "http_error")
+        data = (
+            {"user_message": "잠시 후 다시 시도해주세요."}
+            if exc.status_code == 503
+            else None
+        )
         return JSONResponse(
             status_code=exc.status_code,
             headers=exc.headers,
-            content=_error_body(request, code, str(exc.detail)),
+            content={"message": code, "data": data},
         )
 
     @app.exception_handler(Exception)
     async def handle_unexpected_error(request: Request, exc: Exception):
+        # Log only type and correlation ID; upstream exceptions may contain secrets.
+        logger.error(
+            "Unexpected %s request_id=%s",
+            type(exc).__name__,
+            getattr(request.state, "request_id", "unknown"),
+        )
         return JSONResponse(
             status_code=500,
-            content=_error_body(
-                request,
-                "INTERNAL_SERVER_ERROR",
-                "서버 내부 오류가 발생했습니다.",
-                retryable=True,
-            ),
+            content={"message": "internal_server_error", "data": None},
+            headers={"X-Request-Id": getattr(request.state, "request_id", "unknown")},
         )
 
     @app.get("/health", tags=["system"])
-    async def health() -> dict[str, str]:
-        return {"status": "ok", "mode": settings.mode}
+    async def health():
+        return {"status": "ok", "mode": "live"}
 
     protected = APIRouter(
-        prefix="/api/ai/v1",
+        prefix="/internal/ai",
         dependencies=[Depends(require_api_token(settings.api_token))],
     )
 
     @protected.post(
-        "/itinerary-jobs",
-        response_model=JobAccepted,
-        status_code=202,
+        "/itineraries/generate",
+        response_model=ItineraryResponse,
         responses=ERROR_RESPONSES,
         tags=["V1"],
     )
-    async def create_itinerary_job(
-        body: ItineraryRequest,
-        idempotency_key: str = Header(
-            min_length=8, max_length=128, alias="Idempotency-Key"
-        ),
-    ):
-        payload = body.model_dump(mode="json")
-        return jobs.submit(
-            JobType.ITINERARY_GENERATION,
-            payload,
-            partial(generate_itinerary, settings=settings),
-            idempotency_key=idempotency_key,
-        )
-
-    @protected.get(
-        "/jobs/{job_id}",
-        response_model=JobResponse,
-        responses=ERROR_RESPONSES,
-        tags=["common"],
-    )
-    async def get_job(job_id: str):
-        return jobs.get(job_id)
-
-    @protected.post(
-        "/music-recommendations",
-        response_model=MusicResponse,
-        responses=ERROR_RESPONSES,
-        tags=["V1"],
-    )
-    async def create_music_recommendation(body: MusicRequest):
+    async def create_itinerary(body: ItineraryRequest, request: Request):
+        request.state.generation_job_id = body.generation_job_id
+        request.state.client_draft_id = body.client_draft_id
+        if not settings.openai_api_key or not settings.kakao_rest_api_key:
+            raise ServiceUnavailable()
         try:
-            return recommend_music(body.model_dump(mode="json"))
-        except ValueError as exc:
-            if str(exc) == "NO_MUSIC_CANDIDATES":
-                raise ApiError(
-                    422,
-                    "NO_MUSIC_CANDIDATES",
-                    "추천 가능한 음악이 없습니다.",
-                ) from exc
-            raise
+            async with asyncio.timeout(settings.generation_timeout_seconds):
+                return await generate_itinerary(
+                    body, app.state.places, app.state.planner
+                )
+        except TimeoutError as exc:
+            raise ServiceUnavailable() from exc
 
     @protected.post(
-        "/traveler-match-jobs",
-        response_model=JobAccepted,
-        status_code=202,
-        responses=ERROR_RESPONSES,
-        tags=["V2"],
+        "/itineraries/generate/stream",
+        response_class=StreamingResponse,
+        responses={
+            **ERROR_RESPONSES,
+            200: {"content": {"text/event-stream": {"schema": {"type": "string"}}}},
+        },
+        tags=["V1"],
     )
-    async def create_match_job(body: MatchRequest):
-        return jobs.submit(
-            JobType.TRAVELER_MATCHING,
-            body.model_dump(mode="json"),
-            rank_travelers,
-        )
-
-    @protected.post(
-        "/checklists",
-        response_model=ChecklistResponse,
-        responses=ERROR_RESPONSES,
-        tags=["V3"],
-    )
-    async def create_checklist(body: ChecklistRequest):
-        return generate_checklist(body.model_dump(mode="json"), settings)
-
-    @protected.post(
-        "/video-jobs",
-        response_model=JobAccepted,
-        status_code=202,
-        responses=ERROR_RESPONSES,
-        tags=["V3"],
-    )
-    async def create_video_job(body: VideoRequest):
-        return jobs.submit(
-            JobType.TRAVEL_VIDEO_GENERATION,
-            body.model_dump(mode="json"),
-            generate_video,
+    async def stream_itinerary(body: ItineraryStreamRequest, request: Request):
+        request.state.generation_job_id = body.generation_job_id
+        request.state.client_draft_id = body.client_draft_id
+        if not settings.openai_api_key or not settings.kakao_rest_api_key:
+            raise ServiceUnavailable()
+        return StreamingResponse(
+            stream_generation(
+                body,
+                app.state.places,
+                app.state.planner,
+                settings,
+                request.state.request_id,
+            ),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
+            },
         )
 
     app.include_router(protected)
