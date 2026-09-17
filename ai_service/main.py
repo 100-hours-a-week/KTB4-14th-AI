@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from functools import partial
+import json
+import time
 from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, FastAPI, Header, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from ai_service.auth import require_api_token
@@ -14,7 +15,7 @@ from ai_service.config import Settings
 from ai_service.errors import ApiError
 from ai_service.features import (
     generate_checklist,
-    generate_itinerary,
+    generate_trip_pipeline,
     generate_video,
     rank_travelers,
     recommend_music,
@@ -27,6 +28,7 @@ from ai_service.schemas import (
     ItineraryRequest,
     JobAccepted,
     JobResponse,
+    JobStatus,
     JobType,
     MatchRequest,
     MusicRequest,
@@ -45,6 +47,20 @@ ERROR_RESPONSES = {
 }
 
 
+def _normalize_details(
+    details: list[dict[str, str]] | None,
+) -> list[dict[str, str]]:
+    normalized = []
+    for detail in details or []:
+        normalized.append(
+            {
+                "field": detail.get("field", ""),
+                "message": detail.get("message") or detail.get("reason", ""),
+            }
+        )
+    return normalized
+
+
 def _error_body(
     request: Request,
     code: str,
@@ -57,7 +73,7 @@ def _error_body(
             "code": code,
             "message": message,
             "retryable": retryable,
-            "details": details or [],
+            "details": _normalize_details(details),
         },
         "request_id": getattr(request.state, "request_id", f"req_{uuid4().hex}"),
     }
@@ -72,10 +88,10 @@ def create_app(
     jobs = jobs or LocalJobBackend()
     app = FastAPI(
         title="Audigo AI API",
-        version="0.1.0",
+        version="0.2.0",
         description=(
-            "Google Sheets의 [AUDIGO] AI 인공지능 탭을 기준으로 한 개발용 API. "
-            "demo 모드 결과는 실제 추천이 아닙니다."
+            "Audigo AI 개발 API. 여행 일정 job은 SSE로 장소·식당 추천, 숙소 위치, "
+            "이동 경로, 음악 추천 단계 결과를 순서대로 전달합니다."
         ),
     )
 
@@ -101,7 +117,7 @@ def create_app(
         for item in exc.errors():
             location = [str(part) for part in item["loc"] if part != "body"]
             details.append(
-                {"field": ".".join(location), "reason": item["msg"]}
+                {"field": ".".join(location), "message": item["msg"]}
             )
         return JSONResponse(
             status_code=400,
@@ -164,7 +180,9 @@ def create_app(
         return jobs.submit(
             JobType.ITINERARY_GENERATION,
             payload,
-            partial(generate_itinerary, settings=settings),
+            lambda job_payload, emit: generate_trip_pipeline(
+                job_payload, settings, emit
+            ),
             idempotency_key=idempotency_key,
         )
 
@@ -176,6 +194,65 @@ def create_app(
     )
     async def get_job(job_id: str):
         return jobs.get(job_id)
+
+    @protected.get(
+        "/jobs/{job_id}/events",
+        responses=ERROR_RESPONSES,
+        tags=["common"],
+    )
+    def stream_job_events(
+        job_id: str,
+        last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    ):
+        jobs.get(job_id)
+        try:
+            start_after_id = max(0, int(last_event_id or "0"))
+        except ValueError:
+            start_after_id = 0
+
+        def event_stream():
+            cursor = start_after_id
+            last_heartbeat = time.monotonic()
+            while True:
+                events = jobs.events_since(job_id, cursor)
+                for event in events:
+                    cursor = event["id"]
+                    payload = json.dumps(
+                        event["data"],
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        default=str,
+                    )
+                    yield (
+                        f"id: {event['id']}\n"
+                        f"event: {event['event']}\n"
+                        f"data: {payload}\n\n"
+                    )
+                    last_heartbeat = time.monotonic()
+
+                snapshot = jobs.get(job_id)
+                if snapshot["status"] in {
+                    JobStatus.SUCCEEDED.value,
+                    JobStatus.FAILED.value,
+                }:
+                    if not jobs.events_since(job_id, cursor):
+                        break
+
+                now = time.monotonic()
+                if now - last_heartbeat >= 15:
+                    yield ": keep-alive\n\n"
+                    last_heartbeat = now
+                time.sleep(0.25)
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @protected.post(
         "/music-recommendations",
@@ -206,7 +283,7 @@ def create_app(
         return jobs.submit(
             JobType.TRAVELER_MATCHING,
             body.model_dump(mode="json"),
-            rank_travelers,
+            lambda payload, emit: rank_travelers(payload),
         )
 
     @protected.post(
@@ -229,7 +306,7 @@ def create_app(
         return jobs.submit(
             JobType.TRAVEL_VIDEO_GENERATION,
             body.model_dump(mode="json"),
-            generate_video,
+            lambda payload, emit: generate_video(payload),
         )
 
     app.include_router(protected)
