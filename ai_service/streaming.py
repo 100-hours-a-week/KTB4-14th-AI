@@ -24,11 +24,9 @@ async def stream_generation(
     pending = None
     sequence = 0
     stage = STAGES[0]
-    progress = 0
     deadline = asyncio.get_running_loop().time() + settings.stream_timeout_seconds
     identity = {
         "generation_job_id": body.generation_job_id,
-        "request_id": request_id,
     }
     try:
         while True:
@@ -53,8 +51,6 @@ async def stream_generation(
             finally:
                 pending = None
             sequence += 1
-            if status == "COMPLETED" and stage in STAGES:
-                progress = (STAGES.index(stage) + 1) * 25
             event = (
                 "complete"
                 if stage == "COMPLETE"
@@ -69,7 +65,6 @@ async def stream_generation(
                     **identity,
                     "stage": stage,
                     "status": status,
-                    "progress": progress,
                     "data": result.model_dump(mode="json")
                     if result is not None
                     else None,
@@ -78,16 +73,17 @@ async def stream_generation(
     except asyncio.CancelledError:
         raise  # Client disconnected; cancellation closes in-flight HTTP requests.
     except Exception as exc:
+        logger.exception(
+            "Pipeline failed request_id=%s error=%s",
+            request_id,
+            exc,
+        )
         if isinstance(exc, ApiError):
-            code, http_status, message = exc.code, exc.status_code, exc.message
+            code, message = exc.code, exc.message
         else:
-            code, http_status, message = (
+            code, message = (
                 "internal_server_error",
-                500,
                 "서버 내부 오류가 발생했습니다.",
-            )
-            logger.error(
-                "Pipeline failed type=%s request_id=%s", type(exc).__name__, request_id
             )
         # HTTP headers have already been sent: failure is a terminal SSE event.
         yield encode_event(
@@ -97,9 +93,8 @@ async def stream_generation(
                 **identity,
                 "stage": stage,
                 "status": "FAILED",
-                "progress": progress,
                 "message": code,
-                "data": {"http_status": http_status, "error_message": message},
+                "data": {"error_message": message},
             },
         )
     finally:

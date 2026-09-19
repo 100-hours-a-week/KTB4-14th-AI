@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from ai_service.config import Settings
 from ai_service.errors import GenerationFailed, ServiceUnavailable
 from ai_service.schemas import ItineraryRequest, Place, TRANSPORT_ALIASES
+from ai_service.transport import base_transport, resolve_day_transports
 
 
 THEME_QUERIES = {
@@ -191,7 +192,8 @@ class KakaoPlaces:
 
         # Cluster new places around required stops (or the regional center).
         # A city-wide pool can otherwise produce several hours of zigzag transfers.
-        mode = TRANSPORT_ALIASES[request.preference.transport_type]
+        modes = {base_transport(m) for m in resolve_day_transports(request).values()}
+        mode = min(modes, key={"WALK": 0, "PUBLIC_TRANSPORT": 1, "CAR": 2}.get)
         distance = (
             request.preference.distance_preference
             if request.preference.distance_preference is not None

@@ -8,6 +8,7 @@ import math
 from ai_service.errors import GenerationFailed, InvalidModelOutput
 from ai_service.model import OpenAIPlanner
 from ai_service.places import KakaoPlaces, distance_km, travel_minutes
+from ai_service.transport import base_transport, resolve_day_transports
 from ai_service.schemas import (
     ItineraryDay,
     ItineraryItem,
@@ -17,9 +18,8 @@ from ai_service.schemas import (
     ModelSelection,
     PACE_ALIASES,
     Place,
-    RouteDetails,
+    RouteSummary,
     SelectionItem,
-    TRANSPORT_ALIASES,
 )
 
 
@@ -51,6 +51,7 @@ PACE_POLICIES = {
 
 def day_windows(request: ItineraryRequest) -> list[dict]:
     arrival, departure = request.duration.local_bounds()
+    transports = resolve_day_transports(request)
     policy = PACE_POLICIES[PACE_ALIASES[request.preference.pace_type]]
     windows = []
     for index in range((departure.date() - arrival.date()).days + 1):
@@ -74,6 +75,8 @@ def day_windows(request: ItineraryRequest) -> list[dict]:
         windows.append(
             {
                 "date": day.isoformat(),
+                "transport_type": base_transport(transports[day.isoformat()]),
+                "route_mode": transports[day.isoformat()],
                 "start": start.strftime("%H:%M"),
                 "end": end.strftime("%H:%M"),
                 "available_minutes": minutes,
@@ -262,28 +265,27 @@ def complete_selection(
 
 def build_context(request: ItineraryRequest, places: list[Place]) -> dict:
     policy = PACE_POLICIES[PACE_ALIASES[request.preference.pace_type]]
+    windows = day_windows(request)
+    matrices = {
+        mode: [[travel_minutes(a, b, mode) for b in places] for a in places]
+        for mode in {w["transport_type"] for w in windows}
+    }
     return {
         "request": request.model_dump(mode="json"),
         "required_order": [
             p.provider_place_id
             for p in sorted(request.required_places, key=lambda p: p.order)
         ],
-        "day_windows": day_windows(request),
+        "day_windows": windows,
         "stay_minutes": {k: policy[k] for k in ("관광", "식당", "숙소")},
         "candidates": [
             p.model_dump(exclude={"road_address", "provider", "is_required"})
             for p in places
         ],
         "travel_edges": {
-            "description": "Estimated minutes. Matrix row/column order follows place_ids; use for every consecutive pair, including next-day first item.",
+            "description": "Estimated minutes by date. Use the destination day's matrix, including transfers from the previous night's lodging. Row/column order follows place_ids.",
             "place_ids": [p.provider_place_id for p in places],
-            "minutes": [
-                [
-                    travel_minutes(a, b, request.preference.transport_type)
-                    for b in places
-                ]
-                for a in places
-            ],
+            "minutes_by_date": {w["date"]: matrices[w["transport_type"]] for w in windows},
         },
     }
 
@@ -310,7 +312,7 @@ def schedule_selection(
                 raise InvalidModelOutput("use only provided candidate IDs")
             chosen.append(place)
             transfers.append(
-                travel_minutes(previous, place, request.preference.transport_type)
+                travel_minutes(previous, place, window["transport_type"])
                 if previous
                 else 0
             )
@@ -359,7 +361,7 @@ def validate_itinerary(
     generated: ModelItinerary,
     places: list[Place],
     *,
-    routes: dict[tuple[int, int], RouteDetails] | None = None,
+    routes: dict[tuple[int, int], RouteSummary] | None = None,
 ) -> list[ItineraryDay]:
     windows = day_windows(request)
     if [day.date for day in generated.days] != [w["date"] for w in windows]:
@@ -414,7 +416,7 @@ def validate_itinerary(
                 if route
                 else (
                     travel_minutes(
-                        previous_place, place, request.preference.transport_type
+                        previous_place, place, window["transport_type"]
                     )
                     if previous_place
                     else 0
@@ -433,7 +435,7 @@ def validate_itinerary(
             categories.add(place.category)
             items.append(
                 ItineraryItem(
-                    **place.model_dump(exclude={"source_category"}),
+                    **place.model_dump(exclude={"source_category", "is_required"}),
                     sequence=sequence,
                     item_type={
                         "관광": "TOUR",
@@ -442,8 +444,6 @@ def validate_itinerary(
                     }[place.category],
                     start_time=visit_start.strftime("%H:%M"),
                     end_time=visit_end.strftime("%H:%M"),
-                    stay_minutes=item.stay_minutes,
-                    travel_minutes_from_previous=transfer,
                     route_from_previous=route,
                 )
             )
@@ -459,7 +459,7 @@ def validate_itinerary(
                 f"{window['date']}: include accommodation as the last item"
             )
         result.append(
-            ItineraryDay(day_number=len(result) + 1, date=start.date(), items=items)
+            ItineraryDay(day_number=len(result) + 1, travel_date=start.date(), items=items)
         )
     required_order = [
         p.provider_place_id
@@ -506,20 +506,13 @@ async def generate_itinerary(
         try:
             selection = await planner.generate(context, feedback)
             selection = complete_selection(request, selection, places)
-            if TRANSPORT_ALIASES[request.preference.transport_type] in {
-                "PUBLIC_TRANSPORT",
-                "WALK",
-            }:
-                from ai_service.routing import KakaoRoutes, schedule_with_routes
+            from ai_service.routing import KakaoRoutes, schedule_with_routes
 
-                router = router or KakaoRoutes(planner.client, planner.settings)
-                result = await schedule_with_routes(
-                    request, selection, places, planner.settings.openai_model, router
-                )
-                return result.itinerary
-            generated = schedule_selection(request, selection, places)
-            days = validate_itinerary(request, generated, places)
-            break
+            router = router or KakaoRoutes(planner.client, planner.settings)
+            result = await schedule_with_routes(
+                request, selection, places, planner.settings.openai_model, router
+            )
+            return result.itinerary
         except InvalidModelOutput as exc:
             logger.warning(
                 "Itinerary validation failed on attempt %s: %s", attempt + 1, str(exc)
@@ -529,9 +522,6 @@ async def generate_itinerary(
         raise GenerationFailed(
             "필수 장소와 시간 조건을 만족하는 일정을 생성하지 못했습니다."
         )
-    return make_itinerary_response(
-        request, generated, days, planner.settings.openai_model
-    )
 
 
 def make_itinerary_response(
@@ -542,31 +532,14 @@ def make_itinerary_response(
     *,
     routed: bool = False,
 ) -> ItineraryResponse:
-    warnings = [
-        (
-            "이동시간은 카카오 길찾기의 예상 소요시간입니다. 예정 여행일의 운행·막차·심야버스 여부는 확인되지 않았으므로 출발 전에 카카오맵에서 확인해주세요."
-            if routed
-            else "이동시간은 좌표와 이동수단에 따른 추정치이며 실제 길찾기 결과가 아닙니다."
-        ),
-        "영업시간·휴무일·입장료·예약 가능 여부는 방문 전에 확인해 주세요.",
-        "숙소 체류시간은 체크인·휴식 시간입니다.",
-    ]
-    if (
-        request.preference.budget_min is not None
-        or request.preference.budget_max is not None
-    ):
-        warnings.append(
-            "예산은 전체 인원·전체 여행의 추천 선호로 반영되며 실제 비용은 확인되지 않았습니다."
-        )
+    logger.debug("Itinerary generated model=%s routed=%s", model_version, routed)
     payload = request.model_dump(mode="json", exclude={"required_places"})
     payload["required_places"] = [
-        {**p.model_dump(exclude={"place_name"}), "name": p.place_name}
+        p.model_dump()
         for p in request.required_places
     ]
     return ItineraryResponse(
         **payload,
         title=generated.title,
         days=days,
-        model_version=model_version,
-        warnings=warnings,
     )

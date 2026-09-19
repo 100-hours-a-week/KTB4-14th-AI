@@ -7,7 +7,6 @@ from ai_service.features import (
     build_context,
     complete_selection,
     day_windows,
-    make_itinerary_response,
     schedule_selection,
     select_candidates,
     validate_itinerary,
@@ -29,15 +28,13 @@ from ai_service.schemas import (
     PlaceResponse,
     RecommendedDay,
     RecommendedItem,
-    RouteSegment,
     RoutesResult,
     SelectionItem,
-    TRANSPORT_ALIASES,
 )
 
 
 def public_place(place: Place) -> PlaceResponse:
-    return PlaceResponse.model_validate(place.model_dump(exclude={"source_category"}))
+    return PlaceResponse.model_validate(place.model_dump(exclude={"source_category", "is_required"}))
 
 
 def lodging_days(request: ItineraryRequest, places: list[Place]) -> set[int]:
@@ -127,7 +124,7 @@ def validate_places_selection(
             needed_minutes += policy[place.category][0]
             if previous is not None:
                 needed_minutes += travel_minutes(
-                    previous, place, request.preference.transport_type
+                    previous, place, window["transport_type"]
                 )
             previous = place
         if window["needs_tour_and_restaurant"] and not {"관광", "식당"} <= categories:
@@ -195,7 +192,7 @@ def places_result(selection: ModelSelection, places: list[Place]) -> PlacesResul
         days=[
             RecommendedDay(
                 day_number=index,
-                date=day.date,
+                travel_date=day.date,
                 items=[
                     RecommendedItem(
                         **public_place(by_id[item.provider_place_id]).model_dump(),
@@ -282,8 +279,7 @@ async def recommend_accommodations(
         recommendations.append(
             Accommodation(
                 day_number=index + 1,
-                date=day.date,
-                search_center=center,
+                travel_date=day.date,
                 place=public_place(chosen),
             )
         )
@@ -304,46 +300,13 @@ async def connect_routes(
     model: str,
     router: KakaoRoutes,
 ) -> RoutesResult:
-    if TRANSPORT_ALIASES[request.preference.transport_type] in {
-        "PUBLIC_TRANSPORT",
-        "WALK",
-    }:
-        try:
-            return await schedule_with_routes(request, selection, places, model, router)
-        except InvalidModelOutput as exc:
-            raise GenerationFailed(
-                "조회한 이동시간과 필수 장소를 여행 시간 안에 배치할 수 없습니다. 여행 시간을 늘리거나 장소를 줄여주세요."
-            ) from exc
-    generated = schedule_selection(request, selection, places)
-    days = validate_itinerary(request, generated, places)
-    itinerary = make_itinerary_response(request, generated, days, model)
-    routes = []
-    previous = None
-    for day in days:
-        for item in day.items:
-            if previous is not None:
-                previous_day, origin = previous
-                routes.append(
-                    RouteSegment(
-                        from_day_number=previous_day,
-                        to_day_number=day.day_number,
-                        from_sequence=origin.sequence,
-                        to_sequence=item.sequence,
-                        from_provider_place_id=origin.provider_place_id,
-                        to_provider_place_id=item.provider_place_id,
-                        origin=Coordinate(
-                            latitude=origin.latitude, longitude=origin.longitude
-                        ),
-                        destination=Coordinate(
-                            latitude=item.latitude, longitude=item.longitude
-                        ),
-                        transport_type=request.preference.transport_type,
-                        duration_minutes=item.travel_minutes_from_previous,
-                        distance_meter=round(distance_km(origin, item) * 1.4 * 1000),
-                    )
-                )
-            previous = day.day_number, item
-    return RoutesResult(itinerary=itinerary, routes=routes)
+    try:
+        return await schedule_with_routes(request, selection, places, model, router)
+    except InvalidModelOutput as exc:
+        raise GenerationFailed(
+            "조회한 이동시간과 필수 장소를 여행 시간 안에 배치할 수 없습니다. 여행 시간을 늘리거나 장소를 줄여주세요."
+        ) from exc
+
 
 
 async def generation_stages(
@@ -354,6 +317,7 @@ async def generation_stages(
 ):
     """Each yield is sent before executing the next phase; no database/job store."""
     request = body.itinerary_request()
+    day_windows(request)  # Validate explicit transport constraints before provider calls.
     yield "PLACES", "STARTED", None
     places = select_candidates(
         request, await client.collect(request, include_accommodation=False)
@@ -375,7 +339,7 @@ async def generation_stages(
     yield "ROUTES", "COMPLETED", routes
 
     yield "MUSIC", "STARTED", None
-    music = await planner.recommend_music(request, body.music_candidates)
+    music = await planner.recommend_music(request)
     result = GenerationResult(**routes.model_dump(), music=music)
     yield "MUSIC", "COMPLETED", music
     yield "COMPLETE", "COMPLETED", result

@@ -55,8 +55,14 @@ class Region(StrictModel):
 
 
 class Duration(StrictModel):
-    arrival_datetime: datetime
-    departure_datetime: datetime
+    arrival_datetime: datetime = Field(
+        description="여행 도착 일시. 시간대 표기가 없으면 한국시간(Asia/Seoul)으로 해석",
+        examples=["2026-09-19T10:00:00"],
+    )
+    departure_datetime: datetime = Field(
+        description="여행 출발 일시. 시간대 표기가 없으면 한국시간(Asia/Seoul)으로 해석",
+        examples=["2026-09-21T18:00:00"],
+    )
 
     @field_validator("arrival_datetime", "departure_datetime", mode="before")
     @classmethod
@@ -90,7 +96,7 @@ class Preference(StrictModel):
     transport_type: NonEmpty
     budget_min: int | None = Field(default=None, ge=0)
     budget_max: int | None = Field(default=None, ge=0)
-    budget_currency: str = Field(default="KRW", pattern=r"^[A-Z]{3}$")
+    budget_type: str = Field(default="KRW", pattern=r"^[A-Z]{3}$")
     distance_preference: int | None = Field(default=None, ge=0, le=100)
     themes: list[NonEmpty] = Field(min_length=1, max_length=10)
     foods: list[NonEmpty] = Field(default_factory=list, max_length=10)
@@ -102,6 +108,9 @@ class Preference(StrictModel):
             raise ValueError("unsupported pace_type")
         if self.transport_type not in TRANSPORT_ALIASES:
             raise ValueError("unsupported transport_type")
+        # Keep accepted input aliases, but emit the ERD's canonical enum values.
+        self.pace_type = PACE_ALIASES[self.pace_type]
+        self.transport_type = TRANSPORT_ALIASES[self.transport_type]
         if self.budget_min is not None and self.budget_max is not None:
             if self.budget_min > self.budget_max:
                 raise ValueError("budget_max must be at least budget_min")
@@ -147,12 +156,12 @@ class PlaceResponse(StrictModel):
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
     category: Category
-    is_required: bool = False
 
 
 class Place(PlaceResponse):
     # Provider metadata is kept internally for candidate selection only.
     source_category: str
+    is_required: bool = False
 
 
 # Model output contains only candidate IDs and scheduling decisions. It cannot invent
@@ -167,7 +176,7 @@ class SelectionDay(StrictModel):
 
 
 class ModelSelection(StrictModel):
-    title: str = Field(min_length=1, max_length=100)
+    title: str = Field(min_length=1, max_length=50)
     days: list[SelectionDay] = Field(min_length=1, max_length=8)
 
 
@@ -183,7 +192,7 @@ class ModelDay(StrictModel):
 
 
 class ModelItinerary(StrictModel):
-    title: str = Field(min_length=1, max_length=100)
+    title: str = Field(min_length=1, max_length=50)
     days: list[ModelDay] = Field(min_length=1, max_length=8)
 
 
@@ -202,7 +211,9 @@ class RouteStop(StrictModel):
 class WalkingInstruction(StrictModel):
     description: str
     distance_meter: int = Field(ge=0)
-    path: list[Coordinate] = Field(default_factory=list)
+    path: list[Coordinate] = Field(
+        default_factory=list, description="이 도보 안내에 해당하는 경로 부분의 좌표"
+    )
 
 
 class RouteVehicle(StrictModel):
@@ -223,10 +234,11 @@ class RouteLeg(StrictModel):
     route_name: str | None = None
     route_id: str | None = None
     bus_number: str | None = None
-    service_checked_at: datetime | None = None
-    is_night_travel: bool = False
     stops: list[RouteStop] = Field(default_factory=list)
-    path: list[Coordinate] = Field(default_factory=list)
+    path: list[Coordinate] = Field(
+        default_factory=list,
+        description="이 이동 구간을 지도에 선으로 그리는 순서 있는 좌표. 방문 장소 목록이 아님",
+    )
     instructions: list[WalkingInstruction] = Field(default_factory=list)
     vehicles: list[RouteVehicle] = Field(default_factory=list)
 
@@ -235,9 +247,11 @@ class RouteDetails(StrictModel):
     transport_type: str
     duration_minutes: int = Field(ge=0)
     distance_meter: int = Field(ge=0)
-    is_estimated: bool = True
+    is_estimated: bool = Field(
+        default=True,
+        description="서버 좌표 기반 추정이면 true, 카카오 길찾기 결과이면 false. 실제 도착 시각 보증이 아님",
+    )
     provider: Literal["KAKAO", "GEOGRAPHIC_ESTIMATE"] = "GEOGRAPHIC_ESTIMATE"
-    schedule_verified: bool = False
     map_url: str | None = None
     departure_datetime: datetime | None = None
     arrival_datetime: datetime | None = None
@@ -248,26 +262,35 @@ class RouteDetails(StrictModel):
     legs: list[RouteLeg] = Field(default_factory=list)
 
 
+class RouteSummary(StrictModel):
+    """Public route contract; detailed geometry stays inside the route provider."""
+
+    transport_type: str
+    duration_minutes: int = Field(ge=0)
+    distance_meter: int = Field(ge=0)
+
+
 class ItineraryItem(PlaceResponse):
     sequence: int
     item_type: Literal["TOUR", "RESTAURANT", "ACCOMMODATION"]
     start_time: str
     end_time: str
-    stay_minutes: int
-    travel_minutes_from_previous: int
-    route_from_previous: RouteDetails | None = None
+    route_from_previous: RouteSummary | None = Field(
+        default=None,
+        description="이전 방문 항목에서 오는 이동수단·시간·거리. 여행 첫 장소는 null. 다음날 첫 항목은 전날 마지막 항목에서 출발. CAR는 좌표 기반 추정치",
+    )
 
 
 class ItineraryDay(StrictModel):
     day_number: int
-    date: date
+    travel_date: date
     items: list[ItineraryItem]
 
 
 class RequiredPlaceResponse(StrictModel):
     provider: str
     provider_place_id: str
-    name: str
+    place_name: str
     address: str
     road_address: str
     latitude: float
@@ -284,11 +307,8 @@ class ItineraryResponse(StrictModel):
     companion_type: str
     preference: Preference
     required_places: list[RequiredPlaceResponse]
-    title: str
+    title: str = Field(min_length=1, max_length=50)
     days: list[ItineraryDay]
-    timezone: Literal["Asia/Seoul"] = "Asia/Seoul"
-    model_version: str
-    warnings: list[str]
 
 
 class ErrorResponse(StrictModel):
@@ -296,31 +316,21 @@ class ErrorResponse(StrictModel):
     data: dict | None
 
 
-class MusicCandidate(StrictModel):
-    music_id: int = Field(gt=0)
+class MusicRecommendation(StrictModel):
     title: NonEmpty
     artist: NonEmpty
-    youtube_url: HttpUrl
+    youtube_url: HttpUrl = Field(description="검증된 곡명·가수의 YouTube 검색 링크. 직접 재생 URL이 아님")
 
 
 class ItineraryStreamRequest(ItineraryRequest):
-    music_candidates: list[MusicCandidate] = Field(min_length=1, max_length=100)
-
-    @model_validator(mode="after")
-    def validate_music_candidates(self):
-        ids = [candidate.music_id for candidate in self.music_candidates]
-        if len(ids) != len(set(ids)):
-            raise ValueError("music_candidates IDs must be unique")
-        return self
-
     def itinerary_request(self) -> ItineraryRequest:
-        return ItineraryRequest.model_validate(
-            self.model_dump(exclude={"music_candidates"})
-        )
+        return ItineraryRequest.model_validate(self.model_dump())
 
 
-class MusicSelection(StrictModel):
-    music_id: int
+class MusicSuggestion(StrictModel):
+    """Internal model output only: public metadata is verified by the catalogue."""
+    title: NonEmpty
+    artist: NonEmpty
 
 
 class RecommendedItem(PlaceResponse):
@@ -329,7 +339,7 @@ class RecommendedItem(PlaceResponse):
 
 class RecommendedDay(StrictModel):
     day_number: int
-    date: date
+    travel_date: date
     items: list[RecommendedItem]
 
 
@@ -340,8 +350,7 @@ class PlacesResult(StrictModel):
 
 class Accommodation(StrictModel):
     day_number: int
-    date: date
-    search_center: Coordinate
+    travel_date: date
     place: PlaceResponse
 
 
@@ -349,21 +358,9 @@ class AccommodationsResult(StrictModel):
     accommodations: list[Accommodation]
 
 
-class RouteSegment(RouteDetails):
-    from_day_number: int
-    to_day_number: int
-    from_sequence: int
-    to_sequence: int
-    from_provider_place_id: str
-    to_provider_place_id: str
-    origin: Coordinate
-    destination: Coordinate
-
-
 class RoutesResult(StrictModel):
     itinerary: ItineraryResponse
-    routes: list[RouteSegment]
 
 
 class GenerationResult(RoutesResult):
-    music: MusicCandidate
+    music: MusicRecommendation

@@ -25,6 +25,7 @@ from ai_service.schemas import (
     ItineraryStreamRequest,
 )
 from ai_service.streaming import stream_generation
+from ai_service.transport import resolve_day_transports
 
 
 logger = logging.getLogger(__name__)
@@ -59,7 +60,7 @@ def create_app(
     async def handle_api_error(request: Request, exc: ApiError):
         data = None
         if exc.status_code == 503:
-            data = {"user_message": exc.message}
+            data = {"error_message": exc.message}
         elif exc.status_code == 422:
             data = {
                 "generation_job_id": request.state.generation_job_id,
@@ -83,7 +84,7 @@ def create_app(
             503: "ai_service_unavailable",
         }.get(exc.status_code, "http_error")
         data = (
-            {"user_message": "잠시 후 다시 시도해주세요."}
+            {"error_message": "잠시 후 다시 시도해주세요."}
             if exc.status_code == 503
             else None
         )
@@ -126,7 +127,8 @@ def create_app(
         request.state.generation_job_id = body.generation_job_id
         if not settings.openai_api_key or not settings.kakao_rest_api_key:
             raise ServiceUnavailable()
-        app.state.routes.require_configured(body.preference.transport_type)
+        for mode in set(resolve_day_transports(body).values()):
+            app.state.routes.require_configured(mode)
         try:
             async with asyncio.timeout(settings.generation_timeout_seconds):
                 return await generate_itinerary(
@@ -148,7 +150,8 @@ def create_app(
         request.state.generation_job_id = body.generation_job_id
         if not settings.openai_api_key or not settings.kakao_rest_api_key:
             raise ServiceUnavailable()
-        app.state.routes.require_configured(body.preference.transport_type)
+        for mode in set(resolve_day_transports(body).values()):
+            app.state.routes.require_configured(mode)
         return StreamingResponse(
             stream_generation(
                 body,

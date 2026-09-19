@@ -7,8 +7,9 @@ from urllib.parse import urlparse
 import httpx
 
 from ai_service.config import Settings
-from ai_service.errors import InvalidModelOutput, RoutingUnavailable
-from ai_service.places import distance_km
+from ai_service.errors import GenerationFailed, InvalidModelOutput, RoutingUnavailable
+from ai_service.places import distance_km, travel_minutes
+from ai_service.transport import base_transport
 from ai_service.schemas import (
     Coordinate,
     KST,
@@ -16,11 +17,10 @@ from ai_service.schemas import (
     PACE_ALIASES,
     RouteDetails,
     RouteLeg,
-    RouteSegment,
+    RouteSummary,
     RouteStop,
     RoutesResult,
     RouteVehicle,
-    TRANSPORT_ALIASES,
     WalkingInstruction,
 )
 
@@ -58,15 +58,6 @@ def map_url(value):
     return value
 
 
-def night_travel(start: datetime, end: datetime) -> bool:
-    cursor = start
-    while cursor <= end:
-        if cursor.hour >= 22 or cursor.hour < 6:
-            return True
-        cursor = cursor.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-    return False
-
-
 class KakaoRoutes:
     """Official Kakao REST routes; planned-date service is not verified.
 
@@ -79,7 +70,7 @@ class KakaoRoutes:
 
     def require_configured(self, transport: str) -> None:
         if (
-            TRANSPORT_ALIASES[transport] in {"PUBLIC_TRANSPORT", "WALK"}
+            base_transport(transport) in {"PUBLIC_TRANSPORT", "WALK"}
             and not self.settings.kakao_rest_api_key
         ):
             raise RoutingUnavailable()
@@ -175,17 +166,24 @@ class KakaoRoutes:
                     end=named_point(destination),
                     departure_datetime=departure,
                     arrival_datetime=arrival,
-                    is_night_travel=night_travel(departure, arrival),
                     path=path,
                     instructions=instructions,
                 )
             ],
         )
 
-    async def _transit(self, payload, origin, destination, departure):
+    async def _transit(self, payload, origin, destination, departure, restriction=None):
         options = payload["routes"]
         if not isinstance(options, list) or not options:
             raise ValueError("missing successful transit route")
+        if restriction:
+            options = [
+                r for r in options
+                if restriction in {s["properties"]["type"] for s in r["steps"]}
+                and all(s["properties"]["type"] in {"WALKING", restriction} for s in r["steps"])
+            ]
+            if not options:
+                raise GenerationFailed("요청한 이동수단만 이용하는 경로를 찾지 못했습니다. 이동수단 조건을 변경해주세요.")
         option = min(options, key=lambda r: number(r["properties"]["totalTime"]))
         if not option["steps"]:
             raise ValueError("missing transit steps")
@@ -241,7 +239,6 @@ class KakaoRoutes:
                     ]
                     if mode == "WALK"
                     else [],
-                    is_night_travel=night_travel(cursor, arrival),
                 )
             )
             cursor, previous = arrival, end
@@ -281,7 +278,20 @@ class KakaoRoutes:
             else departure.astimezone(KST)
         )
         try:
-            mode = TRANSPORT_ALIASES[transport]
+            mode = base_transport(transport)
+            if mode == "CAR":
+                minutes = travel_minutes(origin, destination, mode)
+                return RouteDetails(
+                    transport_type="CAR",
+                    provider="GEOGRAPHIC_ESTIMATE",
+                    is_estimated=True,
+                    duration_minutes=minutes,
+                    duration_seconds=minutes * 60,
+                    distance_meter=round(distance_km(origin, destination) * 1.4 * 1000),
+                    departure_datetime=departure,
+                    arrival_datetime=departure + timedelta(minutes=minutes),
+                    message="자동차 이동시간과 거리는 좌표 기반 추정치입니다. 실제 도로 경로와 교통상황은 반영되지 않았습니다.",
+                )
             if mode == "WALK":
                 return await self._walk(origin, destination, departure)
             if mode != "PUBLIC_TRANSPORT":
@@ -293,10 +303,15 @@ class KakaoRoutes:
                 "ENDNODES_NULL",
                 "EQUAL_POINTS",
             }:
+                if transport in {"BUS", "SUBWAY"}:
+                    raise GenerationFailed("요청한 이동수단의 경로를 찾지 못했습니다. 이동수단 조건을 변경해주세요.")
                 return await self._walk(origin, destination, departure, fallback=True)
             if payload["status"] != "OK":
                 raise RoutingUnavailable()
-            return await self._transit(payload, origin, destination, departure)
+            return await self._transit(
+                payload, origin, destination, departure,
+                restriction=transport if transport in {"BUS", "SUBWAY"} else None,
+            )
         except (KeyError, ValueError, TypeError, IndexError, AttributeError) as exc:
             raise RoutingUnavailable() from exc
 
@@ -325,7 +340,8 @@ async def schedule_with_routes(
     # Cache only inside this generation, with exact departure time in the key.
     cache = {}
     for minimum_stays in (False, True):
-        generated_days, routes, transfers = [], [], {}
+        generated_days, transfers = [], {}
+        routed = False
         previous = None
         try:
             for day_number, (selected, window) in enumerate(
@@ -341,33 +357,25 @@ async def schedule_with_routes(
                 for sequence, item in enumerate(selected.items, 1):
                     place = by_id[item.provider_place_id]
                     if previous is not None:
-                        previous_day, previous_sequence, origin = previous
+                        origin = previous
                         key = (
                             origin.provider_place_id,
                             place.provider_place_id,
                             cursor.isoformat(),
+                            window["route_mode"],
                         )
                         if key not in cache:
                             cache[key] = await router.route(
-                                origin, place, cursor, request.preference.transport_type
+                                origin, place, cursor, window["route_mode"]
                             )
-                        route = cache[key]
-                        routes.append(
-                            RouteSegment(
-                                **route.model_dump(),
-                                from_day_number=previous_day,
-                                to_day_number=day_number,
-                                from_sequence=previous_sequence,
-                                to_sequence=sequence,
-                                from_provider_place_id=origin.provider_place_id,
-                                to_provider_place_id=place.provider_place_id,
-                                origin=Coordinate(
-                                    latitude=origin.latitude, longitude=origin.longitude
-                                ),
-                                destination=Coordinate(
-                                    latitude=place.latitude, longitude=place.longitude
-                                ),
-                            )
+                        details = cache[key]
+                        routed |= details.provider == "KAKAO"
+                        # Explicit allowlist protects both JSON and every SSE payload
+                        # from provider path arrays and future internal-only fields.
+                        route = RouteSummary(
+                            transport_type=details.transport_type,
+                            duration_minutes=details.duration_minutes,
+                            distance_meter=details.distance_meter,
                         )
                         transfers[(day_number, sequence)] = route
                         cursor += timedelta(minutes=route.duration_minutes)
@@ -408,18 +416,14 @@ async def schedule_with_routes(
                         }
                     )
                     cursor += timedelta(minutes=stay)
-                    previous = day_number, sequence, place
+                    previous = place
                 generated_days.append({"date": selected.date, "items": items})
             generated = ModelItinerary(title=selection.title, days=generated_days)
             days = validate_itinerary(request, generated, places, routes=transfers)
             itinerary = make_itinerary_response(
-                request, generated, days, model, routed=True
+                request, generated, days, model, routed=routed
             )
-            if any(route.walking_fallback for route in routes):
-                itinerary.warnings.append(
-                    NO_TRANSIT_MESSAGE + ". 해당 구간은 도보 경로로 안내합니다."
-                )
-            return RoutesResult(itinerary=itinerary, routes=routes)
+            return RoutesResult(itinerary=itinerary)
         except InvalidModelOutput:
             if minimum_stays:
                 raise
