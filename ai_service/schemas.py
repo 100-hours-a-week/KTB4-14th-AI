@@ -6,7 +6,6 @@ import unicodedata
 from zoneinfo import ZoneInfo
 
 from pydantic import (
-    AliasChoices,
     BaseModel,
     ConfigDict,
     Field,
@@ -104,10 +103,9 @@ class Preference(StrictModel):
     transport_type: NonEmpty
     budget_min: int | None = Field(default=None, ge=0)
     budget_max: int | None = Field(default=None, ge=0)
-    budget_type: str = Field(
+    budget_currency: str = Field(
         default="KRW", pattern=r"^[A-Z]{3}$",
-        validation_alias=AliasChoices("budget_currency", "budget_type"),
-        description="스프레드시트 요청은 budget_currency. 기존 budget_type 입력도 허용하며 내부·응답은 ERD의 budget_type 사용",
+        description="스프레드시트 기준 화폐 단위. 요청·응답 모두 budget_currency 사용",
     )
     distance_preference: int | None = Field(default=None, ge=0, le=100)
     themes: list[NonEmpty] = Field(min_length=1, max_length=10)
@@ -144,8 +142,8 @@ class RequiredPlace(StrictModel):
 class ItineraryRequest(StrictModel):
     generation_job_id: int = Field(gt=0)
     client_draft_id: int | None = Field(
-        default=None, gt=0, exclude=True,
-        description="스프레드시트 요청 호환용 선택값. 초안 저장 기능을 만들지 않으며 생성 결과에는 포함하지 않음",
+        default=None, gt=0,
+        description="요청에서 전달한 값을 생성 결과에 그대로 반환",
     )
     region: Region
     duration: Duration
@@ -317,6 +315,7 @@ class RequiredPlaceResponse(StrictModel):
 
 class ItineraryResponse(StrictModel):
     generation_job_id: int
+    client_draft_id: int | None = Field(default=None, gt=0, description="요청의 client_draft_id를 그대로 반환")
     region: Region
     duration: Duration
     headcount: int

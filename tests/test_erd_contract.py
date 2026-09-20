@@ -27,17 +27,16 @@ class ErdContractTests(unittest.TestCase):
         self.assertEqual(naive.local_bounds(), utc.local_bounds())
         self.assertEqual(naive.model_dump(mode="json")["arrival_datetime"], "2026-09-19T10:00:00")
 
-    def test_budget_type_round_trip_and_spreadsheet_alias_accepted(self):
+    def test_spreadsheet_currency_and_draft_id_survive_generation(self):
         data = request().model_dump(mode="json")
-        data["preference"]["budget_type"] = "KRW"
+        data["preference"]["budget_currency"] = "USD"
+        data["client_draft_id"] = 2
         body = ItineraryRequest.model_validate(data)
         generated = schedule_selection(body, selection(), places())
         result = make_itinerary_response(body, generated, validate_itinerary(body, generated, places()), "test")
-        self.assertEqual(result.model_dump()["preference"]["budget_type"], "KRW")
-        data["preference"]["budget_currency"] = data["preference"].pop("budget_type")
-        compatible = ItineraryRequest.model_validate(data)
-        self.assertEqual(compatible.preference.budget_type, "KRW")
-        self.assertNotIn("budget_currency", compatible.model_dump()["preference"])
+        self.assertEqual(result.model_dump()["preference"]["budget_currency"], "USD")
+        self.assertEqual(result.client_draft_id, 2)
+        self.assertNotIn("budget_type", result.model_dump()["preference"])
 
     def test_required_place_name_is_preserved(self):
         body = request()
@@ -88,25 +87,27 @@ class ErdContractTests(unittest.TestCase):
             app.state.planner = planner
             headers = {"Authorization": "Bearer " + settings.api_token}
             data = request(None, "CAR").model_dump(mode="json")
+            data["client_draft_id"] = 2
             data["duration"] = {"arrival_datetime": "2026-09-19T10:00:00", "departure_datetime": "2026-09-20T18:00:00"}
             response = client.post("/internal/ai/itineraries/generate", json=data, headers=headers)
             self.assertEqual(response.status_code, 200, response.text)
             self.assertEqual(response.json()["duration"], data["duration"])
-            self.assertEqual(response.json()["preference"]["budget_type"], "KRW")
-            self.assertNotIn("budget_currency", response.text)
+            self.assertEqual(response.json()["preference"]["budget_currency"], "KRW")
+            self.assertEqual(response.json()["client_draft_id"], 2)
+            self.assertNotIn("budget_type", response.text)
             for key in ("path", "legs", "stops", "instructions", "vehicles"):
                 self.assertNotIn(f'"{key}":', response.text)
             route = response.json()["days"][0]["items"][1]["route_from_previous"]
             self.assertEqual(set(route), {"transport_type", "duration_minutes", "distance_meter"})
             self.assertEqual(response.json()["days"][0]["travel_date"], "2026-09-19")
             spec = client.get("/openapi.json").json()["components"]["schemas"]
-            self.assertIn("budget_currency", spec["Preference-Input"]["properties"])
-            self.assertIn("budget_type", spec["Preference-Output"]["properties"])
-            self.assertNotIn("budget_currency", spec["Preference-Output"]["properties"])
+            self.assertIn("budget_currency", spec["Preference"]["properties"])
+            self.assertNotIn("budget_type", spec["Preference"]["properties"])
+            self.assertIn("client_draft_id", spec["ItineraryResponse"]["properties"])
             self.assertIn("place_name", spec["RequiredPlaceResponse"]["properties"])
             self.assertEqual(spec["ItineraryResponse"]["properties"]["title"]["maxLength"], 50)
-            data["preference"]["budget_currency"] = data["preference"].pop("budget_type")
-            self.assertEqual(client.post("/internal/ai/itineraries/generate", json=data, headers=headers).status_code, 200)
+            data["preference"]["budget_type"] = data["preference"].pop("budget_currency")
+            self.assertEqual(client.post("/internal/ai/itineraries/generate", json=data, headers=headers).status_code, 400)
 
 
 if __name__ == "__main__":

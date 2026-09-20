@@ -71,7 +71,7 @@ INFO:     Uvicorn running on http://127.0.0.1:8000
 | 여행 조건 | `/internal/ai/itineraries/generate` 또는 `/internal/ai/itineraries/generate/stream` | [여행 요청](../문서/참고자료/스프레드시트_여행요청.json) |
 | 음악 후보 | `/internal/ai/music/recommend` | [음악 요청](../문서/참고자료/스프레드시트_음악요청.json) |
 
-- 여행 요청의 `client_draft_id`는 선택값으로 받으며 초안을 저장하거나 응답에 추가하지 않습니다. `budget_currency`는 내부·응답의 `budget_type`으로 연결합니다. 기존 `budget_type` 입력도 가능하지만 둘을 동시에 보내지는 않습니다.
+- 여행 요청과 응답 모두 `budget_currency`를 사용합니다. `budget_type`으로 바꾸지 않습니다. 요청의 `client_draft_id`도 일반 생성 응답과 스트림 최종 `data.itinerary`에 그대로 반환합니다. 생략하면 `null`입니다.
 - 음악 API는 전달된 `candidates` 중 한 곡을 선택하고 `travel_plan_id`, `music_id`, `title`, `artist`, `youtube_url`을 `message`, `data` 응답으로 반환합니다. 후보가 한 곡이면 그대로 반환합니다. 예시 URL의 `v=example`은 자리표시자이므로 실제 후보 URL로 교체하세요.
 - 음악 후보 요청은 여행 생성·스트림 API에 보내지 않습니다. 아래 스트림의 기존 음악 추천 방식과 별도입니다.
 

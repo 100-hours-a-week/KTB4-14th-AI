@@ -27,11 +27,12 @@ class SpreadsheetContractTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         received = generate.call_args.args[0]
         self.assertEqual(received.client_draft_id, 1)
-        self.assertEqual(received.preference.budget_type, "KRW")
+        self.assertEqual(received.preference.budget_currency, "KRW")
         self.assertEqual(received.required_places[0].provider_place_id, "26338954")
-        self.assertNotIn("client_draft_id", response.json())
-        self.assertEqual(response.json()["preference"]["budget_type"], "KRW")
-        self.assertNotIn("budget_currency", response.json()["preference"])
+        self.assertEqual(response.json()["client_draft_id"], 1)
+        for key, value in ITINERARY_REQUEST_EXAMPLE.items():
+            self.assertEqual(response.json()[key], value)
+        self.assertNotIn("budget_type", response.json()["preference"])
 
     def test_exact_trip_request_also_accepted_by_stream(self):
         settings = Settings(api_token="test-only", openai_api_key="test", kakao_rest_api_key="test")
@@ -48,7 +49,11 @@ class SpreadsheetContractTests(unittest.TestCase):
             response = client.post("/internal/ai/itineraries/generate/stream", json=ITINERARY_REQUEST_EXAMPLE, headers=HEADERS)
         self.assertEqual(response.status_code, 200)
         self.assertIn("event: complete\n", response.text)
-        self.assertNotIn("client_draft_id", response.text)
+        events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
+        itinerary = events[-1]["data"]["itinerary"]
+        for key, value in ITINERARY_REQUEST_EXAMPLE.items():
+            self.assertEqual(itinerary[key], value)
+        self.assertNotIn("budget_type", response.text)
 
     def test_both_currency_names_are_not_silently_combined(self):
         data = copy.deepcopy(ITINERARY_REQUEST_EXAMPLE)

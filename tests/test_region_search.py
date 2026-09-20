@@ -18,7 +18,7 @@ def busan_request():
         "duration": {"arrival_datetime": "2026-10-01T10:00:00", "departure_datetime": "2026-10-03T18:00:00"},
         "headcount": 2, "companion_type": "FRIENDS",
         "preference": {"pace_type": "BALANCED", "transport_type": "PUBLIC_TRANSPORT",
-                       "budget_min": 200000, "budget_max": 500000, "budget_type": "KRW",
+                       "budget_min": 200000, "budget_max": 500000, "budget_currency": "KRW",
                        "distance_preference": 50, "themes": ["CULTURE"], "foods": ["CAFE"]},
         "required_places": [],
     })
