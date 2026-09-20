@@ -27,7 +27,7 @@ class ErdContractTests(unittest.TestCase):
         self.assertEqual(naive.local_bounds(), utc.local_bounds())
         self.assertEqual(naive.model_dump(mode="json")["arrival_datetime"], "2026-09-19T10:00:00")
 
-    def test_budget_type_round_trip_and_legacy_key_rejected(self):
+    def test_budget_type_round_trip_and_spreadsheet_alias_accepted(self):
         data = request().model_dump(mode="json")
         data["preference"]["budget_type"] = "KRW"
         body = ItineraryRequest.model_validate(data)
@@ -35,8 +35,9 @@ class ErdContractTests(unittest.TestCase):
         result = make_itinerary_response(body, generated, validate_itinerary(body, generated, places()), "test")
         self.assertEqual(result.model_dump()["preference"]["budget_type"], "KRW")
         data["preference"]["budget_currency"] = data["preference"].pop("budget_type")
-        with self.assertRaises(ValidationError):
-            ItineraryRequest.model_validate(data)
+        compatible = ItineraryRequest.model_validate(data)
+        self.assertEqual(compatible.preference.budget_type, "KRW")
+        self.assertNotIn("budget_currency", compatible.model_dump()["preference"])
 
     def test_required_place_name_is_preserved(self):
         body = request()
@@ -99,12 +100,13 @@ class ErdContractTests(unittest.TestCase):
             self.assertEqual(set(route), {"transport_type", "duration_minutes", "distance_meter"})
             self.assertEqual(response.json()["days"][0]["travel_date"], "2026-09-19")
             spec = client.get("/openapi.json").json()["components"]["schemas"]
-            self.assertIn("budget_type", spec["Preference"]["properties"])
-            self.assertNotIn("budget_currency", spec["Preference"]["properties"])
+            self.assertIn("budget_currency", spec["Preference-Input"]["properties"])
+            self.assertIn("budget_type", spec["Preference-Output"]["properties"])
+            self.assertNotIn("budget_currency", spec["Preference-Output"]["properties"])
             self.assertIn("place_name", spec["RequiredPlaceResponse"]["properties"])
             self.assertEqual(spec["ItineraryResponse"]["properties"]["title"]["maxLength"], 50)
             data["preference"]["budget_currency"] = data["preference"].pop("budget_type")
-            self.assertEqual(client.post("/internal/ai/itineraries/generate", json=data, headers=headers).status_code, 400)
+            self.assertEqual(client.post("/internal/ai/itineraries/generate", json=data, headers=headers).status_code, 200)
 
 
 if __name__ == "__main__":

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from typing import Annotated, Literal
+import unicodedata
 from zoneinfo import ZoneInfo
 
 from pydantic import (
+    AliasChoices,
     BaseModel,
     ConfigDict,
     Field,
@@ -53,6 +55,12 @@ class Region(StrictModel):
     region_id: int = Field(gt=0)
     full_name: NonEmpty
 
+    @field_validator("full_name", mode="before")
+    @classmethod
+    def normalize_full_name(cls, value):
+        # Canonically equivalent Hangul must produce the same provider search.
+        return unicodedata.normalize("NFC", value) if isinstance(value, str) else value
+
 
 class Duration(StrictModel):
     arrival_datetime: datetime = Field(
@@ -96,7 +104,11 @@ class Preference(StrictModel):
     transport_type: NonEmpty
     budget_min: int | None = Field(default=None, ge=0)
     budget_max: int | None = Field(default=None, ge=0)
-    budget_type: str = Field(default="KRW", pattern=r"^[A-Z]{3}$")
+    budget_type: str = Field(
+        default="KRW", pattern=r"^[A-Z]{3}$",
+        validation_alias=AliasChoices("budget_currency", "budget_type"),
+        description="스프레드시트 요청은 budget_currency. 기존 budget_type 입력도 허용하며 내부·응답은 ERD의 budget_type 사용",
+    )
     distance_preference: int | None = Field(default=None, ge=0, le=100)
     themes: list[NonEmpty] = Field(min_length=1, max_length=10)
     foods: list[NonEmpty] = Field(default_factory=list, max_length=10)
@@ -131,6 +143,10 @@ class RequiredPlace(StrictModel):
 
 class ItineraryRequest(StrictModel):
     generation_job_id: int = Field(gt=0)
+    client_draft_id: int | None = Field(
+        default=None, gt=0, exclude=True,
+        description="스프레드시트 요청 호환용 선택값. 초안 저장 기능을 만들지 않으며 생성 결과에는 포함하지 않음",
+    )
     region: Region
     duration: Duration
     headcount: int = Field(ge=1, le=30)
@@ -320,6 +336,46 @@ class MusicRecommendation(StrictModel):
     title: NonEmpty
     artist: NonEmpty
     youtube_url: HttpUrl = Field(description="검증된 곡명·가수의 YouTube 검색 링크. 직접 재생 URL이 아님")
+
+
+class MusicCandidate(StrictModel):
+    music_id: int = Field(gt=0)
+    title: NonEmpty
+    artist: NonEmpty
+    youtube_url: HttpUrl
+
+
+class MusicPreference(StrictModel):
+    themes: list[NonEmpty] = Field(min_length=1, max_length=10)
+
+
+class MusicRequest(StrictModel):
+    travel_plan_id: int = Field(gt=0)
+    region: Region
+    duration: Duration
+    preference: MusicPreference
+    candidates: list[MusicCandidate] = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def unique_candidates(self):
+        ids = [candidate.music_id for candidate in self.candidates]
+        if len(ids) != len(set(ids)):
+            raise ValueError("candidates music_id must be unique")
+        return self
+
+
+class MusicSelection(StrictModel):
+    """Internal model selects an ID; metadata always comes from the request."""
+    music_id: int
+
+
+class SelectedMusic(MusicCandidate):
+    travel_plan_id: int
+
+
+class MusicResponse(StrictModel):
+    message: Literal["ai_music_recommended"] = "ai_music_recommended"
+    data: SelectedMusic
 
 
 class ItineraryStreamRequest(ItineraryRequest):

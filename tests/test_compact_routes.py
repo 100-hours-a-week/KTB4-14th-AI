@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from ai_service.main import create_app
 from ai_service.pipeline import recommend_accommodations
 from ai_service.routing import KakaoRoutes
-from ai_service.schemas import ItineraryStreamRequest, MusicRecommendation
+from ai_service.schemas import GenerationResult, ItineraryStreamRequest, MusicRecommendation
 from ai_service.streaming import stream_generation
 from test_day_transport import places, request, selection, transit_payload
 
@@ -102,6 +102,14 @@ class CompactRoutesTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_full_stream_completes_without_detailed_coordinates(self):
         events = await self.events(self.places)
+        self.assertEqual(events[:-1], [
+            {"stage": stage, "status": status}
+            for stage in ("PLACES", "ACCOMMODATIONS", "ROUTES", "MUSIC")
+            for status in ("STARTED", "COMPLETED")
+        ])
+        self.assertEqual(set(events[-1]), {"generation_job_id", "stage", "status", "data"})
+        self.assertEqual(events[-1]["generation_job_id"], self.body.generation_job_id)
+        self.assertEqual(sum("data" in event for event in events), 1)
         self.assertEqual([e["stage"] for e in events if e["status"] == "COMPLETED"],
                          ["PLACES", "ACCOMMODATIONS", "ROUTES", "MUSIC", "COMPLETE"])
         self.assertEqual(events[-1]["stage"], "COMPLETE")
@@ -127,6 +135,7 @@ class CompactRoutesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events[-1]["status"], "FAILED")
         self.assertEqual(events[-1]["message"], "ai_itinerary_generation_failed")
         self.assertEqual(set(events[-1]["data"]), {"error_message"})
+        self.assertTrue(all(set(event) == {"stage", "status"} for event in events[:-1]))
         self.assertFalse(any(e["stage"] in {"ROUTES", "COMPLETE"} for e in events))
 
     async def test_music_error_uses_compact_error_contract(self):
@@ -144,6 +153,7 @@ class CompactRoutesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(final["message"], "ai_music_recommendation_failed")
         self.assertEqual(set(final), {"generation_job_id", "stage", "status", "message", "data"})
         self.assertEqual(set(final["data"]), {"error_message"})
+        self.assertTrue(all(set(event) == {"stage", "status"} for event in events[:-1]))
         self.assertFalse(all_keys(events) & FORBIDDEN)
 
     def test_http_stream_uses_same_compact_schema_and_header_trace_id(self):
@@ -162,6 +172,32 @@ class CompactRoutesTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(events[-1]["stage"], "COMPLETE")
             self.assertFalse(all_keys(events) & FORBIDDEN)
             self.assertEqual(set(events[-1]["data"]), {"itinerary", "music"})
+            self.assertEqual(len(events), 9)
+            self.assertTrue(all(set(event) == {"stage", "status"} for event in events[:-1]))
+            self.assertEqual(response.text.count("event: complete\n"), 1)
+            self.assertEqual(response.text.count('"itinerary":'), 1)
+            self.assertEqual(response.text.count('"music":'), 1)
+
+    def test_openapi_documents_status_only_stages_and_final_result(self):
+        spec = create_app(settings=Settings()).openapi()
+        response = spec["paths"]["/internal/ai/itineraries/generate/stream"]["post"]["responses"]["200"]
+        self.assertIn("stage, status만", response["description"])
+        content = response["content"]["text/event-stream"]
+        self.assertEqual(content["schema"]["type"], "string")
+        examples = content["examples"]
+        for name in ("stage_started", "stage_completed", "complete", "error"):
+            wire = examples[name]["value"]
+            self.assertIn(f"event: {name}\n", wire)
+            self.assertTrue(wire.endswith("\n\n"))
+            payload = json.loads(wire.split("data: ", 1)[1])
+            if name.startswith("stage_"):
+                self.assertEqual(set(payload), {"stage", "status"})
+            elif name == "complete":
+                self.assertEqual(set(payload), {"generation_job_id", "stage", "status", "data"})
+                GenerationResult.model_validate(payload["data"])
+            else:
+                self.assertEqual(set(payload), {"generation_job_id", "stage", "status", "message", "data"})
+                self.assertEqual(set(payload["data"]), {"error_message"})
 
     def test_openapi_has_only_compact_route_properties(self):
         schemas = create_app(settings=Settings()).openapi()["components"]["schemas"]
@@ -170,5 +206,7 @@ class CompactRoutesTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(set(schemas["RouteSummary"]["properties"]) & FORBIDDEN)
         self.assertEqual(set(schemas["RouteSummary"]["properties"]),
                          {"transport_type", "duration_minutes", "distance_meter"})
-        for schema in schemas.values():
+        for name, schema in schemas.items():
+            if name in {"MusicCandidate", "SelectedMusic"}:
+                continue  # Separate spreadsheet music API returns the backend's candidate ID.
             self.assertFalse(set(schema.get("properties", {})) & FORBIDDEN)

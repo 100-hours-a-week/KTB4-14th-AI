@@ -58,17 +58,17 @@ async def stream_generation(
                 if status == "COMPLETED"
                 else "stage_started"
             )
+            # Keep intermediate results inside the pipeline; serialize once at COMPLETE.
+            payload = {"stage": stage, "status": status}
+            if stage == "COMPLETE":
+                payload.update(
+                    **identity,
+                    data=result.model_dump(mode="json") if result is not None else None,
+                )
             yield encode_event(
                 event,
                 sequence,
-                {
-                    **identity,
-                    "stage": stage,
-                    "status": status,
-                    "data": result.model_dump(mode="json")
-                    if result is not None
-                    else None,
-                },
+                payload,
             )
     except asyncio.CancelledError:
         raise  # Client disconnected; cancellation closes in-flight HTTP requests.

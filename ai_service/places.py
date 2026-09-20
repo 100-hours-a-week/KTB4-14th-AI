@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import math
 import re
+import unicodedata
 
 import httpx
 from pydantic import ValidationError
@@ -93,7 +94,9 @@ def region_tokens(value: str) -> set[str]:
         "충청남도": "충남",
     }
     return {
-        aliases.get(token, token) for token in re.split(r"\s+", value.strip()) if token
+        aliases.get(token, token)
+        for token in re.split(r"\s+", unicodedata.normalize("NFC", value).strip())
+        if token
     }
 
 

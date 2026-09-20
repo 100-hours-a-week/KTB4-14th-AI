@@ -64,8 +64,20 @@ INFO:     Uvicorn running on http://127.0.0.1:8000
 
 ## 현재 요청과 검증
 
+스프레드시트의 두 요청은 아래 API에 각각 보냅니다. JSON 파일 내용을 Swagger의 Request body에 복사할 수 있습니다.
+
+| 요청 | POST 경로 | 복사용 파일 |
+| --- | --- | --- |
+| 여행 조건 | `/internal/ai/itineraries/generate` 또는 `/internal/ai/itineraries/generate/stream` | [여행 요청](../문서/참고자료/스프레드시트_여행요청.json) |
+| 음악 후보 | `/internal/ai/music/recommend` | [음악 요청](../문서/참고자료/스프레드시트_음악요청.json) |
+
+- 여행 요청의 `client_draft_id`는 선택값으로 받으며 초안을 저장하거나 응답에 추가하지 않습니다. `budget_currency`는 내부·응답의 `budget_type`으로 연결합니다. 기존 `budget_type` 입력도 가능하지만 둘을 동시에 보내지는 않습니다.
+- 음악 API는 전달된 `candidates` 중 한 곡을 선택하고 `travel_plan_id`, `music_id`, `title`, `artist`, `youtube_url`을 `message`, `data` 응답으로 반환합니다. 후보가 한 곡이면 그대로 반환합니다. 예시 URL의 `v=example`은 자리표시자이므로 실제 후보 URL로 교체하세요.
+- 음악 후보 요청은 여행 생성·스트림 API에 보내지 않습니다. 아래 스트림의 기존 음악 추천 방식과 별도입니다.
+
 - 음악까지 받으려면 `/internal/ai/itineraries/generate/stream`을 사용합니다. `music_candidates` 없이 기존 여행 조건만 보냅니다.
-- 음악은 고정 후보 없이 추천한 곡을 공개 카탈로그에서 확인합니다. `title`, `artist`, `youtube_url`만 반환하며 URL은 추가 키가 필요 없는 YouTube 검색 링크입니다. 비어 있던 `music_id`는 제거했습니다.
+- SSE 중간 네 단계는 `stage`, `status`만 전달합니다. 일정·음악은 마지막 `event: complete`의 `data.itinerary`, `data.music`에서 한 번만 받습니다. 기존 `error` 이벤트 형식은 유지합니다.
+- 스트림의 음악은 고정 후보 없이 추천한 곡을 공개 카탈로그에서 확인합니다. `title`, `artist`, `youtube_url`만 반환하며 URL은 추가 키가 필요 없는 YouTube 검색 링크입니다. 스트림 음악에는 `music_id`가 없습니다.
 - `extra_request`의 `1일차 렌터카, 2~3일차 대중교통`은 날짜별 실제 경로 계산에 적용합니다. CAR 시간·거리는 기존 좌표 기반 추정입니다.
 - 한국시간은 `2026-09-19T10:00:00`으로 입력할 수 있습니다. `Z`나 `+09:00`을 붙일 필요가 없습니다.
 - 날짜는 ERD의 `travel_date`를 사용합니다. 이동정보는 각 항목의 `route_from_previous`에 이동수단·시간·거리만 반환하며, 별도 `routes` 목록은 없습니다. 출발·도착 좌표는 이전·현재 방문 항목에서 읽습니다.
