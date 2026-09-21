@@ -103,9 +103,9 @@ class Preference(StrictModel):
     transport_type: NonEmpty
     budget_min: int | None = Field(default=None, ge=0)
     budget_max: int | None = Field(default=None, ge=0)
-    budget_currency: str = Field(
+    budget_type: str = Field(
         default="KRW", pattern=r"^[A-Z]{3}$",
-        description="스프레드시트 기준 화폐 단위. 요청·응답 모두 budget_currency 사용",
+        description="스프레드시트 기준 화폐 단위. 요청·응답 모두 budget_type 사용",
     )
     distance_preference: int | None = Field(default=None, ge=0, le=100)
     themes: list[NonEmpty] = Field(min_length=1, max_length=10)
@@ -141,10 +141,6 @@ class RequiredPlace(StrictModel):
 
 class ItineraryRequest(StrictModel):
     generation_job_id: int = Field(gt=0)
-    client_draft_id: int | None = Field(
-        default=None, gt=0,
-        description="요청에서 전달한 값을 생성 결과에 그대로 반환",
-    )
     region: Region
     duration: Duration
     headcount: int = Field(ge=1, le=30)
@@ -315,7 +311,6 @@ class RequiredPlaceResponse(StrictModel):
 
 class ItineraryResponse(StrictModel):
     generation_job_id: int
-    client_draft_id: int | None = Field(default=None, gt=0, description="요청의 client_draft_id를 그대로 반환")
     region: Region
     duration: Duration
     headcount: int

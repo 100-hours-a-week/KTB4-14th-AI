@@ -2,14 +2,13 @@
 
 ITINERARY_REQUEST_EXAMPLE = {
     "generation_job_id": 10,
-    "client_draft_id": 1,
     "region": {"region_id": 1, "full_name": "제주특별자치도 서귀포시"},
     "duration": {"arrival_datetime": "2026-08-27T13:00:00", "departure_datetime": "2026-08-29T18:00:00"},
     "headcount": 2,
     "companion_type": "COUPLE",
     "preference": {
         "pace_type": "RELAXED", "transport_type": "PUBLIC_TRANSPORT",
-        "budget_min": 300000, "budget_max": 800000, "budget_currency": "KRW",
+        "budget_min": 300000, "budget_max": 800000, "budget_type": "KRW",
         "distance_preference": 70, "themes": ["NATURE", "FOOD"],
         "foods": ["KOREAN", "JAPANESE"], "extra_request": "너무 빡빡하지 않게 추천해주세요.",
     },

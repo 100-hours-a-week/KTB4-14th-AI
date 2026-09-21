@@ -26,19 +26,19 @@ class SpreadsheetContractTests(unittest.TestCase):
             response = client.post("/internal/ai/itineraries/generate", json=ITINERARY_REQUEST_EXAMPLE, headers=HEADERS)
         self.assertEqual(response.status_code, 200, response.text)
         received = generate.call_args.args[0]
-        self.assertEqual(received.client_draft_id, 1)
-        self.assertEqual(received.preference.budget_currency, "KRW")
+        self.assertNotIn("client_draft_id", received.model_dump())
+        self.assertEqual(received.preference.budget_type, "KRW")
         self.assertEqual(received.required_places[0].provider_place_id, "26338954")
-        self.assertEqual(response.json()["client_draft_id"], 1)
+        self.assertNotIn("client_draft_id", response.json())
         for key, value in ITINERARY_REQUEST_EXAMPLE.items():
             self.assertEqual(response.json()[key], value)
-        self.assertNotIn("budget_type", response.json()["preference"])
+        self.assertNotIn("budget_currency", response.json()["preference"])
 
     def test_exact_trip_request_also_accepted_by_stream(self):
         settings = Settings(api_token="test-only", openai_api_key="test", kakao_rest_api_key="test")
 
         async def pipeline(body, *args):
-            self.assertEqual(body.client_draft_id, 1)
+            self.assertNotIn("client_draft_id", body.model_dump())
             itinerary = ItineraryResponse(**body.itinerary_request().model_dump(), title="테스트 일정", days=[])
             yield "PLACES", "STARTED", None
             yield "COMPLETE", "COMPLETED", GenerationResult(itinerary=itinerary, music={
@@ -53,11 +53,21 @@ class SpreadsheetContractTests(unittest.TestCase):
         itinerary = events[-1]["data"]["itinerary"]
         for key, value in ITINERARY_REQUEST_EXAMPLE.items():
             self.assertEqual(itinerary[key], value)
-        self.assertNotIn("budget_type", response.text)
+        self.assertNotIn("budget_currency", response.text)
+        self.assertNotIn("client_draft_id", response.text)
+
+    def test_removed_draft_field_rejected_and_absent_from_openapi(self):
+        body = {**ITINERARY_REQUEST_EXAMPLE, "client_draft_id": 1}
+        with TestClient(create_app(settings=Settings(api_token="test-only"))) as client:
+            for endpoint in ("/internal/ai/itineraries/generate", "/internal/ai/itineraries/generate/stream"):
+                with self.subTest(endpoint=endpoint):
+                    response = client.post(endpoint, json=body, headers=HEADERS)
+                    self.assertEqual(response.status_code, 400, response.text)
+            self.assertNotIn("client_draft_id", client.get("/openapi.json").text)
 
     def test_both_currency_names_are_not_silently_combined(self):
         data = copy.deepcopy(ITINERARY_REQUEST_EXAMPLE)
-        data["preference"]["budget_type"] = "USD"
+        data["preference"]["budget_currency"] = "USD"
         with self.assertRaises(ValidationError):
             ItineraryRequest.model_validate(data)
 

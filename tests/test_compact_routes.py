@@ -81,7 +81,6 @@ class CompactRoutesTests(unittest.IsolatedAsyncioTestCase):
         self.places = PlaceClient()
         self.body = ItineraryStreamRequest.model_validate({
             **request().model_dump(mode="json"),
-            "client_draft_id": 2,
         })
 
     async def asyncTearDown(self):
@@ -117,9 +116,9 @@ class CompactRoutesTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(all_keys(events) & FORBIDDEN)
         self.assertGreater(self.provider_point_count, 1000)
         final = events[-1]["data"]
-        self.assertEqual(final["itinerary"]["client_draft_id"], 2)
-        self.assertEqual(final["itinerary"]["preference"]["budget_currency"], "KRW")
-        self.assertNotIn("budget_type", final["itinerary"]["preference"])
+        self.assertNotIn("client_draft_id", all_keys(events))
+        self.assertEqual(final["itinerary"]["preference"]["budget_type"], "KRW")
+        self.assertNotIn("budget_currency", final["itinerary"]["preference"])
         self.assertEqual(set(final), {"itinerary", "music"})
         self.assertEqual(set(final["music"]), {"title", "artist", "youtube_url"})
         self.assertEqual(final["music"]["title"], "테스트 음악")

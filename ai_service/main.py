@@ -64,12 +64,12 @@ STREAM_RESPONSE = {
                         "generation_job_id": 1, "stage": "COMPLETE", "status": "COMPLETED",
                         "data": {
                             "itinerary": {
-                                "generation_job_id": 1, "client_draft_id": 1,
+                                "generation_job_id": 1,
                                 "region": {"region_id": 2, "full_name": "부산광역시"},
                                 "duration": {"arrival_datetime": "2026-09-19T10:00:00", "departure_datetime": "2026-09-20T18:00:00"},
                                 "headcount": 2, "companion_type": "COUPLE",
                                 "preference": {"pace_type": "RELAXED", "transport_type": "PUBLIC_TRANSPORT",
-                                               "budget_currency": "KRW", "themes": ["NATURE", "FOOD"], "foods": [],
+                                               "budget_type": "KRW", "themes": ["NATURE", "FOOD"], "foods": [],
                                                "budget_min": None, "budget_max": None, "distance_preference": None, "extra_request": None},
                                 "required_places": [], "title": "부산 여유로운 여행 일정", "days": [],
                             },
