@@ -12,6 +12,7 @@ from pydantic import (
     HttpUrl,
     field_validator,
     model_validator,
+    model_serializer,
 )
 
 
@@ -108,7 +109,7 @@ class Preference(StrictModel):
         description="스프레드시트 기준 화폐 단위. 요청·응답 모두 budget_type 사용",
     )
     distance_preference: int | None = Field(default=None, ge=0, le=100)
-    themes: list[NonEmpty] = Field(min_length=1, max_length=10)
+    themes: list[NonEmpty] = Field(default_factory=list, max_length=10)
     foods: list[NonEmpty] = Field(default_factory=list, max_length=10)
     extra_request: str | None = Field(default=None, max_length=2000)
 
@@ -131,16 +132,19 @@ class RequiredPlace(StrictModel):
     provider: Literal["KAKAO"]
     provider_place_id: NonEmpty
     place_name: NonEmpty
-    address: NonEmpty
+    address: str = Field(default="", max_length=500)
     road_address: str = Field(default="", max_length=500)
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
-    category: NonEmpty
+    category: str = Field(default="", max_length=500)
     order: int = Field(ge=1)
 
 
 class ItineraryRequest(StrictModel):
-    generation_job_id: int = Field(gt=0)
+    """Internal generation context; HTTP requests use TravelGenerationRequest."""
+
+    generation_job_id: int | None = Field(default=None, gt=0)
+    travel_plan_id: int | None = Field(default=None, gt=0)
     region: Region
     duration: Duration
     headcount: int = Field(ge=1, le=30)
@@ -155,6 +159,67 @@ class ItineraryRequest(StrictModel):
         if len(set(ids)) != len(ids) or len(set(orders)) != len(orders):
             raise ValueError("required_places IDs and orders must be unique")
         return self
+
+
+class TravelGenerationPreference(Preference):
+    budget_type: str = Field(pattern=r"^[A-Z]{3}$")
+    distance_preference: int = Field(ge=0, le=100)
+    themes: list[NonEmpty] = Field(max_length=3)
+
+
+class BackendPlaceContext(StrictModel):
+    provider: Literal["KAKAO"]
+    provider_place_id: NonEmpty
+    place_name: NonEmpty | None = None
+    address: str | None = Field(default=None, max_length=500)
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+    place_type: Literal["TOURISM", "RESTAURANT", "ACCOMMODATION"] = "TOURISM"
+    order: int | None = Field(default=None, ge=1)
+
+
+class TravelGenerationRequest(Duration):
+    """Matches feature-travel's AiTravelGenerationRequest, not the frontend DTO."""
+
+    travel_plan_id: int = Field(gt=0)
+    region_id: int = Field(gt=0)
+    region_name: NonEmpty
+    headcount: int = Field(ge=1, le=30)
+    companion_type: NonEmpty
+    preference: TravelGenerationPreference
+    required_places: list[BackendPlaceContext] = Field(default_factory=list, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_required_places(self):
+        ids = [p.provider_place_id for p in self.required_places]
+        orders = [p.order if p.order is not None else i for i, p in enumerate(self.required_places, 1)]
+        if len(set(ids)) != len(ids) or len(set(orders)) != len(orders):
+            raise ValueError("required_places IDs and orders must be unique")
+        return self
+
+    def generation_context(self) -> ItineraryStreamRequest:
+        from ai_service.errors import GenerationFailed
+
+        places = []
+        for index, place in enumerate(self.required_places, 1):
+            if place.place_name is None or place.latitude is None or place.longitude is None:
+                raise GenerationFailed("필수 장소의 장소명·위도·경도가 없습니다. 백엔드에서 재생성 장소 상세를 복구해 전달해 주세요.")
+            places.append(RequiredPlace(
+                provider=place.provider, provider_place_id=place.provider_place_id,
+                place_name=place.place_name, address=place.address or "",
+                latitude=place.latitude, longitude=place.longitude,
+                category={"TOURISM": "관광", "RESTAURANT": "식당", "ACCOMMODATION": "숙소"}[place.place_type],
+                order=place.order if place.order is not None else index,
+            ))
+        return ItineraryStreamRequest(
+            travel_plan_id=self.travel_plan_id,
+            region=Region(region_id=self.region_id, full_name=self.region_name),
+            duration=Duration(arrival_datetime=self.arrival_datetime, departure_datetime=self.departure_datetime),
+            headcount=self.headcount,
+            companion_type=self.companion_type,
+            preference=self.preference,
+            required_places=places,
+        )
 
 
 class PlaceResponse(StrictModel):
@@ -272,12 +337,37 @@ class RouteDetails(StrictModel):
     legs: list[RouteLeg] = Field(default_factory=list)
 
 
+class TransitStopSummary(StrictModel):
+    name: NonEmpty
+
+
+class TransitLegSummary(StrictModel):
+    mode: Literal["BUS", "SUBWAY", "TRAIN", "EXPRESSBUS", "AIRPLANE", "FERRY"]
+    line_name: NonEmpty
+    vehicle_number: str | None = None
+    start: TransitStopSummary
+    end: TransitStopSummary
+
+
 class RouteSummary(StrictModel):
     """Public route contract; detailed geometry stays inside the route provider."""
 
     transport_type: str
     duration_minutes: int = Field(ge=0)
     distance_meter: int = Field(ge=0)
+    line_name: str | None = Field(default=None, description="대중교통 탑승 구간이 하나일 때의 노선명. 환승은 legs 순서 참조")
+    vehicle_number: str | None = Field(default=None, description="대중교통 탑승 구간이 하나일 때의 버스 번호")
+    legs: list[TransitLegSummary] = Field(default_factory=list, description="탑승 순서의 노선·버스 번호·승하차 정류장/역. 상세 좌표와 전체 정류장 목록은 제외")
+
+    @model_serializer(mode="wrap")
+    def serialize_summary(self, handler):
+        data = handler(self)
+        for key in ("line_name", "vehicle_number"):
+            if data[key] is None:
+                data.pop(key)
+        if not data["legs"]:
+            data.pop("legs")
+        return data
 
 
 class ItineraryItem(PlaceResponse):
@@ -287,7 +377,7 @@ class ItineraryItem(PlaceResponse):
     end_time: str
     route_from_previous: RouteSummary | None = Field(
         default=None,
-        description="이전 방문 항목에서 오는 이동수단·시간·거리. 여행 첫 장소는 null. 다음날 첫 항목은 전날 마지막 항목에서 출발. CAR는 좌표 기반 추정치",
+        description="이전 방문 항목에서 오는 이동수단·시간·거리·대중교통 탑승 안내. 여행 첫 장소는 null. 다음날 첫 항목은 전날 마지막 항목에서 출발. CAR는 좌표 기반 추정치",
     )
 
 
@@ -310,7 +400,8 @@ class RequiredPlaceResponse(StrictModel):
 
 
 class ItineraryResponse(StrictModel):
-    generation_job_id: int
+    generation_job_id: int | None = None
+    travel_plan_id: int | None = None
     region: Region
     duration: Duration
     headcount: int

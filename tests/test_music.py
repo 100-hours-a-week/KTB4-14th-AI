@@ -109,10 +109,10 @@ class MusicContractTests(unittest.TestCase):
         self.assertEqual(ItineraryStreamRequest.model_validate(data).itinerary_request(), request())
         settings = Settings(api_token="test-only")
         with TestClient(create_app(settings=settings)) as client:
-            schema = client.get("/openapi.json").json()["components"]["schemas"]["ItineraryStreamRequest"]
+            schema = client.get("/openapi.json").json()["components"]["schemas"]["TravelGenerationRequest"]
             self.assertNotIn("music_candidates", schema["properties"])
             data["music_candidates"] = []
-            response = client.post("/internal/ai/itineraries/generate/stream", json=data,
+            response = client.post("/api/ai/v1/itinerary-jobs/stream", json=data,
                                    headers={"Authorization": "Bearer test-only"})
             self.assertEqual(response.status_code, 400)
 

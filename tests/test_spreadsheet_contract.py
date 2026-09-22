@@ -10,7 +10,7 @@ from pydantic import ValidationError
 from ai_service.api_examples import ITINERARY_REQUEST_EXAMPLE, MUSIC_REQUEST_EXAMPLE
 from ai_service.config import Settings
 from ai_service.main import create_app
-from ai_service.schemas import GenerationResult, ItineraryRequest, ItineraryResponse, ItineraryStreamRequest, MusicRequest
+from ai_service.schemas import GenerationResult, ItineraryRequest, ItineraryResponse, ItineraryStreamRequest, MusicRequest, TravelGenerationRequest
 
 
 HEADERS = {"Authorization": "Bearer test-only"}
@@ -19,7 +19,7 @@ HEADERS = {"Authorization": "Bearer test-only"}
 class SpreadsheetContractTests(unittest.TestCase):
     def test_exact_trip_request_reaches_generator_without_adding_response_fields(self):
         settings = Settings(api_token="test-only", openai_api_key="test", kakao_rest_api_key="test")
-        body = ItineraryRequest.model_validate(ITINERARY_REQUEST_EXAMPLE)
+        body = TravelGenerationRequest.model_validate(ITINERARY_REQUEST_EXAMPLE).generation_context()
         result = ItineraryResponse(**body.model_dump(), title="테스트 일정", days=[])
         generate = AsyncMock(return_value=result)
         with patch("ai_service.main.generate_itinerary", generate), TestClient(create_app(settings=settings)) as client:
@@ -30,8 +30,9 @@ class SpreadsheetContractTests(unittest.TestCase):
         self.assertEqual(received.preference.budget_type, "KRW")
         self.assertEqual(received.required_places[0].provider_place_id, "26338954")
         self.assertNotIn("client_draft_id", response.json())
-        for key, value in ITINERARY_REQUEST_EXAMPLE.items():
-            self.assertEqual(response.json()[key], value)
+        self.assertEqual(response.json(), result.model_dump(mode="json"))
+        self.assertIsNone(response.json()["generation_job_id"])
+        self.assertEqual(received.region.full_name, "제주특별자치도 서귀포시")
         self.assertNotIn("budget_currency", response.json()["preference"])
 
     def test_exact_trip_request_also_accepted_by_stream(self):
@@ -46,20 +47,21 @@ class SpreadsheetContractTests(unittest.TestCase):
             })
 
         with patch("ai_service.streaming.generation_stages", side_effect=pipeline), TestClient(create_app(settings=settings)) as client:
-            response = client.post("/internal/ai/itineraries/generate/stream", json=ITINERARY_REQUEST_EXAMPLE, headers=HEADERS)
+            response = client.post("/api/ai/v1/itinerary-jobs/stream", json=ITINERARY_REQUEST_EXAMPLE, headers=HEADERS)
         self.assertEqual(response.status_code, 200)
         self.assertIn("event: complete\n", response.text)
         events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
-        itinerary = events[-1]["data"]["itinerary"]
-        for key, value in ITINERARY_REQUEST_EXAMPLE.items():
-            self.assertEqual(itinerary[key], value)
+        self.assertEqual(events[-2]["result"]["title"], "테스트 일정")
+        self.assertEqual(events[-2]["travel_plan_id"], ITINERARY_REQUEST_EXAMPLE["travel_plan_id"])
+        self.assertEqual(events[-1]["status"], "COMPLETED")
+        self.assertNotIn("data", events[-1])
         self.assertNotIn("budget_currency", response.text)
         self.assertNotIn("client_draft_id", response.text)
 
     def test_removed_draft_field_rejected_and_absent_from_openapi(self):
         body = {**ITINERARY_REQUEST_EXAMPLE, "client_draft_id": 1}
         with TestClient(create_app(settings=Settings(api_token="test-only"))) as client:
-            for endpoint in ("/internal/ai/itineraries/generate", "/internal/ai/itineraries/generate/stream"):
+            for endpoint in ("/internal/ai/itineraries/generate", "/api/ai/v1/itinerary-jobs/stream"):
                 with self.subTest(endpoint=endpoint):
                     response = client.post(endpoint, json=body, headers=HEADERS)
                     self.assertEqual(response.status_code, 400, response.text)
@@ -69,7 +71,7 @@ class SpreadsheetContractTests(unittest.TestCase):
         data = copy.deepcopy(ITINERARY_REQUEST_EXAMPLE)
         data["preference"]["budget_currency"] = "USD"
         with self.assertRaises(ValidationError):
-            ItineraryRequest.model_validate(data)
+            TravelGenerationRequest.model_validate(data)
 
     def test_exact_music_request_selects_only_candidate_and_preserves_metadata(self):
         # A single supplied candidate needs no model or catalog API call.
@@ -126,8 +128,8 @@ class SpreadsheetContractTests(unittest.TestCase):
     def test_openapi_examples_match_spreadsheet_requests(self):
         spec = create_app(settings=Settings()).openapi()
         for endpoint, example, schema in (
-            ("/internal/ai/itineraries/generate", ITINERARY_REQUEST_EXAMPLE, ItineraryRequest),
-            ("/internal/ai/itineraries/generate/stream", ITINERARY_REQUEST_EXAMPLE, ItineraryStreamRequest),
+            ("/internal/ai/itineraries/generate", ITINERARY_REQUEST_EXAMPLE, TravelGenerationRequest),
+            ("/api/ai/v1/itinerary-jobs/stream", ITINERARY_REQUEST_EXAMPLE, TravelGenerationRequest),
             ("/internal/ai/music/recommend", MUSIC_REQUEST_EXAMPLE, MusicRequest),
         ):
             value = spec["paths"][endpoint]["post"]["requestBody"]["content"]["application/json"]["examples"]["spreadsheet"]["value"]

@@ -21,11 +21,37 @@ from ai_service.schemas import (
     RouteStop,
     RoutesResult,
     RouteVehicle,
+    TransitLegSummary,
     WalkingInstruction,
 )
 
 
 NO_TRANSIT_MESSAGE = "이용할 수 있는 대중교통이 없습니다"
+
+
+def summarize_route(details: RouteDetails) -> RouteSummary:
+    # Whitelist boarding information; never serialize provider geometry/stops.
+    legs = []
+    if details.transport_type == "PUBLIC_TRANSPORT":
+        for leg in details.legs:
+            if leg.mode in {"WALK", "CAR"}:
+                continue
+            legs.append(TransitLegSummary(
+                mode=leg.mode,
+                line_name=" / ".join(v.name for v in leg.vehicles) or leg.route_name,
+                vehicle_number=(" / ".join(v.name for v in leg.vehicles) or leg.bus_number)
+                if leg.mode in {"BUS", "EXPRESSBUS"} else None,
+                start={"name": leg.start.name}, end={"name": leg.end.name},
+            ))
+    single = legs[0] if len(legs) == 1 else None
+    return RouteSummary(
+        transport_type=details.transport_type,
+        duration_minutes=details.duration_minutes,
+        distance_meter=details.distance_meter,
+        line_name=single.line_name if single else None,
+        vehicle_number=single.vehicle_number if single else None,
+        legs=legs,
+    )
 
 
 def number(value) -> int:
@@ -195,6 +221,8 @@ class KakaoRoutes:
             if len(path) < 2 or (distance > 0 and seconds == 0):
                 raise ValueError("missing step path or duration")
             stops = [RouteStop(name=s["name"]) for s in props.get("stops", [])]
+            if mode != "WALK" and (len(stops) < 2 or not all(s.name.strip() for s in (stops[0], stops[-1]))):
+                raise ValueError("missing transit boarding or alighting stop")
             start = RouteStop(
                 name=stops[0].name if stops else previous.name, **path[0].model_dump()
             )
@@ -372,11 +400,7 @@ async def schedule_with_routes(
                         routed |= details.provider == "KAKAO"
                         # Explicit allowlist protects both JSON and every SSE payload
                         # from provider path arrays and future internal-only fields.
-                        route = RouteSummary(
-                            transport_type=details.transport_type,
-                            duration_minutes=details.duration_minutes,
-                            distance_meter=details.distance_meter,
-                        )
+                        route = summarize_route(details)
                         transfers[(day_number, sequence)] = route
                         cursor += timedelta(minutes=route.duration_minutes)
                     stay = (

@@ -11,11 +11,11 @@ from ai_service.pipeline import recommend_accommodations
 from ai_service.routing import KakaoRoutes
 from ai_service.schemas import GenerationResult, ItineraryStreamRequest, MusicRecommendation
 from ai_service.streaming import stream_generation
-from test_day_transport import places, request, selection, transit_payload
+from test_day_transport import places, request, selection, transit_payload, http_request
 
 
 FORBIDDEN = {
-    "legs", "path", "instructions", "stops", "vehicles", "bus_number", "station_id",
+    "path", "instructions", "stops", "vehicles", "bus_number", "station_id",
     "is_required", "stay_minutes", "travel_minutes_from_previous", "search_center",
     "timezone", "model_version", "warnings", "music_id", "routes", "origin", "destination",
     "is_estimated", "map_url", "from_day_number", "to_day_number", "from_sequence", "to_sequence",
@@ -165,41 +165,58 @@ class CompactRoutesTests(unittest.IsolatedAsyncioTestCase):
         with TestClient(app) as client:
             app.state.places = self.places
             app.state.planner = Planner()
-            data = self.body.model_dump(mode="json")
+            data = http_request(self.body)
             data["preference"].update(transport_type="CAR", extra_request=None)
-            response = client.post("/internal/ai/itineraries/generate/stream", json=data,
+            response = client.post("/api/ai/v1/itinerary-jobs/stream", json=data,
                                    headers={"Authorization": "Bearer test-only"})
             self.assertEqual(response.status_code, 200)
             self.assertTrue(response.headers["x-request-id"].startswith("req_"))
             events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
             self.assertEqual(events[-1]["stage"], "COMPLETE")
-            self.assertFalse(all_keys(events) & FORBIDDEN)
-            self.assertEqual(set(events[-1]["data"]), {"itinerary", "music"})
+            self.assertFalse(all_keys(events) & (FORBIDDEN - {"routes", "from_sequence", "to_sequence"}))
+            self.assertEqual(set(events[-2]["result"]), {"title", "days", "music"})
             self.assertEqual(len(events), 9)
-            self.assertTrue(all(set(event) == {"stage", "status"} for event in events[:-1]))
+            self.assertTrue(all(set(event) == {"stage", "status"} for event in events[:-2]))
             self.assertEqual(response.text.count("event: complete\n"), 1)
-            self.assertEqual(response.text.count('"itinerary":'), 1)
+            self.assertEqual(response.text.count('"result":'), 1)
             self.assertEqual(response.text.count('"music":'), 1)
+            self.assertNotIn("result", events[-1])
+            result = events[-2]["result"]
+            self.assertEqual(result["days"][0]["items"][-1]["place_type"], "ACCOMMODATION")
+            self.assertNotIn("item_type", all_keys(result))
+            for day in result["days"]:
+                sequences = {item["sequence"] for item in day["items"]}
+                self.assertEqual(len(day["routes"]), len(day["items"]) - 1)
+                for route in day["routes"]:
+                    self.assertIn(route["from_sequence"], sequences)
+                    self.assertIn(route["to_sequence"], sequences)
+                    self.assertLess(route["from_sequence"], route["to_sequence"])
+            # Cross-day route is retained as a summary, never linked to the wrong day.
+            self.assertIn("route_from_previous", result["days"][1]["items"][0])
+            self.assertNotIn("route_from_previous", result["days"][0]["items"][1])
 
-    def test_openapi_documents_status_only_stages_and_final_result(self):
+    def test_openapi_documents_backend_events_and_single_result(self):
         spec = create_app(settings=Settings()).openapi()
-        response = spec["paths"]["/internal/ai/itineraries/generate/stream"]["post"]["responses"]["200"]
-        self.assertIn("stage, status만", response["description"])
+        response = spec["paths"]["/api/ai/v1/itinerary-jobs/stream"]["post"]["responses"]["200"]
+        self.assertIn("ROUTE_OPTIMIZE_DONE", response["description"])
         content = response["content"]["text/event-stream"]
         self.assertEqual(content["schema"]["type"], "string")
         examples = content["examples"]
-        for name in ("stage_started", "stage_completed", "complete", "error"):
+        names = {"started": "PLACE_RECOMMEND_STARTED", "done": "PLACE_RECOMMEND_DONE",
+                 "result": "ROUTE_OPTIMIZE_DONE", "complete": "complete", "error": "error"}
+        for name, event in names.items():
             wire = examples[name]["value"]
-            self.assertIn(f"event: {name}\n", wire)
+            self.assertIn(f"event: {event}\n", wire)
             self.assertTrue(wire.endswith("\n\n"))
             payload = json.loads(wire.split("data: ", 1)[1])
-            if name.startswith("stage_"):
+            if name in {"started", "done"}:
                 self.assertEqual(set(payload), {"stage", "status"})
+            elif name == "result":
+                self.assertEqual(set(payload["result"]), {"title", "days", "music"})
             elif name == "complete":
-                self.assertEqual(set(payload), {"generation_job_id", "stage", "status", "data"})
-                GenerationResult.model_validate(payload["data"])
+                self.assertEqual(set(payload), {"travel_plan_id", "stage", "status"})
             else:
-                self.assertEqual(set(payload), {"generation_job_id", "stage", "status", "message", "data"})
+                self.assertEqual(set(payload), {"travel_plan_id", "stage", "status", "message", "data"})
                 self.assertEqual(set(payload["data"]), {"error_message"})
 
     def test_openapi_has_only_compact_route_properties(self):
@@ -208,7 +225,7 @@ class CompactRoutesTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("RouteLeg", schemas)
         self.assertFalse(set(schemas["RouteSummary"]["properties"]) & FORBIDDEN)
         self.assertEqual(set(schemas["RouteSummary"]["properties"]),
-                         {"transport_type", "duration_minutes", "distance_meter"})
+                         {"transport_type", "duration_minutes", "distance_meter", "line_name", "vehicle_number", "legs"})
         for name, schema in schemas.items():
             if name in {"MusicCandidate", "SelectedMusic"}:
                 continue  # Separate spreadsheet music API returns the backend's candidate ID.

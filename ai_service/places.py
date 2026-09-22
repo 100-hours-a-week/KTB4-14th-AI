@@ -21,8 +21,10 @@ THEME_QUERIES = {
     "HISTORY": ("역사", "AT4"),
     "ACTIVITY": ("체험", ""),
     "HEALING": ("공원", "AT4"),
+    "REST": ("공원", "AT4"),
     "SHOPPING": ("쇼핑", ""),
     "PHOTO": ("전망대", "AT4"),
+    "SNS": ("전망대", "AT4"),
 }
 FOOD_QUERIES = {
     "KOREAN": "한식",
@@ -162,6 +164,20 @@ class KakaoPlaces:
     ) -> list[Place]:
         pool: dict[str, Place] = {}
         for required in sorted(request.required_places, key=lambda p: p.order):
+            if not required.address or not required.category:
+                documents = await self._get("keyword", {
+                    "query": required.place_name,
+                    "x": required.longitude, "y": required.latitude,
+                    "radius": 2000, "size": 15,
+                })
+                document = next((doc for doc in documents if str(doc.get("id")) == required.provider_place_id), None)
+                if document is None:
+                    raise GenerationFailed("필수 장소의 주소·카테고리를 확인할 수 없습니다.")
+                required.address = required.address or document.get("address_name") or ""
+                required.road_address = required.road_address or document.get("road_address_name") or ""
+                required.category = required.category or document.get("category_group_code") or document.get("category_name") or ""
+                if not required.address or category_of(required.category) is None:
+                    raise GenerationFailed("필수 장소의 주소·카테고리를 확인할 수 없습니다.")
             category = category_of(required.category)
             if category is None:
                 raise GenerationFailed(
@@ -213,7 +229,7 @@ class KakaoPlaces:
         if include_accommodation:
             base_queries.append(("숙소", "AD5", 1))
         queries = []
-        for theme in request.preference.themes[:3]:
+        for theme in (request.preference.themes or ["NATURE"])[:3]:
             query, group = THEME_QUERIES.get(theme, (theme, ""))
             queries.append((query, group, 1))
         for food in request.preference.foods[:3]:

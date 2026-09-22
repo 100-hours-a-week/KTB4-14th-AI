@@ -8,15 +8,15 @@ from ai_service.config import Settings
 from ai_service.features import make_itinerary_response, schedule_selection, validate_itinerary
 from ai_service.main import create_app
 from ai_service.schemas import Duration, ItineraryRequest, ModelItinerary, ModelSelection, Preference
-from test_day_transport import places, request, selection
+from test_day_transport import places, request, selection, http_request
 
 
 class ErdContractTests(unittest.TestCase):
     def test_service_error_uses_existing_error_message_key(self):
         with TestClient(create_app(settings=Settings(api_token="test-only"))) as client:
-            for endpoint in ("/internal/ai/itineraries/generate", "/internal/ai/itineraries/generate/stream"):
+            for endpoint in ("/internal/ai/itineraries/generate", "/api/ai/v1/itinerary-jobs/stream"):
                 with self.subTest(endpoint=endpoint):
-                    response = client.post(endpoint, json=request().model_dump(mode="json"),
+                    response = client.post(endpoint, json=http_request(),
                                            headers={"Authorization": "Bearer test-only"})
                     self.assertEqual(response.status_code, 503)
                     self.assertEqual(set(response.json()["data"]), {"error_message"})
@@ -85,15 +85,15 @@ class ErdContractTests(unittest.TestCase):
             app.state.places = Places()
             app.state.planner = planner
             headers = {"Authorization": "Bearer " + settings.api_token}
-            data = request(None, "CAR").model_dump(mode="json")
-            data["duration"] = {"arrival_datetime": "2026-09-19T10:00:00", "departure_datetime": "2026-09-20T18:00:00"}
+            data = http_request(request(None, "CAR"))
+            data.update(arrival_datetime="2026-09-19T10:00:00", departure_datetime="2026-09-20T18:00:00")
             response = client.post("/internal/ai/itineraries/generate", json=data, headers=headers)
             self.assertEqual(response.status_code, 200, response.text)
-            self.assertEqual(response.json()["duration"], data["duration"])
+            self.assertEqual(response.json()["duration"], {key: data[key] for key in ("arrival_datetime", "departure_datetime")})
             self.assertEqual(response.json()["preference"]["budget_type"], "KRW")
             self.assertNotIn("client_draft_id", response.json())
             self.assertNotIn("budget_currency", response.text)
-            for key in ("path", "legs", "stops", "instructions", "vehicles"):
+            for key in ("path", "stops", "instructions", "vehicles"):
                 self.assertNotIn(f'"{key}":', response.text)
             route = response.json()["days"][0]["items"][1]["route_from_previous"]
             self.assertEqual(set(route), {"transport_type", "duration_minutes", "distance_meter"})

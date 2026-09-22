@@ -22,14 +22,14 @@ from ai_service.places import KakaoPlaces
 from ai_service.routing import KakaoRoutes
 from ai_service.schemas import (
     ErrorResponse,
-    ItineraryRequest,
     ItineraryResponse,
-    ItineraryStreamRequest,
     MusicRequest,
     MusicResponse,
     SelectedMusic,
+    TravelGenerationRequest,
 )
-from ai_service.streaming import encode_event, stream_generation
+from ai_service.streaming import encode_event
+from ai_service.backend_contract import stream_backend_generation
 from ai_service.transport import resolve_day_transports
 
 
@@ -37,58 +37,28 @@ logger = logging.getLogger(__name__)
 ERROR_RESPONSES = {code: {"model": ErrorResponse} for code in (400, 401, 422, 500, 503)}
 STREAM_RESPONSE = {
     "description": (
-        "SSE: PLACES → ACCOMMODATIONS → ROUTES → MUSIC 순서로 처리합니다. "
-        "중간 stage_started/stage_completed의 JSON은 stage, status만 포함합니다. "
-        "중간 이벤트에는 generation_job_id와 data가 없습니다. "
-        "마지막 event: complete(stage: COMPLETE)에서만 generation_job_id, stage, status, "
-        "data: {itinerary, music}을 한 번 반환합니다. "
-        "실패하면 기존 event: error에 generation_job_id, stage, status: FAILED, message, "
-        "data: {error_message}를 반환하고 종료합니다. HTTP 200도 성공을 보장하지 않습니다. "
-        "SSE id 순번과 keep-alive 주석은 유지됩니다."
+        "feature-travel SSE: PLACE_RECOMMEND, STAY_RECOMMEND, ROUTE_OPTIMIZE, MUSIC_RECOMMEND. "
+        "단계별 STARTED/DONE 이벤트를 전송합니다. 최종 일정은 음악 생성 성공 후 "
+        "ROUTE_OPTIMIZE_DONE의 result에 한 번만 전송하며, complete는 완료 상태만 보냅니다. "
+        "백엔드가 ROUTE_OPTIMIZE_DONE 수신 즉시 저장하므로 이 이벤트는 음악 성공까지 지연합니다. "
+        "대중교통 탑승 안내는 result.days[].routes[].legs의 mode, line_name, vehicle_number, start.name, end.name에 탑승 순서대로 포함됩니다. "
+        "HTTP 200 이후에도 error 이벤트로 실패할 수 있습니다. 인증 Bearer 토큰이 필요합니다."
     ),
-    "content": {
-        "text/event-stream": {
-            "schema": {"type": "string"},
-            "examples": {
-                "stage_started": {
-                    "summary": "단계 시작 — 상태만 반환",
-                    "value": encode_event("stage_started", 1, {"stage": "PLACES", "status": "STARTED"}),
-                },
-                "stage_completed": {
-                    "summary": "단계 완료 — 결과 본문 없음(네 단계 공통)",
-                    "value": encode_event("stage_completed", 2, {"stage": "PLACES", "status": "COMPLETED"}),
-                },
-                "complete": {
-                    "summary": "전체 완료 — 일정·음악 반환(구조 예시, days는 빈 목록)",
-                    "value": encode_event("complete", 9, {
-                        "generation_job_id": 1, "stage": "COMPLETE", "status": "COMPLETED",
-                        "data": {
-                            "itinerary": {
-                                "generation_job_id": 1,
-                                "region": {"region_id": 2, "full_name": "부산광역시"},
-                                "duration": {"arrival_datetime": "2026-09-19T10:00:00", "departure_datetime": "2026-09-20T18:00:00"},
-                                "headcount": 2, "companion_type": "COUPLE",
-                                "preference": {"pace_type": "RELAXED", "transport_type": "PUBLIC_TRANSPORT",
-                                               "budget_type": "KRW", "themes": ["NATURE", "FOOD"], "foods": [],
-                                               "budget_min": None, "budget_max": None, "distance_preference": None, "extra_request": None},
-                                "required_places": [], "title": "부산 여유로운 여행 일정", "days": [],
-                            },
-                            "music": {"title": "Spring Day", "artist": "BTS",
-                                      "youtube_url": "https://www.youtube.com/results?search_query=BTS+Spring+Day+official+audio"},
-                        },
-                    }),
-                },
-                "error": {
-                    "summary": "기존 오류 형식 유지 — COMPLETE 없이 종료",
-                    "value": encode_event("error", 8, {
-                        "generation_job_id": 1, "stage": "MUSIC", "status": "FAILED",
-                        "message": "ai_music_recommendation_failed",
-                        "data": {"error_message": "추천 가능한 음악을 선택하지 못했습니다."},
-                    }),
-                },
-            },
-        }
-    },
+    "content": {"text/event-stream": {"schema": {"type": "string"}, "examples": {
+        "started": {"value": encode_event("PLACE_RECOMMEND_STARTED", 1, {"stage": "PLACE_RECOMMEND", "status": "RUNNING"})},
+        "done": {"value": encode_event("PLACE_RECOMMEND_DONE", 2, {"stage": "PLACE_RECOMMEND", "status": "DONE"})},
+        "result": {"summary": "구조 예시. 실제 결과에는 날짜·방문 항목이 포함됩니다.", "value": encode_event("ROUTE_OPTIMIZE_DONE", 8, {
+            "travel_plan_id": 10, "stage": "ROUTE_OPTIMIZE", "status": "DONE",
+            "result": {"title": "여행 일정", "days": [], "music": {
+                "title": "Spring Day", "artist": "BTS", "youtube_url": "https://www.youtube.com/results?search_query=BTS+Spring+Day"
+            }},
+        })},
+        "complete": {"value": encode_event("complete", 9, {"travel_plan_id": 10, "stage": "COMPLETE", "status": "COMPLETED"})},
+        "error": {"value": encode_event("error", 8, {
+            "travel_plan_id": 10, "stage": "MUSIC_RECOMMEND", "status": "FAILED",
+            "message": "ai_music_recommendation_failed", "data": {"error_message": "추천 가능한 음악을 선택하지 못했습니다."},
+        })},
+    }}},
 }
 
 
@@ -185,10 +155,11 @@ def create_app(
         tags=["V1"],
     )
     async def create_itinerary(
-        body: Annotated[ItineraryRequest, Body(openapi_examples={"spreadsheet": {"summary": "스프레드시트 여행 요청", "value": ITINERARY_REQUEST_EXAMPLE}})],
+        body: Annotated[TravelGenerationRequest, Body(openapi_examples={"spreadsheet": {"summary": "백엔드 내부 여행 요청", "value": ITINERARY_REQUEST_EXAMPLE}})],
         request: Request,
     ):
-        request.state.generation_job_id = body.generation_job_id
+        request.state.travel_plan_id = body.travel_plan_id
+        body = body.generation_context()
         if not settings.openai_api_key or not settings.kakao_rest_api_key:
             raise ServiceUnavailable()
         for mode in set(resolve_day_transports(body).values()):
@@ -201,8 +172,10 @@ def create_app(
         except TimeoutError as exc:
             raise ServiceUnavailable() from exc
 
-    @protected.post(
-        "/itineraries/generate/stream",
+    backend_router = APIRouter(dependencies=[Depends(require_api_token(settings.api_token))])
+
+    @backend_router.post(
+        "/api/ai/v1/itinerary-jobs/stream",
         response_class=StreamingResponse,
         responses={
             **ERROR_RESPONSES,
@@ -211,16 +184,17 @@ def create_app(
         tags=["V1"],
     )
     async def stream_itinerary(
-        body: Annotated[ItineraryStreamRequest, Body(openapi_examples={"spreadsheet": {"summary": "스프레드시트 여행 요청으로 단계별 생성", "value": ITINERARY_REQUEST_EXAMPLE}})],
+        body: Annotated[TravelGenerationRequest, Body(openapi_examples={"spreadsheet": {"summary": "백엔드 내부 여행 요청으로 단계별 생성", "value": ITINERARY_REQUEST_EXAMPLE}})],
         request: Request,
     ):
-        request.state.generation_job_id = body.generation_job_id
+        request.state.travel_plan_id = body.travel_plan_id
+        body = body.generation_context()
         if not settings.openai_api_key or not settings.kakao_rest_api_key:
             raise ServiceUnavailable()
         for mode in set(resolve_day_transports(body).values()):
             app.state.routes.require_configured(mode)
         return StreamingResponse(
-            stream_generation(
+            stream_backend_generation(
                 body,
                 app.state.places,
                 app.state.planner,
@@ -257,6 +231,7 @@ def create_app(
             raise ServiceUnavailable() from exc
 
     app.include_router(protected)
+    app.include_router(backend_router)
     return app
 
 

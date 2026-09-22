@@ -27,6 +27,18 @@ def request(extra=EXTRA, default="PUBLIC_TRANSPORT"):
     })
 
 
+def http_request(body=None):
+    value = (body or request()).model_dump(mode="json")
+    region = value.pop("region")
+    value["region_id"] = region["region_id"]
+    value["region_name"] = region["full_name"]
+    value["travel_plan_id"] = value.get("travel_plan_id") or 10
+    value.update(value.pop("duration"))
+    value.pop("generation_job_id")
+    value["preference"]["distance_preference"] = 50
+    return value
+
+
 def places():
     return [Place(provider_place_id=str(i), place_name=f"테스트 장소 {i}", address="부산",
                   latitude=35.16 + i * .001, longitude=129.06 + i * .001,
@@ -140,7 +152,7 @@ class RoutingTests(unittest.IsolatedAsyncioTestCase):
                 route = item.route_from_previous
                 if route is not None:
                     self.assertEqual(route.transport_type, "CAR" if day.day_number == 1 else "PUBLIC_TRANSPORT")
-                    self.assertEqual(set(route.model_dump()), {"transport_type", "duration_minutes", "distance_meter"})
+                    self.assertEqual(bool(route.legs), day.day_number != 1)
         self.assertTrue(self.calls)
         self.assertTrue(all(req.url.path.endswith("/publictraffic") for req in self.calls))
         for day in result.itinerary.days[1:]:
@@ -211,7 +223,9 @@ class RoutingTests(unittest.IsolatedAsyncioTestCase):
             for item in result.days[1].items:
                 self.assertEqual(item.route_from_previous.transport_type, "PUBLIC_TRANSPORT")
                 self.assertEqual(item.route_from_previous.duration_minutes, 10)  # BUS, not faster SUBWAY
-                self.assertNotIn("legs", item.route_from_previous.model_dump())
+                self.assertEqual(item.route_from_previous.legs[0].vehicle_number, "141(심야)")
+                self.assertEqual(item.route_from_previous.legs[0].start.name, "출발")
+                self.assertEqual(item.route_from_previous.legs[0].end.name, "도착")
         overnight = stream_routes.itinerary.days[1].items[0].route_from_previous
         self.assertEqual(overnight.duration_minutes, 10)
         self.assertTrue(any(float(req.url.params["start_y"]) == pool[2].latitude

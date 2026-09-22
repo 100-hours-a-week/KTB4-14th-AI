@@ -64,24 +64,34 @@ INFO:     Uvicorn running on http://127.0.0.1:8000
 
 ## 현재 요청과 검증
 
-스프레드시트의 두 요청은 아래 API에 각각 보냅니다. JSON 파일 내용을 Swagger의 Request body에 복사할 수 있습니다.
+**기준: `KTB4-14th-BE-feature-travel.zip`의 `AiTravelGenerationRequest.java`.** 프론트가 백엔드에 보내는 JSON에 백엔드가 `travel_plan_id`, `region_name`을 더해 AI로 전달합니다.
 
-| 요청 | POST 경로 | 복사용 파일 |
-| --- | --- | --- |
-| 여행 조건 | `/internal/ai/itineraries/generate` 또는 `/internal/ai/itineraries/generate/stream` | [여행 요청](../문서/참고자료/스프레드시트_여행요청.json) |
-| 음악 후보 | `/internal/ai/music/recommend` | [음악 요청](../문서/참고자료/스프레드시트_음악요청.json) |
+| 용도 | POST 경로 |
+| --- | --- |
+| 백엔드 여행 생성 연동(SSE) | `/api/ai/v1/itinerary-jobs/stream` |
+| 기존 일정 JSON 생성 | `/internal/ai/itineraries/generate` |
+| 기존 후보 기반 음악 추천 | `/internal/ai/music/recommend` |
 
-- 여행 요청과 응답 모두 `budget_type`를 사용합니다. 요청과 생성 결과는 `generation_job_id`로 연결합니다.
-- 음악 API는 전달된 `candidates` 중 한 곡을 선택하고 `travel_plan_id`, `music_id`, `title`, `artist`, `youtube_url`을 `message`, `data` 응답으로 반환합니다. 후보가 한 곡이면 그대로 반환합니다. 예시 URL의 `v=example`은 자리표시자이므로 실제 후보 URL로 교체하세요.
-- 음악 후보 요청은 여행 생성·스트림 API에 보내지 않습니다. 아래 스트림의 기존 음악 추천 방식과 별도입니다.
+- 여행 요청: `travel_plan_id`, `region_id`, `region_name`, `arrival_datetime`, `departure_datetime`, `headcount`, `companion_type`, `preference`, `required_places`.
+- 예산은 `preference.budget_type`, 장소 유형은 `required_places[].place_type`입니다. `client_draft_id`, `budget_currency`, 요청의 `category`는 받지 않습니다.
+- 지역명은 백엔드가 보내는 `region_name`을 직접 사용합니다. 별도 지역 목록 파일이 필요하지 않습니다.
+- 날짜는 한국시간 `2026-09-19T10:00:00` 형식으로 보낼 수 있습니다.
+- SSE 경로를 백엔드 기본 주소로 변경했습니다. 이전 `/internal/ai/itineraries/generate/stream` 주소는 사용하지 않습니다.
+- 중간에는 상태만, 마지막 `ROUTE_OPTIMIZE_DONE.result`에 일정·음악을 한 번만 전송합니다. 뒤의 `complete`는 완료 상태만 전달합니다. 백엔드가 ROUTE 완료에서 즉시 저장하므로 음악 생성 성공까지 ROUTE 완료를 지연합니다.
+- 같은 날 경로는 `days[].routes`에 출발·도착 순서, 이동수단·시간·거리와 대중교통 `legs` 탑승 안내를 전달합니다. 버스 번호·노선명·승하차역을 포함하고 상세 `path` 좌표는 보내지 않습니다. [복구 내용과 백엔드 보완 사항](../문서/대중교통_탑승안내_응답_복구.md)을 참고하세요.
+- 모든 기능 호출에는 `Authorization: Bearer <기존 서비스 토큰>`이 필요합니다. 첨부 백엔드의 `AiSseGenerationClient`에는 이 헤더 추가가 필요합니다.
+- 별도 음악 API는 `candidates` 중 선택합니다. 여행 스트림의 기존 후보 없는 음악 추천 로직은 유지합니다.
 
-- 음악까지 받으려면 `/internal/ai/itineraries/generate/stream`을 사용합니다. `music_candidates` 없이 기존 여행 조건만 보냅니다.
-- SSE 중간 네 단계는 `stage`, `status`만 전달합니다. 일정·음악은 마지막 `event: complete`의 `data.itinerary`, `data.music`에서 한 번만 받습니다. 기존 `error` 이벤트 형식은 유지합니다.
-- 스트림의 음악은 고정 후보 없이 추천한 곡을 공개 카탈로그에서 확인합니다. `title`, `artist`, `youtube_url`만 반환하며 URL은 추가 키가 필요 없는 YouTube 검색 링크입니다. 스트림 음악에는 `music_id`가 없습니다.
-- `extra_request`의 `1일차 렌터카, 2~3일차 대중교통`은 날짜별 실제 경로 계산에 적용합니다. CAR 시간·거리는 기존 좌표 기반 추정입니다.
-- 한국시간은 `2026-09-19T10:00:00`으로 입력할 수 있습니다. `Z`나 `+09:00`을 붙일 필요가 없습니다.
-- 날짜는 ERD의 `travel_date`를 사용합니다. 이동정보는 각 항목의 `route_from_previous`에 이동수단·시간·거리만 반환하며, 별도 `routes` 목록은 없습니다. 출발·도착 좌표는 이전·현재 방문 항목에서 읽습니다.
-- [현재 API 규격](../문서/API_TERMS.md), [실제 필드 삭제·통합 내역](../문서/AI_API_ERD_적용내역.md)
+### 확인할 Python 파일
+
+| 파일 | 역할 |
+| --- | --- |
+| `ai_service/schemas.py` | 백엔드 요청 필드 검증·내부 변환 |
+| `ai_service/main.py` | API 경로·인증·Swagger SSE 예시 |
+| `ai_service/backend_contract.py` | 백엔드 SSE 단계 이름·결과 저장 형식 변환 |
+| `ai_service/api_examples.py` | Swagger 요청 예시 |
+
+[복사용 여행 요청](../문서/참고자료/여행일정생성요청.json) · [현재 API 규격](../문서/API_TERMS.md) · [백엔드에 전달할 사항](../문서/백엔드_AI_연동_반영사항.md)
 
 실행 가능한 회귀 테스트는 `tests/`에 유지합니다. 다음 명령은 별도 터미널에서 실행하며 실제 외부 모델·카카오 API를 호출하지 않습니다.
 
