@@ -36,10 +36,11 @@ def summarize_route(details: RouteDetails) -> RouteSummary:
         for leg in details.legs:
             if leg.mode in {"WALK", "CAR"}:
                 continue
+            names = list(dict.fromkeys(" ".join(v.name.split()) for v in leg.vehicles if v.name.strip()))[:6]
             legs.append(TransitLegSummary(
                 mode=leg.mode,
-                line_name=" / ".join(v.name for v in leg.vehicles) or leg.route_name,
-                vehicle_number=(" / ".join(v.name for v in leg.vehicles) or leg.bus_number)
+                line_name=" / ".join(names) or leg.route_name,
+                vehicle_number=(" / ".join(names) or leg.bus_number)
                 if leg.mode in {"BUS", "EXPRESSBUS"} else None,
                 start={"name": leg.start.name, "station_number": leg.start.station_number
                        if leg.mode in {"BUS", "EXPRESSBUS"} else None},
@@ -355,6 +356,7 @@ async def schedule_with_routes(
         day_windows,
         make_itinerary_response,
         validate_itinerary,
+        accommodation_period,
     )
 
     policy = PACE_POLICIES[PACE_ALIASES[request.preference.pace_type]]
@@ -435,6 +437,10 @@ async def schedule_with_routes(
                         raise InvalidModelOutput(
                             "verified routes and visits exceed the available trip time"
                         )
+                    if place.category == "숙소":
+                        if sequence != len(selected.items):
+                            raise InvalidModelOutput("accommodation must be the last item of the day")
+                        cursor, stay = accommodation_period(cursor, end, policy["숙소"][0])
                     items.append(
                         {
                             "provider_place_id": place.provider_place_id,

@@ -54,5 +54,5 @@ LEGACY_ITINERARY_REQUEST_EXAMPLE = {
 }
 
 GENERATION_REQUEST_EXAMPLES = {
-    "nested": {"summary": "여행 일정 생성 요청", "value": LEGACY_ITINERARY_REQUEST_EXAMPLE},
+    "nested": {"summary": "사용자 요청: generation_job_id / region / duration", "value": LEGACY_ITINERARY_REQUEST_EXAMPLE},
 }

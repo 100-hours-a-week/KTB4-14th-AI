@@ -286,7 +286,7 @@ class ModelSelection(StrictModel):
 class ModelItem(StrictModel):
     provider_place_id: str
     start_time: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
-    stay_minutes: int = Field(gt=0, le=360)
+    stay_minutes: int = Field(gt=0, le=1440)
 
 
 class ModelDay(StrictModel):

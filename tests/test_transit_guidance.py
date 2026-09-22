@@ -29,6 +29,26 @@ def transfer_payload(origin, destination):
 
 
 class TransitGuidanceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_bus_alternatives_deduplicate_in_order_and_limit_each_leg(self):
+        origin, destination = places()[:2]
+        payload = transit_payload(origin, destination, ("BUS",))
+        names = ["201"] * 6 + [" 201 ", "211", "211", "212", "295", "722-1", "722-2", "999"]
+        payload["routes"][0]["steps"][0]["properties"]["vehicles"] = [
+            {"name": name, "type": "일반"} for name in names
+        ]
+        async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=payload))) as client:
+            details = await KakaoRoutes(client, Settings(kakao_rest_api_key="test")).route(
+                origin, destination, datetime(2026, 9, 19, 10, tzinfo=KST), "PUBLIC_TRANSPORT",
+            )
+        summary = summarize_route(details).model_dump()
+        expected = "201 / 211 / 212 / 295 / 722-1 / 722-2"
+        self.assertEqual(summary["vehicle_number"], expected)
+        self.assertEqual(summary["line_name"], expected)
+        self.assertEqual(summary["legs"][0]["vehicle_number"], expected)
+        # Repeated boarding later in the journey is a separate leg, not a duplicate.
+        details.legs.append(details.legs[0].model_copy(deep=True))
+        self.assertEqual(len(summarize_route(details).legs), 2)
+
     async def test_transfer_preserves_boarding_order_without_full_stops_or_coordinates(self):
         origin, destination = places()[:2]
         payload = transfer_payload(origin, destination)

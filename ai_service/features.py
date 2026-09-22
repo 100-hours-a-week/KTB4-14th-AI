@@ -24,6 +24,7 @@ from ai_service.schemas import (
 
 
 logger = logging.getLogger(__name__)
+ARRIVAL_BUFFER_MINUTES = {"RELAXED": 45, "BALANCED": 30, "PACKED": 15}
 PACE_POLICIES = {
     "RELAXED": {
         "min_items": 3,
@@ -56,7 +57,8 @@ def day_windows(request: ItineraryRequest) -> list[dict]:
     windows = []
     for index in range((departure.date() - arrival.date()).days + 1):
         day = arrival.date() + timedelta(days=index)
-        start = max(datetime.combine(day, time(9)), arrival)
+        earliest_arrival = arrival + timedelta(minutes=ARRIVAL_BUFFER_MINUTES[PACE_ALIASES[request.preference.pace_type]])
+        start = max(datetime.combine(day, time(9)), earliest_arrival if index == 0 else arrival)
         end = min(datetime.combine(day, time(21)), departure)
         if day == arrival.date() and arrival.time() >= time(21):
             end = min(datetime.combine(day, time(23, 59)), departure)
@@ -88,6 +90,18 @@ def day_windows(request: ItineraryRequest) -> list[dict]:
             }
         )
     return windows
+
+
+def accommodation_period(cursor: datetime, end: datetime, minimum: int) -> tuple[datetime, int]:
+    """Planning assumption: check in from 15:00, then rest until the day ends.
+
+    This is not a verified property check-in time or next-day checkout time.
+    """
+    start = max(cursor, cursor.replace(hour=15, minute=0, second=0, microsecond=0))
+    stay = int((end - start).total_seconds() / 60)
+    if stay < minimum:
+        raise InvalidModelOutput("leave time for accommodation from 15:00 until the daily end")
+    return start, stay
 
 
 def select_candidates(request: ItineraryRequest, places: list[Place]) -> list[Place]:
@@ -207,6 +221,11 @@ def complete_selection(
                     else range(last_position + 1)
                 )
                 for position in positions:
+                    if place.category == "식당" and (
+                        (position > 0 and chosen[position - 1].category == "식당")
+                        or (position < len(chosen) and chosen[position].category == "식당")
+                    ):
+                        continue
                     before = chosen[position - 1] if position else previous
                     after = chosen[position] if position < len(chosen) else None
                     cost = (distance_km(before, place) if before else 0) + (
@@ -254,6 +273,20 @@ def complete_selection(
 
             index, _ = max(removable, key=detour)
             chosen.pop(index)
+        # A second optional meal is not a substitute for a missing attraction.
+        # Required meals are never silently dropped; the planner must separate them.
+        index = 1
+        while index < len(chosen):
+            before, current = chosen[index - 1], chosen[index]
+            if before.category == current.category == "식당":
+                if before.is_required and current.is_required:
+                    raise InvalidModelOutput("separate required restaurants with tourist visits or different days")
+                removed = chosen.pop(index if not current.is_required else index - 1)
+                used.discard(removed.provider_place_id)
+                seen.discard(removed.provider_place_id)
+                index = max(1, index - 1)
+            else:
+                index += 1
         while len(chosen) < minimum:
             add_candidate(None)
         day.items = [
@@ -330,9 +363,14 @@ def schedule_selection(
             stays[index] += extra
             spare -= extra
         cursor = datetime.fromisoformat(f"{selected.date}T{window['start']}")
+        end = datetime.fromisoformat(f"{selected.date}T{window['end']}")
         items = []
         for index, (item, place) in enumerate(zip(selected.items, chosen)):
             cursor += timedelta(minutes=transfers[index])
+            if place.category == "숙소":
+                if index != len(chosen) - 1:
+                    raise InvalidModelOutput("accommodation must be the last item of the day")
+                cursor, stays[index] = accommodation_period(cursor, end, policy["숙소"][0])
             # Move meals toward a natural lunch/dinner window when the day has slack.
             if place.category == "식당":
                 meal_hour = (
@@ -399,13 +437,18 @@ def validate_itinerary(
                 )
             if place.category in categories and place.category == "숙소":
                 raise InvalidModelOutput("at most one accommodation per day")
+            if place.category == "식당" and items and items[-1].item_type == "RESTAURANT":
+                raise InvalidModelOutput("restaurants must not be consecutive within a day")
             minimum, maximum = policy[place.category]
-            if not minimum <= item.stay_minutes <= maximum:
+            if place.category != "숙소" and not minimum <= item.stay_minutes <= maximum:
                 raise InvalidModelOutput(
                     f"stay_minutes for {place.category} must be {minimum}..{maximum}"
                 )
             visit_start = datetime.fromisoformat(f"{window['date']}T{item.start_time}")
             visit_end = visit_start + timedelta(minutes=item.stay_minutes)
+            if place.category == "숙소":
+                if visit_start.hour < 15 or visit_end != end or item.stay_minutes < minimum:
+                    raise InvalidModelOutput("accommodation must cover check-in/rest through the daily end, from 15:00 or later")
             route = (
                 routes.get((len(result) + 1, sequence)) if routes is not None else None
             )
