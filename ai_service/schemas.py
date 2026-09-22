@@ -161,6 +161,34 @@ class ItineraryRequest(StrictModel):
         return self
 
 
+class LegacyGenerationPreference(Preference):
+    budget_type: str = Field(default="KRW", pattern=r"^[A-Z]{3}$")
+
+
+class LegacyGenerationRequest(StrictModel):
+    """Nested user request, accepted alongside the backend's flat DTO."""
+
+    generation_job_id: int = Field(gt=0)
+    region: Region
+    duration: Duration
+    headcount: int = Field(ge=1, le=30)
+    companion_type: NonEmpty
+    preference: LegacyGenerationPreference
+    required_places: list[RequiredPlace] = Field(default_factory=list, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_required_places(self):
+        ids = [p.provider_place_id for p in self.required_places]
+        orders = [p.order for p in self.required_places]
+        if len(set(ids)) != len(ids) or len(set(orders)) != len(orders):
+            raise ValueError("required_places IDs and orders must be unique")
+        return self
+
+    def generation_context(self) -> ItineraryStreamRequest:
+        # Preserve the request keys and job ID; never reinterpret it as a travel plan ID.
+        return ItineraryStreamRequest.model_validate(self.model_dump(by_alias=False))
+
+
 class TravelGenerationPreference(Preference):
     budget_type: str = Field(pattern=r"^[A-Z]{3}$")
     distance_preference: int = Field(ge=0, le=100)
@@ -281,6 +309,8 @@ class RouteStop(StrictModel):
     latitude: float | None = Field(default=None, ge=-90, le=90)
     longitude: float | None = Field(default=None, ge=-180, le=180)
     station_id: str | None = None
+    # Displayed stop number from a verified stop data source; not a provider ID.
+    station_number: str | None = Field(default=None, min_length=1, max_length=32)
 
 
 class WalkingInstruction(StrictModel):
@@ -339,6 +369,10 @@ class RouteDetails(StrictModel):
 
 class TransitStopSummary(StrictModel):
     name: NonEmpty
+    station_number: str | None = Field(
+        default=None, min_length=1, max_length=32,
+        description="버스 정류장 표시 번호. 앞자리 0을 유지하는 문자열. 별도 정류장 데이터로 확인한 경우만 제공하며 현재 카카오 단독 조회는 null. 내부 station_id·장소 ID·버스 번호와 다름",
+    )
 
 
 class TransitLegSummary(StrictModel):
@@ -410,6 +444,14 @@ class ItineraryResponse(StrictModel):
     required_places: list[RequiredPlaceResponse]
     title: str = Field(min_length=1, max_length=50)
     days: list[ItineraryDay]
+
+    @model_serializer(mode="wrap")
+    def serialize_identity(self, handler):
+        data = handler(self)
+        for key in ("generation_job_id", "travel_plan_id"):
+            if data.get(key) is None:
+                data.pop(key, None)
+        return data
 
 
 class ErrorResponse(StrictModel):

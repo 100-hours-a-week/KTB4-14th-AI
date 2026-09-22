@@ -46,6 +46,8 @@ async def stream_backend_generation(body, places, planner, settings, request_id,
     feature-travel saves immediately on ROUTE_OPTIMIZE DONE. Delaying that event
     prevents a later music failure from following a prematurely committed success.
     """
+    identity = ({"travel_plan_id": body.travel_plan_id} if body.travel_plan_id is not None
+                else {"generation_job_id": body.generation_job_id})
     sequence = 0
     stream = stream_generation(body, places, planner, settings, request_id, router)
     try:
@@ -58,7 +60,7 @@ async def stream_backend_generation(body, places, planner, settings, request_id,
             if status == "FAILED":
                 sequence += 1
                 yield encode_event("error", sequence, {
-                    "travel_plan_id": body.travel_plan_id,
+                    **identity,
                     "stage": STAGE_NAMES.get(stage, stage), "status": "FAILED",
                     "message": data["message"], "data": data["data"],
                 })
@@ -69,12 +71,12 @@ async def stream_backend_generation(body, places, planner, settings, request_id,
                 result = backend_result(data["data"])
                 sequence += 1
                 yield encode_event("ROUTE_OPTIMIZE_DONE", sequence, {
-                    "travel_plan_id": body.travel_plan_id,
+                    **identity,
                     "stage": "ROUTE_OPTIMIZE", "status": "DONE", "result": result,
                 })
                 sequence += 1
                 yield encode_event("complete", sequence, {
-                    "travel_plan_id": body.travel_plan_id, "stage": "COMPLETE", "status": "COMPLETED",
+                    **identity, "stage": "COMPLETE", "status": "COMPLETED",
                 })
                 continue
             name = STAGE_NAMES[stage]

@@ -41,7 +41,10 @@ def summarize_route(details: RouteDetails) -> RouteSummary:
                 line_name=" / ".join(v.name for v in leg.vehicles) or leg.route_name,
                 vehicle_number=(" / ".join(v.name for v in leg.vehicles) or leg.bus_number)
                 if leg.mode in {"BUS", "EXPRESSBUS"} else None,
-                start={"name": leg.start.name}, end={"name": leg.end.name},
+                start={"name": leg.start.name, "station_number": leg.start.station_number
+                       if leg.mode in {"BUS", "EXPRESSBUS"} else None},
+                end={"name": leg.end.name, "station_number": leg.end.station_number
+                     if leg.mode in {"BUS", "EXPRESSBUS"} else None},
             ))
     single = legs[0] if len(legs) == 1 else None
     return RouteSummary(

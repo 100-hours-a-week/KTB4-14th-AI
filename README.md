@@ -64,7 +64,7 @@ INFO:     Uvicorn running on http://127.0.0.1:8000
 
 ## 현재 요청과 검증
 
-**기준: `KTB4-14th-BE-feature-travel.zip`의 `AiTravelGenerationRequest.java`.** 프론트가 백엔드에 보내는 JSON에 백엔드가 `travel_plan_id`, `region_name`을 더해 AI로 전달합니다.
+**여행 요청은 두 형식을 지원합니다.** Swagger에는 사용자가 확정한 요청 예시 하나만 표시합니다. 표시 형식은 `generation_job_id`, `region`, `duration`, `budget_type`, 장소 `category` 형식입니다. JSON을 그대로 붙여 넣을 수 있습니다. 백엔드 `AiTravelGenerationRequest.java`의 최상위 `travel_plan_id`, `region_id`, `region_name`, 날짜 형식도 계속 지원합니다. 두 형식을 섞지는 않습니다. 사용자 중첩 요청에는 `generation_job_id`만 보내면 되며 `travel_plan_id`는 필요하지 않습니다. 사용하지 않는 ID는 응답에서 생략합니다.
 
 | 용도 | POST 경로 |
 | --- | --- |
@@ -72,9 +72,9 @@ INFO:     Uvicorn running on http://127.0.0.1:8000
 | 기존 일정 JSON 생성 | `/internal/ai/itineraries/generate` |
 | 기존 후보 기반 음악 추천 | `/internal/ai/music/recommend` |
 
-- 여행 요청: `travel_plan_id`, `region_id`, `region_name`, `arrival_datetime`, `departure_datetime`, `headcount`, `companion_type`, `preference`, `required_places`.
-- 예산은 `preference.budget_type`, 장소 유형은 `required_places[].place_type`입니다. `client_draft_id`, `budget_currency`, 요청의 `category`는 받지 않습니다.
-- 지역명은 백엔드가 보내는 `region_name`을 직접 사용합니다. 별도 지역 목록 파일이 필요하지 않습니다.
+- 백엔드 DTO 형식 요청: `travel_plan_id`, `region_id`, `region_name`, `arrival_datetime`, `departure_datetime`, `headcount`, `companion_type`, `preference`, `required_places`.
+- 백엔드 DTO 형식은 `budget_type`, `place_type`을 사용합니다. 사용자 중첩 형식은 `budget_type`, `category`, `road_address`를 받습니다. `client_draft_id`는 받지 않습니다. 작업 ID를 여행 ID로 바꾸지 않습니다.
+- 지역명은 백엔드 형식의 `region_name` 또는 중첩 형식의 `region.full_name`을 사용합니다. 별도 지역 목록 파일이 필요하지 않습니다.
 - 날짜는 한국시간 `2026-09-19T10:00:00` 형식으로 보낼 수 있습니다.
 - SSE 경로를 백엔드 기본 주소로 변경했습니다. 이전 `/internal/ai/itineraries/generate/stream` 주소는 사용하지 않습니다.
 - 중간에는 상태만, 마지막 `ROUTE_OPTIMIZE_DONE.result`에 일정·음악을 한 번만 전송합니다. 뒤의 `complete`는 완료 상태만 전달합니다. 백엔드가 ROUTE 완료에서 즉시 저장하므로 음악 생성 성공까지 ROUTE 완료를 지연합니다.
@@ -91,7 +91,7 @@ INFO:     Uvicorn running on http://127.0.0.1:8000
 | `ai_service/backend_contract.py` | 백엔드 SSE 단계 이름·결과 저장 형식 변환 |
 | `ai_service/api_examples.py` | Swagger 요청 예시 |
 
-[복사용 여행 요청](../문서/참고자료/여행일정생성요청.json) · [현재 API 규격](../문서/API_TERMS.md) · [백엔드에 전달할 사항](../문서/백엔드_AI_연동_반영사항.md)
+[복사용 여행 요청](../문서/참고자료/여행일정생성요청.json) · [백엔드 DTO 요청](../문서/참고자료/백엔드_여행일정생성요청.json) · [현재 API 규격](../문서/API_TERMS.md) · [백엔드에 전달할 사항](../문서/백엔드_AI_연동_반영사항.md)
 
 실행 가능한 회귀 테스트는 `tests/`에 유지합니다. 다음 명령은 별도 터미널에서 실행하며 실제 외부 모델·카카오 API를 호출하지 않습니다.
 
@@ -99,3 +99,7 @@ INFO:     Uvicorn running on http://127.0.0.1:8000
 cd /Users/samrobert/Documents/GitHub/AI-parking-assignment/development
 ./.venv/bin/python -m unittest discover -s tests -v
 ```
+
+## 요청에서 400이 발생할 때
+
+응답의 `data.error_message`에서 누락된 필드나 JSON 문법 오류를 확인하세요. Swagger의 사용자 중첩 요청 예시는 `generation_job_id`를 받습니다. 문서에서 복사한 줄 끝의 역슬래시, `<br>` 같은 표기 문자는 JSON에 넣지 않습니다.

@@ -7,10 +7,10 @@ import httpx
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from ai_service.api_examples import ITINERARY_REQUEST_EXAMPLE, MUSIC_REQUEST_EXAMPLE
+from ai_service.api_examples import ITINERARY_REQUEST_EXAMPLE, MUSIC_REQUEST_EXAMPLE, LEGACY_ITINERARY_REQUEST_EXAMPLE
 from ai_service.config import Settings
 from ai_service.main import create_app
-from ai_service.schemas import GenerationResult, ItineraryRequest, ItineraryResponse, ItineraryStreamRequest, MusicRequest, TravelGenerationRequest
+from ai_service.schemas import GenerationResult, ItineraryRequest, ItineraryResponse, ItineraryStreamRequest, MusicRequest, TravelGenerationRequest, LegacyGenerationRequest
 
 
 HEADERS = {"Authorization": "Bearer test-only"}
@@ -31,7 +31,7 @@ class SpreadsheetContractTests(unittest.TestCase):
         self.assertEqual(received.required_places[0].provider_place_id, "26338954")
         self.assertNotIn("client_draft_id", response.json())
         self.assertEqual(response.json(), result.model_dump(mode="json"))
-        self.assertIsNone(response.json()["generation_job_id"])
+        self.assertNotIn("generation_job_id", response.json())
         self.assertEqual(received.region.full_name, "제주특별자치도 서귀포시")
         self.assertNotIn("budget_currency", response.json()["preference"])
 
@@ -127,11 +127,11 @@ class SpreadsheetContractTests(unittest.TestCase):
 
     def test_openapi_examples_match_spreadsheet_requests(self):
         spec = create_app(settings=Settings()).openapi()
-        for endpoint, example, schema in (
-            ("/internal/ai/itineraries/generate", ITINERARY_REQUEST_EXAMPLE, TravelGenerationRequest),
-            ("/api/ai/v1/itinerary-jobs/stream", ITINERARY_REQUEST_EXAMPLE, TravelGenerationRequest),
-            ("/internal/ai/music/recommend", MUSIC_REQUEST_EXAMPLE, MusicRequest),
+        for endpoint, example, schema, example_key in (
+            ("/internal/ai/itineraries/generate", LEGACY_ITINERARY_REQUEST_EXAMPLE, LegacyGenerationRequest, "nested"),
+            ("/api/ai/v1/itinerary-jobs/stream", LEGACY_ITINERARY_REQUEST_EXAMPLE, LegacyGenerationRequest, "nested"),
+            ("/internal/ai/music/recommend", MUSIC_REQUEST_EXAMPLE, MusicRequest, "spreadsheet"),
         ):
-            value = spec["paths"][endpoint]["post"]["requestBody"]["content"]["application/json"]["examples"]["spreadsheet"]["value"]
+            value = spec["paths"][endpoint]["post"]["requestBody"]["content"]["application/json"]["examples"][example_key]["value"]
             self.assertEqual(value, example)
             schema.model_validate(value)

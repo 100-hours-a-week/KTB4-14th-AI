@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from ai_service.auth import require_api_token
-from ai_service.api_examples import ITINERARY_REQUEST_EXAMPLE, MUSIC_REQUEST_EXAMPLE
+from ai_service.api_examples import GENERATION_REQUEST_EXAMPLES, MUSIC_REQUEST_EXAMPLE
 from ai_service.config import Settings
 from ai_service.errors import ApiError, ServiceUnavailable
 from ai_service.features import generate_itinerary
@@ -27,6 +27,7 @@ from ai_service.schemas import (
     MusicResponse,
     SelectedMusic,
     TravelGenerationRequest,
+    LegacyGenerationRequest,
 )
 from ai_service.streaming import encode_event
 from ai_service.backend_contract import stream_backend_generation
@@ -41,7 +42,7 @@ STREAM_RESPONSE = {
         "단계별 STARTED/DONE 이벤트를 전송합니다. 최종 일정은 음악 생성 성공 후 "
         "ROUTE_OPTIMIZE_DONE의 result에 한 번만 전송하며, complete는 완료 상태만 보냅니다. "
         "백엔드가 ROUTE_OPTIMIZE_DONE 수신 즉시 저장하므로 이 이벤트는 음악 성공까지 지연합니다. "
-        "대중교통 탑승 안내는 result.days[].routes[].legs의 mode, line_name, vehicle_number, start.name, end.name에 탑승 순서대로 포함됩니다. "
+        "대중교통 탑승 안내는 result.days[].routes[].legs의 mode, line_name, vehicle_number, start.name, end.name에 탑승 순서대로 포함됩니다. start.station_number/end.station_number는 정류장 표시 번호이며 미확인 시 null입니다. "
         "HTTP 200 이후에도 error 이벤트로 실패할 수 있습니다. 인증 Bearer 토큰이 필요합니다."
     ),
     "content": {"text/event-stream": {"schema": {"type": "string"}, "examples": {
@@ -103,8 +104,25 @@ def create_app(
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(request: Request, exc: RequestValidationError):
+        errors = exc.errors()
+        branches = {"LegacyGenerationRequest", "TravelGenerationRequest"}
+        if isinstance(exc.body, dict):
+            branch = ("LegacyGenerationRequest" if "generation_job_id" in exc.body or "region" in exc.body
+                      else "TravelGenerationRequest")
+            selected = [error for error in errors if any(branch in str(part) for part in error["loc"])]
+            errors = selected or errors
+        descriptions = []
+        for error in errors[:5]:
+            # Never echo input values, the request body, or exception contexts.
+            path = ".".join(str(part) for part in error["loc"] if part != "body" and not any(name in str(part) for name in branches)) or "body"
+            reason = {
+                "missing": "필수 값이 없습니다.",
+                "extra_forbidden": "이 요청 형식에서 사용하지 않는 필드입니다.",
+                "json_invalid": "올바른 JSON 문법이 아닙니다. 역슬래시·따옴표·쉼표를 확인해주세요.",
+            }.get(error["type"], "값의 자료형·형식·허용 범위를 확인해주세요.")
+            descriptions.append(f"{path}: {reason}")
         return JSONResponse(
-            status_code=400, content={"message": "invalid_request", "data": None}
+            status_code=400, content={"message": "invalid_request", "data": {"error_message": " / ".join(descriptions)}}
         )
 
     @app.exception_handler(StarletteHTTPException)
@@ -155,10 +173,13 @@ def create_app(
         tags=["V1"],
     )
     async def create_itinerary(
-        body: Annotated[TravelGenerationRequest, Body(openapi_examples={"spreadsheet": {"summary": "백엔드 내부 여행 요청", "value": ITINERARY_REQUEST_EXAMPLE}})],
+        body: Annotated[LegacyGenerationRequest | TravelGenerationRequest, Body(openapi_examples=GENERATION_REQUEST_EXAMPLES)],
         request: Request,
     ):
-        request.state.travel_plan_id = body.travel_plan_id
+        if isinstance(body, LegacyGenerationRequest):
+            request.state.generation_job_id = body.generation_job_id
+        else:
+            request.state.travel_plan_id = body.travel_plan_id
         body = body.generation_context()
         if not settings.openai_api_key or not settings.kakao_rest_api_key:
             raise ServiceUnavailable()
@@ -184,10 +205,13 @@ def create_app(
         tags=["V1"],
     )
     async def stream_itinerary(
-        body: Annotated[TravelGenerationRequest, Body(openapi_examples={"spreadsheet": {"summary": "백엔드 내부 여행 요청으로 단계별 생성", "value": ITINERARY_REQUEST_EXAMPLE}})],
+        body: Annotated[LegacyGenerationRequest | TravelGenerationRequest, Body(openapi_examples=GENERATION_REQUEST_EXAMPLES)],
         request: Request,
     ):
-        request.state.travel_plan_id = body.travel_plan_id
+        if isinstance(body, LegacyGenerationRequest):
+            request.state.generation_job_id = body.generation_job_id
+        else:
+            request.state.travel_plan_id = body.travel_plan_id
         body = body.generation_context()
         if not settings.openai_api_key or not settings.kakao_rest_api_key:
             raise ServiceUnavailable()
