@@ -1,0 +1,33 @@
+# git
+.git
+.gitignore
+.github
+
+# python
+.venv
+venv
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 환경 변수 / 시크릿
+.env
+.env.*
+!.env.example
+
+# 테스트 / 문서
+tests/
+README.md
+
+# 로컬 도구 설정
+.vscode
+.idea
+.DS_Store
+.claude
+
+# 도커 자체
+Dockerfile
+.dockerignore
