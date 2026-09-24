@@ -350,6 +350,7 @@ class RouteLeg(StrictModel):
 
 class RouteDetails(StrictModel):
     transport_type: str
+    total_fare_amount: int | None = Field(default=None, ge=0, strict=True)
     duration_minutes: int = Field(ge=0)
     distance_meter: int = Field(ge=0)
     is_estimated: bool = Field(
@@ -371,16 +372,21 @@ class TransitStopSummary(StrictModel):
     name: NonEmpty
     station_number: str | None = Field(
         default=None, min_length=1, max_length=32,
-        description="버스 정류장 표시 번호. 앞자리 0을 유지하는 문자열. 별도 정류장 데이터로 확인한 경우만 제공하며 현재 카카오 단독 조회는 null. 내부 station_id·장소 ID·버스 번호와 다름",
+        description="정류장·역 표시 번호. 앞자리 0을 유지하는 문자열. 별도 정류장 데이터로 확인한 경우만 제공하며 현재 카카오 단독 조회는 null. 내부 station_id·장소 ID·버스 번호와 다름",
     )
+
+    vehicle_number: list[NonEmpty] = Field(default_factory=list, description="해당 leg의 버스 번호 배열과 동일. 지하철·도보는 빈 배열")
 
 
 class TransitLegSummary(StrictModel):
-    mode: Literal["BUS", "SUBWAY", "TRAIN", "EXPRESSBUS", "AIRPLANE", "FERRY"]
-    line_name: NonEmpty
-    vehicle_number: str | None = None
-    start: TransitStopSummary
-    end: TransitStopSummary
+    sequence: int = Field(ge=1)
+    mode: Literal["WALK", "BUS", "SUBWAY", "TRAIN", "EXPRESSBUS", "AIRPLANE", "FERRY"]
+    boarding_stop: TransitStopSummary
+    alighting_stop: TransitStopSummary
+    vehicle_number: list[NonEmpty] = Field(default_factory=list, description="해당 구간에서 이용 가능한 중복 없는 버스 번호 배열")
+    line_name: list[NonEmpty] = Field(default_factory=list, description="지하철 노선 배열. 버스·도보는 빈 배열")
+    duration_minute: int = Field(ge=0, description="구간 소요 시간(분). 제공사 초 단위를 올림")
+    distance_meter: int = Field(ge=0)
 
 
 class RouteSummary(StrictModel):
@@ -389,16 +395,15 @@ class RouteSummary(StrictModel):
     transport_type: str
     duration_minutes: int = Field(ge=0)
     distance_meter: int = Field(ge=0)
-    line_name: str | None = Field(default=None, description="대중교통 탑승 구간이 하나일 때의 노선명. 환승은 legs 순서 참조")
-    vehicle_number: str | None = Field(default=None, description="대중교통 탑승 구간이 하나일 때의 버스 번호")
-    legs: list[TransitLegSummary] = Field(default_factory=list, description="탑승 순서의 노선·버스 번호·승하차 정류장/역. 상세 좌표와 전체 정류장 목록은 제외")
+    total_fare_amount: int | None = Field(
+        default=None, ge=0, strict=True,
+        description="선택한 카카오 경로 전체 요금(원). 미확인·범위만 제공되면 null, 전체 도보 0, 자동차 null. 구간 합산이나 별도 환승 할인 계산 없음",
+    )
+    legs: list[TransitLegSummary] = Field(default_factory=list, description="도보·탑승·환승을 포함한 이동 순서의 구간 안내. 상세 좌표와 전체 정류장 목록 제외")
 
     @model_serializer(mode="wrap")
     def serialize_summary(self, handler):
         data = handler(self)
-        for key in ("line_name", "vehicle_number"):
-            if data[key] is None:
-                data.pop(key)
         if not data["legs"]:
             data.pop("legs")
         return data
@@ -462,14 +467,7 @@ class ErrorResponse(StrictModel):
 class MusicRecommendation(StrictModel):
     title: NonEmpty
     artist: NonEmpty
-    youtube_url: HttpUrl = Field(description="검증된 곡명·가수의 YouTube 검색 링크. 직접 재생 URL이 아님")
-
-
-class MusicCandidate(StrictModel):
-    music_id: int = Field(gt=0)
-    title: NonEmpty
-    artist: NonEmpty
-    youtube_url: HttpUrl
+    youtube_url: HttpUrl = Field(description="YouTube 검색 결과와 공개 메타데이터에서 확인한 단일 영상의 watch URL")
 
 
 class MusicPreference(StrictModel):
@@ -481,22 +479,9 @@ class MusicRequest(StrictModel):
     region: Region
     duration: Duration
     preference: MusicPreference
-    candidates: list[MusicCandidate] = Field(min_length=1, max_length=100)
-
-    @model_validator(mode="after")
-    def unique_candidates(self):
-        ids = [candidate.music_id for candidate in self.candidates]
-        if len(ids) != len(set(ids)):
-            raise ValueError("candidates music_id must be unique")
-        return self
 
 
-class MusicSelection(StrictModel):
-    """Internal model selects an ID; metadata always comes from the request."""
-    music_id: int
-
-
-class SelectedMusic(MusicCandidate):
+class SelectedMusic(MusicRecommendation):
     travel_plan_id: int
 
 
@@ -511,7 +496,7 @@ class ItineraryStreamRequest(ItineraryRequest):
 
 
 class MusicSuggestion(StrictModel):
-    """Internal model output only: public metadata is verified by the catalogue."""
+    """Internal model output only: video URL is resolved from YouTube."""
     title: NonEmpty
     artist: NonEmpty
 

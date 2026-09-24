@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import math
 import re
 import unicodedata
@@ -13,8 +12,6 @@ from ai_service.config import Settings
 from ai_service.errors import GenerationFailed, ServiceUnavailable
 from ai_service.schemas import ItineraryRequest, Place, TRANSPORT_ALIASES
 from ai_service.transport import base_transport, resolve_day_transports
-
-logger = logging.getLogger(__name__)
 
 
 THEME_QUERIES = {
@@ -160,25 +157,11 @@ class KakaoPlaces:
                 raise ValueError("invalid documents")
             return documents
         except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
-            logger.warning(
-                "kakao_places_request_failed endpoint=%s query=%s status=%s",
-                endpoint,
-                params.get("query"),
-                getattr(getattr(exc, "response", None), "status_code", None),
-            )
             raise ServiceUnavailable() from exc
 
     async def collect(
         self, request: ItineraryRequest, *, include_accommodation: bool = True
     ) -> list[Place]:
-        logger.info(
-            "kakao_places_collect_start travel_plan_id=%s generation_job_id=%s region=%s required_places=%s include_accommodation=%s",
-            request.travel_plan_id,
-            request.generation_job_id,
-            request.region.full_name,
-            len(request.required_places),
-            include_accommodation,
-        )
         pool: dict[str, Place] = {}
         for required in sorted(request.required_places, key=lambda p: p.order):
             if not required.address or not required.category:
@@ -303,13 +286,6 @@ class KakaoPlaces:
             raise GenerationFailed(
                 "해당 지역에서 새로 추천할 수 있는 카카오 장소가 없습니다."
             )
-        logger.info(
-            "kakao_places_collect_done travel_plan_id=%s generation_job_id=%s total=%s required=%s",
-            request.travel_plan_id,
-            request.generation_job_id,
-            len(pool),
-            len(request.required_places),
-        )
         return list(pool.values())
 
     async def accommodations(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from contextlib import asynccontextmanager
 import logging
 from uuid import uuid4
@@ -13,7 +14,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from ai_service.auth import require_api_token
-from ai_service.api_examples import GENERATION_REQUEST_EXAMPLES, MUSIC_REQUEST_EXAMPLE
+from ai_service.api_examples import GENERATION_REQUEST_EXAMPLES, MUSIC_REQUEST_EXAMPLE, MUSIC_RESPONSE_EXAMPLES
 from ai_service.config import Settings
 from ai_service.errors import ApiError, ServiceUnavailable
 from ai_service.features import generate_itinerary
@@ -51,7 +52,7 @@ STREAM_RESPONSE = {
         "result": {"summary": "구조 예시. 실제 결과에는 날짜·방문 항목이 포함됩니다.", "value": encode_event("ROUTE_OPTIMIZE_DONE", 8, {
             "travel_plan_id": 10, "stage": "ROUTE_OPTIMIZE", "status": "DONE",
             "result": {"title": "여행 일정", "days": [], "music": {
-                "title": "Spring Day", "artist": "BTS", "youtube_url": "https://www.youtube.com/results?search_query=BTS+Spring+Day"
+                "title": "Spring Day", "artist": "BTS", "youtube_url": "https://www.youtube.com/watch?v=xEeFrLSkMm8"
             }},
         })},
         "complete": {"value": encode_event("complete", 9, {"travel_plan_id": 10, "stage": "COMPLETE", "status": "COMPLETED"})},
@@ -181,14 +182,6 @@ def create_app(
         else:
             request.state.travel_plan_id = body.travel_plan_id
         body = body.generation_context()
-        logger.info(
-            "ai_generate_request_received request_id=%s endpoint=legacy travel_plan_id=%s generation_job_id=%s region=%s required_places=%s",
-            request.state.request_id,
-            body.travel_plan_id,
-            body.generation_job_id,
-            body.region.full_name,
-            len(body.required_places),
-        )
         if not settings.openai_api_key or not settings.kakao_rest_api_key:
             raise ServiceUnavailable()
         for mode in set(resolve_day_transports(body).values()):
@@ -221,14 +214,6 @@ def create_app(
         else:
             request.state.travel_plan_id = body.travel_plan_id
         body = body.generation_context()
-        logger.info(
-            "ai_stream_request_received request_id=%s travel_plan_id=%s generation_job_id=%s region=%s required_places=%s",
-            request.state.request_id,
-            body.travel_plan_id,
-            body.generation_job_id,
-            body.region.full_name,
-            len(body.required_places),
-        )
         if not settings.openai_api_key or not settings.kakao_rest_api_key:
             raise ServiceUnavailable()
         for mode in set(resolve_day_transports(body).values()):
@@ -252,18 +237,25 @@ def create_app(
     @protected.post(
         "/music/recommend",
         response_model=MusicResponse,
-        responses=ERROR_RESPONSES,
+        responses={
+            code: {
+                **ERROR_RESPONSES.get(code, {}),
+                "description": example["description"],
+                "content": {"application/json": {"example": example["value"]}},
+            }
+            for code, example in MUSIC_RESPONSE_EXAMPLES.items()
+        },
         tags=["V1"],
-        description="스프레드시트 음악 요청 전용. candidates 중 한 곡을 선택하고 후보의 ID·제목·가수·URL을 그대로 반환합니다.",
+        description="여행 지역·기간·테마에 맞는 곡 한 개를 추천하고 실제 YouTube 영상 링크를 반환합니다. 후보 목록은 받지 않습니다.",
     )
     async def recommend_music(
-        body: Annotated[MusicRequest, Body(openapi_examples={"spreadsheet": {"summary": "스프레드시트 음악 후보 요청(URL은 자리표시자)", "value": MUSIC_REQUEST_EXAMPLE}})],
+        body: Annotated[MusicRequest, Body(openapi_examples={"travel": {"summary": "여행 정보 기반 음악 추천", "value": MUSIC_REQUEST_EXAMPLE}})],
         request: Request,
     ):
         request.state.travel_plan_id = body.travel_plan_id
         try:
             async with asyncio.timeout(settings.generation_timeout_seconds):
-                selected = await app.state.planner.select_music(body)
+                selected = await app.state.planner.recommend_music(body)
                 return MusicResponse(data=SelectedMusic(
                     **selected.model_dump(), travel_plan_id=body.travel_plan_id,
                 ))
@@ -272,6 +264,19 @@ def create_app(
 
     app.include_router(protected)
     app.include_router(backend_router)
+
+    default_openapi = app.openapi
+
+    def openapi_with_music_examples():
+        schema = default_openapi()
+        responses = schema["paths"]["/internal/ai/music/recommend"]["post"]["responses"]
+        # FastAPI's OpenAPI encoder drops None, including explicit data:null in
+        # examples. Restore literal response bodies after schema serialization.
+        for code, example in MUSIC_RESPONSE_EXAMPLES.items():
+            responses[str(code)]["content"]["application/json"]["example"] = deepcopy(example["value"])
+        return schema
+
+    app.openapi = openapi_with_music_examples
     return app
 
 

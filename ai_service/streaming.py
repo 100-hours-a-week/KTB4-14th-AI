@@ -32,7 +32,6 @@ async def stream_generation(
         while True:
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
-                logger.warning("ai_stream_timeout request_id=%s stage=%s", request_id, stage)
                 raise ServiceUnavailable()
             if pending is None:
                 pending = asyncio.create_task(anext(generator))
@@ -41,10 +40,8 @@ async def stream_generation(
             )
             # A result arriving after the deadline must not be emitted as success.
             if asyncio.get_running_loop().time() >= deadline:
-                logger.warning("ai_stream_timeout request_id=%s stage=%s", request_id, stage)
                 raise ServiceUnavailable()
             if not done:
-                logger.info("ai_stream_heartbeat request_id=%s stage=%s", request_id, stage)
                 yield ": keep-alive\n\n"
                 continue
             try:
@@ -54,13 +51,6 @@ async def stream_generation(
             finally:
                 pending = None
             sequence += 1
-            logger.info(
-                "ai_stream_event request_id=%s sequence=%s stage=%s status=%s",
-                request_id,
-                sequence,
-                stage,
-                status,
-            )
             event = (
                 "complete"
                 if stage == "COMPLETE"

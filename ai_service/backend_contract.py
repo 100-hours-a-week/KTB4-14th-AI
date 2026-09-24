@@ -1,10 +1,8 @@
 """Wire adapter for feature-travel's existing SSE parser and persistence service."""
 import json
-import logging
 
 from ai_service.streaming import encode_event, stream_generation
 
-logger = logging.getLogger(__name__)
 
 STAGE_NAMES = {
     "PLACES": "PLACE_RECOMMEND",
@@ -61,12 +59,6 @@ async def stream_backend_generation(body, places, planner, settings, request_id,
             stage, status = data["stage"], data["status"]
             if status == "FAILED":
                 sequence += 1
-                logger.warning(
-                    "backend_stream_failure request_id=%s stage=%s message=%s",
-                    request_id,
-                    stage,
-                    data.get("message"),
-                )
                 yield encode_event("error", sequence, {
                     **identity,
                     "stage": STAGE_NAMES.get(stage, stage), "status": "FAILED",
@@ -78,12 +70,6 @@ async def stream_backend_generation(body, places, planner, settings, request_id,
             if stage == "COMPLETE":
                 result = backend_result(data["data"])
                 sequence += 1
-                logger.info(
-                    "backend_stream_result_ready request_id=%s travel_plan_id=%s generation_job_id=%s",
-                    request_id,
-                    identity.get("travel_plan_id"),
-                    identity.get("generation_job_id"),
-                )
                 yield encode_event("ROUTE_OPTIMIZE_DONE", sequence, {
                     **identity,
                     "stage": "ROUTE_OPTIMIZE", "status": "DONE", "result": result,

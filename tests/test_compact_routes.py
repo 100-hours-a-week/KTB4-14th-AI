@@ -56,7 +56,7 @@ class Planner:
 
     async def recommend_music(self, body):
         return MusicRecommendation(title="테스트 음악", artist="테스트",
-                                   youtube_url="https://www.youtube.com/results?search_query=test")
+                                   youtube_url="https://www.youtube.com/watch?v=abcdefghijk")
 
 
 class CompactRoutesTests(unittest.IsolatedAsyncioTestCase):
@@ -141,20 +141,22 @@ class CompactRoutesTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(set(event) == {"stage", "status"} for event in events[:-1]))
         self.assertFalse(any(e["stage"] in {"ROUTES", "COMPLETE"} for e in events))
 
-    async def test_music_error_uses_fallback_and_completes(self):
+    async def test_music_error_uses_compact_error_contract(self):
         class FailingPlanner(Planner):
             async def recommend_music(self, body):
                 raise MusicRecommendationFailed()
 
-        with self.assertLogs("ai_service.pipeline", level="WARNING"):
+        with self.assertLogs("ai_service.streaming", level="ERROR"):
             events = [json.loads(chunk.split("data: ", 1)[1])
                       async for chunk in stream_generation(self.body, self.places, FailingPlanner(), Settings(), "req_test", self.router)
                       if "data: " in chunk]
         final = events[-1]
-        self.assertEqual(final["stage"], "COMPLETE")
-        self.assertEqual(final["status"], "COMPLETED")
-        self.assertEqual(final["data"]["music"]["title"], "여행을 떠나요")
-        self.assertTrue(any(event == {"stage": "MUSIC", "status": "COMPLETED"} for event in events))
+        self.assertEqual(final["stage"], "MUSIC")
+        self.assertEqual(final["status"], "FAILED")
+        self.assertEqual(final["message"], "ai_music_recommendation_failed")
+        self.assertEqual(set(final), {"generation_job_id", "stage", "status", "message", "data"})
+        self.assertEqual(set(final["data"]), {"error_message"})
+        self.assertTrue(all(set(event) == {"stage", "status"} for event in events[:-1]))
         self.assertFalse(all_keys(events) & FORBIDDEN)
 
     def test_http_stream_uses_same_compact_schema_and_header_trace_id(self):
@@ -225,6 +227,4 @@ class CompactRoutesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(schemas["RouteSummary"]["properties"]),
                          {"transport_type", "duration_minutes", "distance_meter", "line_name", "vehicle_number", "legs"})
         for name, schema in schemas.items():
-            if name in {"MusicCandidate", "SelectedMusic"}:
-                continue  # Separate spreadsheet music API returns the backend's candidate ID.
             self.assertFalse(set(schema.get("properties", {})) & FORBIDDEN)

@@ -51,33 +51,6 @@ INFO:     Uvicorn running on http://127.0.0.1:8000
 )
 ```
 
-## Windows 로컬 실행
-
-Windows에서는 Python 3.11 이상을 설치한 뒤 `AUDIGO-AI` 폴더에서 아래 순서로 실행합니다. 처음 한 번은 가상환경을 만들고 `requirements.txt` 기준으로 패키지를 설치합니다.
-
-```powershell
-cd C:\Users\USER\Desktop\AUDIGO\AUDIGO-AI
-py -3.13 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-copy .env.example .env
-.\.venv\Scripts\python.exe -m uvicorn ai_service.main:app --host 127.0.0.1 --port 8000 --reload
-```
-
-Python 3.13이 아니라 3.11 또는 3.12를 설치했다면 첫 줄의 버전만 바꿔 실행하면 됩니다.
-
-```powershell
-py -3.12 -m venv .venv
-```
-
-이미 설치가 끝난 뒤 다시 켤 때는 아래만 실행하면 됩니다.
-
-```powershell
-cd C:\Users\USER\Desktop\AUDIGO\AUDIGO-AI
-.\.venv\Scripts\python.exe -m uvicorn ai_service.main:app --host 127.0.0.1 --port 8000 --reload
-```
-
-AI 서버와 백엔드는 같은 `AUDIGO_API_TOKEN` 값을 공유해야 합니다. AI의 `.env`에는 `AUDIGO_API_TOKEN`, `OPENAI_API_KEY`, `KAKAO_REST_API_KEY`를 채우고, 백엔드 실행 환경변수에도 같은 `AUDIGO_API_TOKEN`을 넣습니다.
-
 ## 참고
 
 - 명령어에 `→`, `%`, 프롬프트 문자열은 붙여넣지 않습니다.
@@ -97,7 +70,7 @@ AI 서버와 백엔드는 같은 `AUDIGO_API_TOKEN` 값을 공유해야 합니�
 | --- | --- |
 | 백엔드 여행 생성 연동(SSE) | `/api/ai/v1/itinerary-jobs/stream` |
 | 기존 일정 JSON 생성 | `/internal/ai/itineraries/generate` |
-| 기존 후보 기반 음악 추천 | `/internal/ai/music/recommend` |
+| 여행 정보 기반 음악 추천 | `/internal/ai/music/recommend` |
 
 - 백엔드 DTO 형식 요청: `travel_plan_id`, `region_id`, `region_name`, `arrival_datetime`, `departure_datetime`, `headcount`, `companion_type`, `preference`, `required_places`.
 - 백엔드 DTO 형식은 `budget_type`, `place_type`을 사용합니다. 사용자 중첩 형식은 `budget_type`, `category`, `road_address`를 받습니다. `client_draft_id`는 받지 않습니다. 작업 ID를 여행 ID로 바꾸지 않습니다.
@@ -107,7 +80,8 @@ AI 서버와 백엔드는 같은 `AUDIGO_API_TOKEN` 값을 공유해야 합니�
 - 중간에는 상태만, 마지막 `ROUTE_OPTIMIZE_DONE.result`에 일정·음악을 한 번만 전송합니다. 뒤의 `complete`는 완료 상태만 전달합니다. 백엔드가 ROUTE 완료에서 즉시 저장하므로 음악 생성 성공까지 ROUTE 완료를 지연합니다.
 - 같은 날 경로는 `days[].routes`에 출발·도착 순서, 이동수단·시간·거리와 대중교통 `legs` 탑승 안내를 전달합니다. 버스 번호·노선명·승하차역을 포함하고 상세 `path` 좌표는 보내지 않습니다. [복구 내용과 백엔드 보완 사항](../문서/대중교통_탑승안내_응답_복구.md)을 참고하세요.
 - 모든 기능 호출에는 `Authorization: Bearer <기존 서비스 토큰>`이 필요합니다. 첨부 백엔드의 `AiSseGenerationClient`에는 이 헤더 추가가 필요합니다.
-- 별도 음악 API는 `candidates` 중 선택합니다. 여행 스트림의 기존 후보 없는 음악 추천 로직은 유지합니다.
+- 별도 음악 API도 후보 없이 지역·기간·테마로 한 곡을 추천합니다. 요청은 `travel_plan_id`, `region`, `duration`, `preference`만 받습니다. 여행 스트림과 별도 음악 API 모두 OpenAI가 곡명·가수를 추천한 뒤 YouTube 공개 검색과 메타데이터 조회로 실제 영상 한 개를 찾아 `youtube_url`에 `https://www.youtube.com/watch?v=...`를 반환합니다. iTunes는 사용하지 않으며 YouTube API 키도 필요 없습니다.
+- 공개 검색에는 `yt-dlp`를 사용합니다(`requirements.txt`에 포함). 영상·음원 파일은 다운로드하지 않습니다. 검색 차단·페이지 변경 시 실패할 수 있으며, 실패를 검색 페이지 링크로 대체하지 않습니다. [음악 링크 변경 내용](../문서/YouTube_음악영상_링크_변경.md)을 참고하세요.
 
 ### 확인할 Python 파일
 
