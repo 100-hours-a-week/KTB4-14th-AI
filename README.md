@@ -51,6 +51,33 @@ INFO:     Uvicorn running on http://127.0.0.1:8000
 )
 ```
 
+## Windows 로컬 실행
+
+Windows에서는 Python 3.11 이상을 설치한 뒤 `AUDIGO-AI` 폴더에서 아래 순서로 실행합니다. 처음 한 번은 가상환경을 만들고 `requirements.txt` 기준으로 패키지를 설치합니다.
+
+```powershell
+cd C:\Users\USER\Desktop\AUDIGO\AUDIGO-AI
+py -3.13 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+copy .env.example .env
+.\.venv\Scripts\python.exe -m uvicorn ai_service.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+Python 3.13이 아니라 3.11 또는 3.12를 설치했다면 첫 줄의 버전만 바꿔 실행하면 됩니다.
+
+```powershell
+py -3.12 -m venv .venv
+```
+
+이미 설치가 끝난 뒤 다시 켤 때는 아래만 실행하면 됩니다.
+
+```powershell
+cd C:\Users\USER\Desktop\AUDIGO\AUDIGO-AI
+.\.venv\Scripts\python.exe -m uvicorn ai_service.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+AI 서버와 백엔드는 같은 `AUDIGO_API_TOKEN` 값을 공유해야 합니다. AI의 `.env`에는 `AUDIGO_API_TOKEN`, `OPENAI_API_KEY`, `KAKAO_REST_API_KEY`를 채우고, 백엔드 실행 환경변수에도 같은 `AUDIGO_API_TOKEN`을 넣습니다.
+
 ## 참고
 
 - 명령어에 `→`, `%`, 프롬프트 문자열은 붙여넣지 않습니다.

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import logging
 
-from ai_service.errors import GenerationFailed, InvalidModelOutput
+from ai_service.errors import ApiError, GenerationFailed, InvalidModelOutput
 from ai_service.features import (
     PACE_POLICIES,
     build_context,
@@ -12,6 +13,7 @@ from ai_service.features import (
     validate_itinerary,
 )
 from ai_service.model import OpenAIPlanner
+from ai_service.music import fallback_music
 from ai_service.places import KakaoPlaces, distance_km, travel_minutes
 from ai_service.routing import KakaoRoutes, schedule_with_routes
 from ai_service.schemas import (
@@ -31,6 +33,8 @@ from ai_service.schemas import (
     RoutesResult,
     SelectionItem,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def public_place(place: Place) -> PlaceResponse:
@@ -172,13 +176,33 @@ async def recommend_places(
             )
         window["needs_accommodation"] = False
     feedback = None
-    for _ in range(2):
+    for attempt in range(1, 3):
         try:
+            logger.info(
+                "ai_places_model_start travel_plan_id=%s generation_job_id=%s attempt=%s candidates=%s",
+                request.travel_plan_id,
+                request.generation_job_id,
+                attempt,
+                len(context["candidates"]),
+            )
             selection = await planner.generate(context, feedback, places_only=True)
             selection = complete_selection(request, selection, places, places_only=True)
             validate_places_selection(request, selection, places)
+            logger.info(
+                "ai_places_model_done travel_plan_id=%s generation_job_id=%s attempt=%s",
+                request.travel_plan_id,
+                request.generation_job_id,
+                attempt,
+            )
             return selection
         except InvalidModelOutput as exc:
+            logger.warning(
+                "ai_places_model_invalid travel_plan_id=%s generation_job_id=%s attempt=%s reason=%s",
+                request.travel_plan_id,
+                request.generation_job_id,
+                attempt,
+                exc,
+            )
             feedback = str(exc)
     raise GenerationFailed(
         "필수 장소와 여행 시간을 만족하는 장소·식당을 추천하지 못했습니다."
@@ -212,6 +236,11 @@ async def recommend_accommodations(
     places: list[Place],
     client: KakaoPlaces,
 ) -> tuple[ModelSelection, list[Place], AccommodationsResult]:
+    logger.info(
+        "ai_accommodations_start travel_plan_id=%s generation_job_id=%s",
+        request.travel_plan_id,
+        request.generation_job_id,
+    )
     combined = selection.model_copy(deep=True)
     pool = {p.provider_place_id: p for p in places}
     required = required_hotels_by_day(request, selection, places)
@@ -286,6 +315,12 @@ async def recommend_accommodations(
     # Final feasibility/required-place check before emitting the lodging result.
     generated = schedule_selection(request, combined, list(pool.values()))
     validate_itinerary(request, generated, list(pool.values()))
+    logger.info(
+        "ai_accommodations_done travel_plan_id=%s generation_job_id=%s accommodations=%s",
+        request.travel_plan_id,
+        request.generation_job_id,
+        len(recommendations),
+    )
     return (
         combined,
         list(pool.values()),
@@ -300,9 +335,26 @@ async def connect_routes(
     model: str,
     router: KakaoRoutes,
 ) -> RoutesResult:
+    logger.info(
+        "ai_routes_start travel_plan_id=%s generation_job_id=%s",
+        request.travel_plan_id,
+        request.generation_job_id,
+    )
     try:
-        return await schedule_with_routes(request, selection, places, model, router)
+        result = await schedule_with_routes(request, selection, places, model, router)
+        logger.info(
+            "ai_routes_done travel_plan_id=%s generation_job_id=%s",
+            request.travel_plan_id,
+            request.generation_job_id,
+        )
+        return result
     except InvalidModelOutput as exc:
+        logger.warning(
+            "ai_routes_invalid travel_plan_id=%s generation_job_id=%s reason=%s",
+            request.travel_plan_id,
+            request.generation_job_id,
+            exc,
+        )
         raise GenerationFailed(
             "조회한 이동시간과 필수 장소를 여행 시간 안에 배치할 수 없습니다. 여행 시간을 늘리거나 장소를 줄여주세요."
         ) from exc
@@ -317,10 +369,28 @@ async def generation_stages(
 ):
     """Each yield is sent before executing the next phase; no database/job store."""
     request = body.itinerary_request()
+    logger.info(
+        "ai_generation_start travel_plan_id=%s generation_job_id=%s region=%s required_places=%s",
+        request.travel_plan_id,
+        request.generation_job_id,
+        request.region.full_name,
+        len(request.required_places),
+    )
     day_windows(request)  # Validate explicit transport constraints before provider calls.
     yield "PLACES", "STARTED", None
+    logger.info(
+        "ai_places_collect_start travel_plan_id=%s generation_job_id=%s",
+        request.travel_plan_id,
+        request.generation_job_id,
+    )
     places = select_candidates(
         request, await client.collect(request, include_accommodation=False)
+    )
+    logger.info(
+        "ai_places_collect_done travel_plan_id=%s generation_job_id=%s candidates=%s",
+        request.travel_plan_id,
+        request.generation_job_id,
+        len(places),
     )
     selection = await recommend_places(request, places, planner)
     yield "PLACES", "COMPLETED", places_result(selection, places)
@@ -339,7 +409,31 @@ async def generation_stages(
     yield "ROUTES", "COMPLETED", routes
 
     yield "MUSIC", "STARTED", None
-    music = await planner.recommend_music(request)
+    logger.info(
+        "ai_music_start travel_plan_id=%s generation_job_id=%s",
+        request.travel_plan_id,
+        request.generation_job_id,
+    )
+    try:
+        music = await planner.recommend_music(request)
+    except ApiError as exc:
+        logger.warning(
+            "ai_music_fallback travel_plan_id=%s generation_job_id=%s reason=%s",
+            request.travel_plan_id,
+            request.generation_job_id,
+            exc.code,
+        )
+        music = fallback_music()
+    logger.info(
+        "ai_music_done travel_plan_id=%s generation_job_id=%s",
+        request.travel_plan_id,
+        request.generation_job_id,
+    )
     result = GenerationResult(**routes.model_dump(), music=music)
     yield "MUSIC", "COMPLETED", music
+    logger.info(
+        "ai_generation_done travel_plan_id=%s generation_job_id=%s",
+        request.travel_plan_id,
+        request.generation_job_id,
+    )
     yield "COMPLETE", "COMPLETED", result

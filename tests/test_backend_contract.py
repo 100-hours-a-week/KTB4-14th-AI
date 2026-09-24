@@ -55,23 +55,22 @@ class BackendContractTests(unittest.TestCase):
                 self.assertEqual(result["music"]["title"], "테스트 음악")
         self.assertEqual(sum("result" in value for _, value in received), 1)
 
-    def test_music_failure_never_commits_route_or_emits_success(self):
+    def test_music_failure_uses_fallback_and_still_completes(self):
         class FailingPlanner(Planner):
             async def recommend_music(self, body):
                 raise MusicRecommendationFailed()
 
         app = self.app()
-        with self.assertLogs("ai_service.streaming", level="ERROR"), TestClient(app) as client:
+        with self.assertLogs("ai_service.pipeline", level="WARNING"), TestClient(app) as client:
             app.state.places, app.state.planner = PlaceClient(), FailingPlanner()
             response = client.post(PATH, json=http_request(request(None, "CAR")), headers=HEADERS)
         received = events(response.text)
         names = [name for name, _ in received]
-        self.assertNotIn("ROUTE_OPTIMIZE_DONE", names)
-        self.assertNotIn("complete", names)
-        self.assertEqual(received[-1][0], "error")
-        self.assertEqual(received[-1][1]["stage"], "MUSIC_RECOMMEND")
-        self.assertEqual(received[-1][1]["travel_plan_id"], 10)
-        self.assertEqual(received[-1][1]["message"], "ai_music_recommendation_failed")
+        self.assertIn("MUSIC_RECOMMEND_DONE", names)
+        self.assertIn("ROUTE_OPTIMIZE_DONE", names)
+        self.assertEqual(received[-1][0], "complete")
+        route_payload = next(payload for name, payload in received if name == "ROUTE_OPTIMIZE_DONE")
+        self.assertEqual(route_payload["result"]["music"]["title"], "여행을 떠나요")
 
     def test_auth_required_and_stream_path_replaced_without_adding_api(self):
         with TestClient(self.app()) as client:

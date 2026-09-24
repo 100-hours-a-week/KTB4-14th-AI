@@ -181,6 +181,14 @@ def create_app(
         else:
             request.state.travel_plan_id = body.travel_plan_id
         body = body.generation_context()
+        logger.info(
+            "ai_generate_request_received request_id=%s endpoint=legacy travel_plan_id=%s generation_job_id=%s region=%s required_places=%s",
+            request.state.request_id,
+            body.travel_plan_id,
+            body.generation_job_id,
+            body.region.full_name,
+            len(body.required_places),
+        )
         if not settings.openai_api_key or not settings.kakao_rest_api_key:
             raise ServiceUnavailable()
         for mode in set(resolve_day_transports(body).values()):
@@ -213,6 +221,14 @@ def create_app(
         else:
             request.state.travel_plan_id = body.travel_plan_id
         body = body.generation_context()
+        logger.info(
+            "ai_stream_request_received request_id=%s travel_plan_id=%s generation_job_id=%s region=%s required_places=%s",
+            request.state.request_id,
+            body.travel_plan_id,
+            body.generation_job_id,
+            body.region.full_name,
+            len(body.required_places),
+        )
         if not settings.openai_api_key or not settings.kakao_rest_api_key:
             raise ServiceUnavailable()
         for mode in set(resolve_day_transports(body).values()):

@@ -7,7 +7,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 from ai_service.config import Settings
-from ai_service.errors import MusicRecommendationFailed, ServiceUnavailable
+from ai_service.errors import ServiceUnavailable
 from ai_service.main import create_app
 from ai_service.model import OpenAIPlanner
 from ai_service.music import MusicCatalog
@@ -83,7 +83,7 @@ class MusicTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(m["role"] == "assistant" and "Unverified" in m["content"] for m in model_calls[1]["messages"]))
         self.assertFalse(any("private-marker" in str(r.url) for r in catalog_calls))
 
-    async def test_two_invalid_suggestions_fail_without_demo_fallback(self):
+    async def test_two_invalid_suggestions_use_fallback_music(self):
         for raw in ('{"title":"Unverified","artist":"Unknown"}', '{"music_id":1}'):
             calls = []
 
@@ -95,9 +95,9 @@ class MusicTests(unittest.IsolatedAsyncioTestCase):
 
             with self.subTest(raw=raw):
                 async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
-                    with self.assertRaises(MusicRecommendationFailed) as error:
-                        await OpenAIPlanner(client, Settings(openai_api_key="test-only")).recommend_music(request())
-                self.assertEqual(error.exception.status_code, 422)
+                    song = await OpenAIPlanner(client, Settings(openai_api_key="test-only")).recommend_music(request())
+                self.assertEqual(song.title, "여행을 떠나요")
+                self.assertEqual(song.artist, "조용필")
                 self.assertEqual(len(calls), 2)
 
 

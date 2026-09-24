@@ -17,6 +17,15 @@ def normalized(value: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFKC", value).casefold() if c.isalnum())
 
 
+def fallback_music() -> MusicRecommendation:
+    return MusicRecommendation(
+        title="여행을 떠나요",
+        artist="조용필",
+        youtube_url="https://www.youtube.com/results?"
+        + urlencode({"search_query": "조용필 여행을 떠나요 official audio"}),
+    )
+
+
 class MusicCatalog:
     def __init__(self, client: httpx.AsyncClient):
         self.client = client

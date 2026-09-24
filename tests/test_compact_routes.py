@@ -141,22 +141,20 @@ class CompactRoutesTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(set(event) == {"stage", "status"} for event in events[:-1]))
         self.assertFalse(any(e["stage"] in {"ROUTES", "COMPLETE"} for e in events))
 
-    async def test_music_error_uses_compact_error_contract(self):
+    async def test_music_error_uses_fallback_and_completes(self):
         class FailingPlanner(Planner):
             async def recommend_music(self, body):
                 raise MusicRecommendationFailed()
 
-        with self.assertLogs("ai_service.streaming", level="ERROR"):
+        with self.assertLogs("ai_service.pipeline", level="WARNING"):
             events = [json.loads(chunk.split("data: ", 1)[1])
                       async for chunk in stream_generation(self.body, self.places, FailingPlanner(), Settings(), "req_test", self.router)
                       if "data: " in chunk]
         final = events[-1]
-        self.assertEqual(final["stage"], "MUSIC")
-        self.assertEqual(final["status"], "FAILED")
-        self.assertEqual(final["message"], "ai_music_recommendation_failed")
-        self.assertEqual(set(final), {"generation_job_id", "stage", "status", "message", "data"})
-        self.assertEqual(set(final["data"]), {"error_message"})
-        self.assertTrue(all(set(event) == {"stage", "status"} for event in events[:-1]))
+        self.assertEqual(final["stage"], "COMPLETE")
+        self.assertEqual(final["status"], "COMPLETED")
+        self.assertEqual(final["data"]["music"]["title"], "여행을 떠나요")
+        self.assertTrue(any(event == {"stage": "MUSIC", "status": "COMPLETED"} for event in events))
         self.assertFalse(all_keys(events) & FORBIDDEN)
 
     def test_http_stream_uses_same_compact_schema_and_header_trace_id(self):

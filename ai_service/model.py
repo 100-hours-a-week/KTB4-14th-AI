@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 
 import httpx
 from pydantic import ValidationError
 
 from ai_service.config import Settings
-from ai_service.music import MusicCatalog
+from ai_service.music import MusicCatalog, fallback_music
 from ai_service.errors import (
     GenerationFailed,
     InvalidModelOutput,
@@ -22,6 +23,8 @@ from ai_service.schemas import (
     MusicSelection,
     ModelSelection,
 )
+
+logger = logging.getLogger(__name__)
 
 
 SYSTEM_PROMPT = """당신은 한국 여행 일정을 만드는 AUDIGO V1 일정 설계자입니다.
@@ -133,8 +136,9 @@ class OpenAIPlanner:
                 if selected is not None:
                     return selected
                 messages.append({"role": "assistant", "content": choice.model_dump_json()})
-            except GenerationFailed as exc:
-                raise MusicRecommendationFailed() from exc
+            except (GenerationFailed, ServiceUnavailable) as exc:
+                logger.warning("ai_music_fallback reason=%s", type(exc).__name__)
+                return fallback_music()
             except (InvalidModelOutput, ValidationError):
                 pass
             messages.append(
@@ -144,7 +148,8 @@ class OpenAIPlanner:
                     "다른 실제 발매곡 한 곡을 정식 곡명·가수로 반환하세요.",
                 }
             )
-        raise MusicRecommendationFailed()
+        logger.warning("ai_music_fallback reason=unverified_suggestions")
+        return fallback_music()
 
     async def select_music(self, request: MusicRequest) -> MusicCandidate:
         """Spreadsheet contract: select from backend-provided songs only."""
@@ -176,6 +181,7 @@ class OpenAIPlanner:
         if not self.settings.openai_api_key:
             raise ServiceUnavailable()
         try:
+            logger.info("openai_completion_start name=%s model=%s", name, self.settings.openai_model)
             response = await self.client.post(
                 "https://api.openai.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {self.settings.openai_api_key}"},
@@ -195,8 +201,14 @@ class OpenAIPlanner:
                 },
             )
             response.raise_for_status()
+            logger.info("openai_completion_done name=%s model=%s", name, self.settings.openai_model)
         except httpx.HTTPError as exc:
             # Never forward upstream bodies, credentials or headers to the caller.
+            logger.warning(
+                "openai_completion_failed name=%s status=%s",
+                name,
+                getattr(getattr(exc, "response", None), "status_code", None),
+            )
             raise ServiceUnavailable() from exc
         try:
             choice = response.json()["choices"][0]
