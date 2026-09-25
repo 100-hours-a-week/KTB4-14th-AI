@@ -1,0 +1,98 @@
+name: AI Production CD
+
+on:
+  push:
+    branches: [main] # main에 반영되면 자동 배포
+
+concurrency:
+  # 운영 배포는 한 번에 하나만 실행하며 진행 중인 배포를 새 실행으로 취소하지 않음
+  group: ai-production-deploy
+  cancel-in-progress: false
+
+permissions:
+  # Checkout에 필요한 읽기 권한
+  contents: read
+  # GitHub OIDC Token을 발급받아 AWS IAM Role을 Assume하기 위한 권한
+  id-token: write
+  # Trivy 스캔 결과(SARIF)를 GitHub Security 탭에 업로드하기 위한 권한
+  security-events: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+
+    env:
+      # 수동 실행 화면에서 선택한 Git ref의 Commit SHA를 변경 불가능한 이미지 식별자로 사용
+      IMAGE: ${{ vars.DOCKERHUB_IMAGE }}:sha-${{ github.sha }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Docker Buildx 준비
+        uses: docker/setup-buildx-action@v4
+
+      - name: Docker Hub 로그인
+        uses: docker/login-action@v4
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: ARM64 이미지 빌드 (로컬 로드, 아직 Push 안 함)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/arm64
+          push: false
+          load: true
+          tags: ${{ env.IMAGE }}
+          # Dockerfile 레이어 캐시 최적화 + 러너(GHA) 캐시 재사용
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Trivy 취약점 스캔
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: ${{ env.IMAGE }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          exit-code: '0' # 현재는 리포트 전용 / TODO: 방어 전환 시 '1'로 변경
+
+      - name: Trivy 결과 업로드 (GitHub Security 탭)
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+
+      - name: 이미지 Push
+        run: docker push ${{ env.IMAGE }}
+
+      - name: GitHub OIDC로 AWS 인증
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: ai-cd-${{ github.run_id }}
+
+      - name: Task Definition에 신규 이미지 반영
+        id: task-definition
+        # Task Definition Family의 최신 Revision을 가져와 지정 Container의 Image만 변경
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition-family: ${{ vars.ECS_TASK_DEFINITION_FAMILY }}
+          container-name: ${{ vars.ECS_CONTAINER_NAME }}
+          image: ${{ env.IMAGE }}
+
+      - name: ECS Service 배포
+        # AI ECS Service에 신규 Task Definition을 배포하고 안정화될 때까지 대기
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.task-definition.outputs.task-definition }}
+          cluster: ${{ vars.ECS_CLUSTER }}
+          service: ${{ vars.ECS_SERVICE }}
+          wait-for-service-stability: true
+          wait-max-delay-seconds: 15
