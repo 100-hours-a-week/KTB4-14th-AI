@@ -29,7 +29,7 @@ def transfer_payload(origin, destination):
 
 
 class TransitGuidanceTests(unittest.IsolatedAsyncioTestCase):
-    async def test_bus_alternatives_deduplicate_in_order_and_limit_each_leg(self):
+    async def test_bus_alternatives_deduplicate_in_order_without_truncation(self):
         origin, destination = places()[:2]
         payload = transit_payload(origin, destination, ("BUS",))
         names = ["201"] * 6 + [" 201 ", "211", "211", "212", "295", "722-1", "722-2", "999"]
@@ -41,10 +41,13 @@ class TransitGuidanceTests(unittest.IsolatedAsyncioTestCase):
                 origin, destination, datetime(2026, 9, 19, 10, tzinfo=KST), "PUBLIC_TRANSPORT",
             )
         summary = summarize_route(details).model_dump()
-        expected = "201 / 211 / 212 / 295 / 722-1 / 722-2"
-        self.assertEqual(summary["vehicle_number"], expected)
-        self.assertEqual(summary["line_name"], expected)
+        expected = ["201", "211", "212", "295", "722-1", "722-2", "999"]
+        self.assertNotIn("vehicle_number", summary)
+        self.assertNotIn("line_name", summary)
         self.assertEqual(summary["legs"][0]["vehicle_number"], expected)
+        self.assertEqual(summary["legs"][0]["boarding_stop"]["vehicle_number"], expected)
+        self.assertEqual(summary["legs"][0]["alighting_stop"]["vehicle_number"], expected)
+        self.assertEqual(summary["legs"][0]["line_name"], [])
         # Repeated boarding later in the journey is a separate leg, not a duplicate.
         details.legs.append(details.legs[0].model_copy(deep=True))
         self.assertEqual(len(summarize_route(details).legs), 2)
@@ -59,12 +62,12 @@ class TransitGuidanceTests(unittest.IsolatedAsyncioTestCase):
         summary = summarize_route(details).model_dump(mode="json")
         self.assertEqual(summary["duration_minutes"], 11)
         self.assertEqual([leg["mode"] for leg in summary["legs"]], ["BUS", "SUBWAY"])
-        self.assertEqual(summary["legs"][0]["vehicle_number"], "141(심야)")
-        self.assertEqual(summary["legs"][0]["start"], {"name": "출발 정류장", "station_number": None})
-        self.assertEqual(summary["legs"][0]["end"], {"name": "환승 정류장", "station_number": None})
-        self.assertEqual(summary["legs"][1]["line_name"], "2호선")
-        self.assertEqual(summary["legs"][1]["start"], {"name": "환승역", "station_number": None})
-        self.assertEqual(summary["legs"][1]["end"], {"name": "도착역", "station_number": None})
+        self.assertEqual(summary["legs"][0]["vehicle_number"], ["141(심야)"])
+        self.assertEqual(summary["legs"][0]["boarding_stop"], {"name": "출발 정류장", "station_number": None, "vehicle_number": ["141(심야)"]})
+        self.assertEqual(summary["legs"][0]["alighting_stop"], {"name": "환승 정류장", "station_number": None, "vehicle_number": ["141(심야)"]})
+        self.assertEqual(summary["legs"][1]["line_name"], ["2호선"])
+        self.assertEqual(summary["legs"][1]["boarding_stop"], {"name": "환승역", "station_number": None, "vehicle_number": []})
+        self.assertEqual(summary["legs"][1]["alighting_stop"], {"name": "도착역", "station_number": None, "vehicle_number": []})
         self.assertNotIn("vehicle_number", summary)  # Do not label a transfer as one bus.
         self.assertFalse(all_keys(summary) & {"path", "latitude", "longitude", "stops", "vehicles", "instructions"})
         details.legs[0].start.station_number = "00123"
@@ -72,15 +75,15 @@ class TransitGuidanceTests(unittest.IsolatedAsyncioTestCase):
         details.legs[0].start.station_id = "provider-internal-id"
         details.legs[1].start.station_id = "subway-internal-id"
         enriched = summarize_route(details).model_dump(mode="json")
-        self.assertEqual(enriched["legs"][0]["start"]["station_number"], "00123")
-        self.assertEqual(enriched["legs"][0]["end"]["station_number"], "00456")
-        self.assertIsNone(enriched["legs"][1]["start"]["station_number"])
+        self.assertEqual(enriched["legs"][0]["boarding_stop"]["station_number"], "00123")
+        self.assertEqual(enriched["legs"][0]["alighting_stop"]["station_number"], "00456")
+        self.assertIsNone(enriched["legs"][1]["boarding_stop"]["station_number"])
         self.assertNotIn("station_id", all_keys(enriched))
 
 
     async def test_missing_transit_stations_are_not_filled_with_place_names(self):
         origin, destination = places()[:2]
-        for stops in ([], [{"name": "출발", "station_number": None}], [{"name": " "}, {"name": "도착", "station_number": None}]):
+        for stops in ([], [{"name": "출발", "station_number": None, "vehicle_number": ["141(심야)"]}], [{"name": " "}, {"name": "도착", "station_number": None, "vehicle_number": ["141(심야)"]}]):
             payload = transfer_payload(origin, destination)
             payload["routes"][0]["steps"][0]["properties"]["stops"] = stops
             with self.subTest(stops=stops):
@@ -98,9 +101,9 @@ class TransitGuidanceTests(unittest.IsolatedAsyncioTestCase):
                 origin, destination, datetime(2026, 9, 19, 10, tzinfo=KST), "PUBLIC_TRANSPORT",
             )
         result = summarize_route(details).model_dump()
-        self.assertEqual(result["line_name"], "2호선")
+        self.assertEqual(result["legs"][0]["line_name"], ["2호선"])
         self.assertNotIn("vehicle_number", result)
-        self.assertIsNone(result["legs"][0]["vehicle_number"])
+        self.assertEqual(result["legs"][0]["vehicle_number"], [])
 
 
 class PublicTransitGuidanceTests(unittest.TestCase):
@@ -109,12 +112,16 @@ class PublicTransitGuidanceTests(unittest.TestCase):
             p = req.url.params
             origin = type("Point", (), {"latitude": float(p["start_y"]), "longitude": float(p["start_x"])})()
             destination = type("Point", (), {"latitude": float(p["end_y"]), "longitude": float(p["end_x"])})()
-            return httpx.Response(200, json=transit_payload(origin, destination))
+            payload = transit_payload(origin, destination)
+            for route in payload["routes"]:
+                route["properties"]["fare"] = {"value": 1650}
+            return httpx.Response(200, json=payload)
 
         app = create_app(settings=Settings(api_token="test-only", openai_api_key="test", kakao_rest_api_key="test"), transport=httpx.MockTransport(handle))
         with TestClient(app) as client:
             app.state.places, app.state.planner = PlaceClient(), Planner()
             response = client.post("/api/ai/v1/itinerary-jobs/stream", json=http_request(), headers={"Authorization": "Bearer test-only"})
+            json_response = client.post("/internal/ai/itineraries/generate", json=http_request(), headers={"Authorization": "Bearer test-only"})
             original_route = app.state.routes.route
 
             async def with_verified_numbers(*args):
@@ -131,17 +138,27 @@ class PublicTransitGuidanceTests(unittest.TestCase):
             schema = client.get("/openapi.json").json()["components"]["schemas"]["TransitStopSummary"]
             self.assertIn("station_number", schema["properties"])
 
+        self.assertEqual(json_response.status_code, 200, json_response.text)
+        for day in json_response.json()["days"]:
+            for item in day["items"]:
+                route = item.get("route_from_previous")
+                if route:
+                    self.assertEqual(route["total_fare_amount"], None if day["day_number"] == 1 else 1650)
+                    if day["day_number"] == 2:
+                        self.assertEqual(route["legs"][0]["boarding_stop"]["vehicle_number"], ["141(심야)"])
         self.assertEqual(response.status_code, 200)
         events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
         result = next(event["result"] for event in events if "result" in event)
         for route in result["days"][0]["routes"]:
             self.assertEqual(route["transport_type"], "CAR")
             self.assertNotIn("legs", route)
+            self.assertIsNone(route["total_fare_amount"])
             self.assertNotIn("vehicle_number", route)
         for route in result["days"][1]["routes"]:
-            self.assertEqual(route["vehicle_number"], "141(심야)")
-            self.assertEqual(route["legs"][0]["start"], {"name": "출발", "station_number": None})
-            self.assertEqual(route["legs"][0]["end"], {"name": "도착", "station_number": None})
+            self.assertEqual(route["total_fare_amount"], 1650)
+            self.assertEqual(route["legs"][0]["vehicle_number"], ["141(심야)"])
+            self.assertEqual(route["legs"][0]["boarding_stop"], {"name": "출발", "station_number": None, "vehicle_number": ["141(심야)"]})
+            self.assertEqual(route["legs"][0]["alighting_stop"], {"name": "도착", "station_number": None, "vehicle_number": ["141(심야)"]})
         self.assertEqual(sum("result" in event for event in events), 1)
         self.assertFalse(all_keys(events) & {"path", "stops", "instructions", "vehicles"})
 
@@ -149,5 +166,5 @@ class PublicTransitGuidanceTests(unittest.TestCase):
         enriched_events = [json.loads(line[6:]) for line in enriched_response.text.splitlines() if line.startswith("data: ")]
         enriched_result = next(event["result"] for event in enriched_events if "result" in event)
         for route in enriched_result["days"][1]["routes"]:
-            self.assertEqual(route["legs"][0]["start"]["station_number"], "00123")
-            self.assertEqual(route["legs"][0]["end"]["station_number"], "00456")
+            self.assertEqual(route["legs"][0]["boarding_stop"]["station_number"], "00123")
+            self.assertEqual(route["legs"][0]["alighting_stop"]["station_number"], "00456")

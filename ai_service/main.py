@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from ai_service.auth import require_api_token
-from ai_service.api_examples import GENERATION_REQUEST_EXAMPLES, MUSIC_REQUEST_EXAMPLE, MUSIC_RESPONSE_EXAMPLES
+from ai_service.api_examples import GENERATION_REQUEST_EXAMPLES, MUSIC_REQUEST_EXAMPLE, MUSIC_RESPONSE_EXAMPLES, ROUTE_RESPONSE_EXAMPLE
 from ai_service.config import Settings
 from ai_service.errors import ApiError, ServiceUnavailable
 from ai_service.features import generate_itinerary
@@ -43,15 +43,16 @@ STREAM_RESPONSE = {
         "단계별 STARTED/DONE 이벤트를 전송합니다. 최종 일정은 음악 생성 성공 후 "
         "ROUTE_OPTIMIZE_DONE의 result에 한 번만 전송하며, complete는 완료 상태만 보냅니다. "
         "백엔드가 ROUTE_OPTIMIZE_DONE 수신 즉시 저장하므로 이 이벤트는 음악 성공까지 지연합니다. "
-        "대중교통 탑승 안내는 result.days[].routes[].legs의 mode, line_name, vehicle_number, start.name, end.name에 탑승 순서대로 포함됩니다. start.station_number/end.station_number는 정류장 표시 번호이며 미확인 시 null입니다. "
+        "result.days[].routes[].legs는 sequence 순서로 도보·버스·지하철 구간을 제공합니다. boarding_stop/alighting_stop에는 이름·검증된 station_number(미확인 null)·버스 번호 배열이 포함됩니다. vehicle_number는 버스 번호 배열, line_name은 지하철 노선 배열입니다. 각 구간에 duration_minute와 distance_meter를 제공합니다. route.total_fare_amount는 선택한 카카오 경로 전체 요금이며 구간 합산하지 않습니다. "
         "HTTP 200 이후에도 error 이벤트로 실패할 수 있습니다. 인증 Bearer 토큰이 필요합니다."
     ),
     "content": {"text/event-stream": {"schema": {"type": "string"}, "examples": {
         "started": {"value": encode_event("PLACE_RECOMMEND_STARTED", 1, {"stage": "PLACE_RECOMMEND", "status": "RUNNING"})},
         "done": {"value": encode_event("PLACE_RECOMMEND_DONE", 2, {"stage": "PLACE_RECOMMEND", "status": "DONE"})},
-        "result": {"summary": "구조 예시. 실제 결과에는 날짜·방문 항목이 포함됩니다.", "value": encode_event("ROUTE_OPTIMIZE_DONE", 8, {
+        "result": {"summary": "승하차·요금 구조 예시. 방문 항목은 생략했으며 이름·요금은 실제 조회 결과가 아닙니다.", "value": encode_event("ROUTE_OPTIMIZE_DONE", 8, {
             "travel_plan_id": 10, "stage": "ROUTE_OPTIMIZE", "status": "DONE",
-            "result": {"title": "여행 일정", "days": [], "music": {
+            "result": {"title": "여행 일정", "days": [{"day_number": 1, "travel_date": "2026-09-25", "items": [],
+                "routes": [{"from_sequence": 1, "to_sequence": 2, "order": 1, **ROUTE_RESPONSE_EXAMPLE}]}], "music": {
                 "title": "Spring Day", "artist": "BTS", "youtube_url": "https://www.youtube.com/watch?v=xEeFrLSkMm8"
             }},
         })},
@@ -267,16 +268,17 @@ def create_app(
 
     default_openapi = app.openapi
 
-    def openapi_with_music_examples():
+    def openapi_with_response_examples():
         schema = default_openapi()
         responses = schema["paths"]["/internal/ai/music/recommend"]["post"]["responses"]
         # FastAPI's OpenAPI encoder drops None, including explicit data:null in
         # examples. Restore literal response bodies after schema serialization.
         for code, example in MUSIC_RESPONSE_EXAMPLES.items():
             responses[str(code)]["content"]["application/json"]["example"] = deepcopy(example["value"])
+        schema["components"]["schemas"]["RouteSummary"]["examples"] = [deepcopy(ROUTE_RESPONSE_EXAMPLE)]
         return schema
 
-    app.openapi = openapi_with_music_examples
+    app.openapi = openapi_with_response_examples
     return app
 
 

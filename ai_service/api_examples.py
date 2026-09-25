@@ -84,3 +84,35 @@ LEGACY_ITINERARY_REQUEST_EXAMPLE = {
 GENERATION_REQUEST_EXAMPLES = {
     "nested": {"summary": "사용자 요청: generation_job_id / region / duration", "value": LEGACY_ITINERARY_REQUEST_EXAMPLE},
 }
+
+
+# Illustrative route only; numbers/names are not a live journey quotation.
+ROUTE_RESPONSE_EXAMPLE = {
+    "transport_type": "PUBLIC_TRANSPORT",
+    "duration_minutes": 37,
+    "distance_meter": 14700,
+    "total_fare_amount": 1650,
+    "legs": [
+        {
+            "sequence": 1, "mode": "BUS",
+            "boarding_stop": {"name": "출발 정류장", "station_number": None, "vehicle_number": ["201", "211"]},
+            "alighting_stop": {"name": "환승 정류장", "station_number": None, "vehicle_number": ["201", "211"]},
+            "vehicle_number": ["201", "211"], "line_name": [],
+            "duration_minute": 20, "distance_meter": 5000,
+        },
+        {
+            "sequence": 2, "mode": "WALK",
+            "boarding_stop": {"name": "환승 정류장", "station_number": None, "vehicle_number": []},
+            "alighting_stop": {"name": "환승역", "station_number": None, "vehicle_number": []},
+            "vehicle_number": [], "line_name": [],
+            "duration_minute": 2, "distance_meter": 200,
+        },
+        {
+            "sequence": 3, "mode": "SUBWAY",
+            "boarding_stop": {"name": "환승역", "station_number": None, "vehicle_number": []},
+            "alighting_stop": {"name": "도착역", "station_number": None, "vehicle_number": []},
+            "vehicle_number": [], "line_name": ["9호선 급행"],
+            "duration_minute": 15, "distance_meter": 9500,
+        },
+    ],
+}
