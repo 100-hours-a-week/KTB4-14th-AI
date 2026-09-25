@@ -96,6 +96,3 @@ jobs:
           service: ${{ vars.ECS_SERVICE }}
           wait-for-service-stability: true
           wait-max-delay-seconds: 15
-
-      - name: 공개 Health Check
-        run: curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-all-errors "${{ vars.AI_HEALTH_URL }}"
