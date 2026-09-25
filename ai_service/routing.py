@@ -30,32 +30,47 @@ NO_TRANSIT_MESSAGE = "이용할 수 있는 대중교통이 없습니다"
 
 
 def summarize_route(details: RouteDetails) -> RouteSummary:
-    # Whitelist boarding information; never serialize provider geometry/stops.
+    # Whitelist public guidance; provider geometry and full stop lists stay internal.
     legs = []
-    if details.transport_type == "PUBLIC_TRANSPORT":
+    if details.transport_type in {"PUBLIC_TRANSPORT", "WALK"}:
         for leg in details.legs:
-            if leg.mode in {"WALK", "CAR"}:
+            if leg.mode == "CAR":
                 continue
-            names = list(dict.fromkeys(" ".join(v.name.split()) for v in leg.vehicles if v.name.strip()))[:6]
+            names = list(dict.fromkeys(" ".join(v.name.split()) for v in leg.vehicles if v.name.strip()))
+            buses = names if leg.mode in {"BUS", "EXPRESSBUS"} else []
+            if not buses and leg.mode in {"BUS", "EXPRESSBUS"} and leg.bus_number:
+                buses = [leg.bus_number]
+            lines = names if leg.mode in {"SUBWAY", "TRAIN"} else []
+            if not lines and leg.mode in {"SUBWAY", "TRAIN"} and leg.route_name:
+                lines = [leg.route_name]
             legs.append(TransitLegSummary(
+                sequence=len(legs) + 1,
                 mode=leg.mode,
-                line_name=" / ".join(names) or leg.route_name,
-                vehicle_number=(" / ".join(names) or leg.bus_number)
-                if leg.mode in {"BUS", "EXPRESSBUS"} else None,
-                start={"name": leg.start.name, "station_number": leg.start.station_number
-                       if leg.mode in {"BUS", "EXPRESSBUS"} else None},
-                end={"name": leg.end.name, "station_number": leg.end.station_number
-                     if leg.mode in {"BUS", "EXPRESSBUS"} else None},
+                vehicle_number=buses,
+                line_name=lines,
+                boarding_stop={"name": leg.start.name, "station_number": leg.start.station_number
+                               if leg.mode != "WALK" else None, "vehicle_number": buses},
+                alighting_stop={"name": leg.end.name, "station_number": leg.end.station_number
+                                if leg.mode != "WALK" else None, "vehicle_number": buses},
+                duration_minute=math.ceil(leg.duration_seconds / 60),
+                distance_meter=leg.distance_meter,
             ))
-    single = legs[0] if len(legs) == 1 else None
+    fare = (0 if details.transport_type == "WALK" else details.total_fare_amount
+            if details.transport_type == "PUBLIC_TRANSPORT" else None)
     return RouteSummary(
         transport_type=details.transport_type,
         duration_minutes=details.duration_minutes,
         distance_meter=details.distance_meter,
-        line_name=single.line_name if single else None,
-        vehicle_number=single.vehicle_number if single else None,
+        total_fare_amount=fare,
         legs=legs,
     )
+
+
+def route_fare(properties: dict) -> int | None:
+    """Accept only the provider's explicit integer whole-route fare, never a range."""
+    fare = properties.get("fare")
+    value = fare.get("value") if isinstance(fare, dict) else None
+    return value if type(value) is int and value >= 0 else None
 
 
 def number(value) -> int:
@@ -288,6 +303,7 @@ class KakaoRoutes:
         return RouteDetails(
             provider="KAKAO",
             transport_type="PUBLIC_TRANSPORT",
+            total_fare_amount=route_fare(option["properties"]),
             is_estimated=False,
             departure_datetime=departure,
             arrival_datetime=departure + timedelta(seconds=total),

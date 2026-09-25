@@ -42,7 +42,7 @@ class NestedRequestTests(unittest.TestCase):
             yield "PLACES", "STARTED", None
             yield "COMPLETE", "COMPLETED", GenerationResult(
                 itinerary=ItineraryResponse(**body.model_dump(), title="제주 일정", days=[]),
-                music={"title": "테스트", "artist": "테스트", "youtube_url": "https://www.youtube.com/results?search_query=test"},
+                music={"title": "테스트", "artist": "테스트", "youtube_url": "https://www.youtube.com/watch?v=abcdefghijk"},
             )
 
         with patch("ai_service.streaming.generation_stages", side_effect=pipeline), TestClient(create_app(settings=SETTINGS)) as client:

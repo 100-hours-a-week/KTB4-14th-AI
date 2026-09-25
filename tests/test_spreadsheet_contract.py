@@ -43,7 +43,7 @@ class SpreadsheetContractTests(unittest.TestCase):
             itinerary = ItineraryResponse(**body.itinerary_request().model_dump(), title="테스트 일정", days=[])
             yield "PLACES", "STARTED", None
             yield "COMPLETE", "COMPLETED", GenerationResult(itinerary=itinerary, music={
-                "title": "테스트", "artist": "테스트", "youtube_url": "https://www.youtube.com/results?search_query=test",
+                "title": "테스트", "artist": "테스트", "youtube_url": "https://www.youtube.com/watch?v=abcdefghijk",
             })
 
         with patch("ai_service.streaming.generation_stages", side_effect=pipeline), TestClient(create_app(settings=settings)) as client:
@@ -73,64 +73,60 @@ class SpreadsheetContractTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             TravelGenerationRequest.model_validate(data)
 
-    def test_exact_music_request_selects_only_candidate_and_preserves_metadata(self):
-        # A single supplied candidate needs no model or catalog API call.
-        with TestClient(create_app(settings=Settings(api_token="test-only"))) as client:
+    def test_music_request_recommends_song_and_returns_verified_video(self):
+        calls = []
+        def handle(req):
+            if req.method == "POST":
+                payload = json.loads(req.content)
+                calls.append(payload)
+                context = json.loads(payload["messages"][1]["content"])
+                self.assertEqual(context, {k: MUSIC_REQUEST_EXAMPLE[k] for k in ("region", "duration", "preference")})
+                suggestion = {"title": "Unverified" if len(calls) == 1 else "Yellow", "artist": "Coldplay"}
+                return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(suggestion)}}]})
+            self.assertEqual(req.url.host, "www.youtube.com")
+            return httpx.Response(200, json={"type": "video", "title": "Coldplay - Yellow", "author_name": "Coldplay"})
+        search = AsyncMock(side_effect=[[], [{"id": "abcdefghijk", "title": "Coldplay - Yellow", "channel": "Coldplay"}]])
+        settings = Settings(api_token="test-only", openai_api_key="test")
+        with patch("ai_service.music.YouTubeMusic._search", search), TestClient(create_app(settings=settings, transport=httpx.MockTransport(handle))) as client:
             response = client.post("/internal/ai/music/recommend", json=MUSIC_REQUEST_EXAMPLE, headers=HEADERS)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json(), {
             "message": "ai_music_recommended",
-            "data": {"travel_plan_id": 1, **MUSIC_REQUEST_EXAMPLE["candidates"][0]},
+            "data": {"travel_plan_id": 1, "title": "Yellow", "artist": "Coldplay", "youtube_url": "https://www.youtube.com/watch?v=abcdefghijk"},
         })
-
-    def test_multiple_candidates_retry_invalid_id_and_keep_original_metadata(self):
-        calls = []
-
-        def handle(req):
-            self.assertEqual(req.url.host, "api.openai.com")
-            payload = json.loads(req.content)
-            calls.append(payload)
-            self.assertEqual(payload["response_format"]["json_schema"]["schema"]["properties"]["music_id"]["enum"], [3, 4])
-            return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {
-                "content": json.dumps({"music_id": 999 if len(calls) == 1 else 4}),
-            }}]})
-
-        data = copy.deepcopy(MUSIC_REQUEST_EXAMPLE)
-        other = {"music_id": 4, "title": "다른 곡", "artist": "테스트", "youtube_url": "https://www.youtube.com/watch?v=test"}
-        data["candidates"].append(other)
-        settings = Settings(api_token="test-only", openai_api_key="test")
-        with TestClient(create_app(settings=settings, transport=httpx.MockTransport(handle))) as client:
-            response = client.post("/internal/ai/music/recommend", json=data, headers=HEADERS)
-        self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(response.json()["data"], {"travel_plan_id": 1, **other})
         self.assertEqual(len(calls), 2)
 
-    def test_failed_music_selection_returns_422_with_travel_plan_id(self):
+    def test_failed_music_recommendation_returns_422_with_travel_plan_id(self):
         def handle(req):
-            return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": '{"music_id":999}'}}]})
-
-        data = copy.deepcopy(MUSIC_REQUEST_EXAMPLE)
-        data["candidates"].append({**data["candidates"][0], "music_id": 4})
-        with TestClient(create_app(settings=Settings(api_token="test-only", openai_api_key="test"), transport=httpx.MockTransport(handle))) as client:
-            response = client.post("/internal/ai/music/recommend", json=data, headers=HEADERS)
+            return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": '{"title":"Unknown","artist":"Unknown"}'}}]})
+        with patch("ai_service.music.YouTubeMusic._search", AsyncMock(return_value=[])), TestClient(create_app(settings=Settings(api_token="test-only", openai_api_key="test"), transport=httpx.MockTransport(handle))) as client:
+            response = client.post("/internal/ai/music/recommend", json=MUSIC_REQUEST_EXAMPLE, headers=HEADERS)
         self.assertEqual(response.status_code, 422, response.text)
         self.assertEqual(response.json()["message"], "ai_music_recommendation_failed")
         self.assertEqual(response.json()["data"]["travel_plan_id"], 1)
         self.assertNotIn("generation_job_id", response.json()["data"])
 
-    def test_music_requires_auth_and_valid_unique_candidates(self):
+    def test_music_requires_model_configuration(self):
+        with TestClient(create_app(settings=Settings(api_token="test-only"))) as client:
+            response = client.post("/internal/ai/music/recommend", json=MUSIC_REQUEST_EXAMPLE, headers=HEADERS)
+        self.assertEqual(response.status_code, 503)
+
+    def test_music_requires_auth_and_rejects_candidate_or_song_input(self):
         with TestClient(create_app(settings=Settings(api_token="test-only"))) as client:
             self.assertEqual(client.post("/internal/ai/music/recommend", json=MUSIC_REQUEST_EXAMPLE).status_code, 401)
-            for candidates in ([], MUSIC_REQUEST_EXAMPLE["candidates"] * 2):
-                body = {**MUSIC_REQUEST_EXAMPLE, "candidates": candidates}
+            for extra in ({"candidates": []}, {"title": "개화"}, {"artist": "LUCY"}, {"youtube_url": "https://www.youtube.com/watch?v=abcdefghijk"}):
+                body = {**MUSIC_REQUEST_EXAMPLE, **extra}
                 self.assertEqual(client.post("/internal/ai/music/recommend", json=body, headers=HEADERS).status_code, 400)
+            schema = client.get("/openapi.json").json()["components"]["schemas"]
+            self.assertEqual(set(schema["MusicRequest"]["properties"]), {"travel_plan_id", "region", "duration", "preference"})
+            self.assertNotIn("music_id", schema["SelectedMusic"]["properties"])
 
     def test_openapi_examples_match_spreadsheet_requests(self):
         spec = create_app(settings=Settings()).openapi()
         for endpoint, example, schema, example_key in (
             ("/internal/ai/itineraries/generate", LEGACY_ITINERARY_REQUEST_EXAMPLE, LegacyGenerationRequest, "nested"),
             ("/api/ai/v1/itinerary-jobs/stream", LEGACY_ITINERARY_REQUEST_EXAMPLE, LegacyGenerationRequest, "nested"),
-            ("/internal/ai/music/recommend", MUSIC_REQUEST_EXAMPLE, MusicRequest, "spreadsheet"),
+            ("/internal/ai/music/recommend", MUSIC_REQUEST_EXAMPLE, MusicRequest, "travel"),
         ):
             value = spec["paths"][endpoint]["post"]["requestBody"]["content"]["application/json"]["examples"][example_key]["value"]
             self.assertEqual(value, example)

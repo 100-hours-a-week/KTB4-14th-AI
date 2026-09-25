@@ -56,7 +56,7 @@ class Planner:
 
     async def recommend_music(self, body):
         return MusicRecommendation(title="테스트 음악", artist="테스트",
-                                   youtube_url="https://www.youtube.com/results?search_query=test")
+                                   youtube_url="https://www.youtube.com/watch?v=abcdefghijk")
 
 
 class CompactRoutesTests(unittest.IsolatedAsyncioTestCase):
@@ -125,7 +125,7 @@ class CompactRoutesTests(unittest.IsolatedAsyncioTestCase):
         first_day = final["itinerary"]["days"][0]
         self.assertEqual(first_day["items"][-1]["item_type"], "ACCOMMODATION")
         summary = first_day["items"][1]["route_from_previous"]
-        self.assertEqual(set(summary), {"transport_type", "duration_minutes", "distance_meter"})
+        self.assertEqual(set(summary), {"transport_type", "duration_minutes", "distance_meter", "total_fare_amount"})
         self.assertEqual(first_day["travel_date"], "2026-09-19")
         self.assertEqual(first_day["items"][0]["latitude"], self.places.pool[0].latitude)
         self.assertLess(len(json.dumps(summary)), 800)
@@ -225,8 +225,6 @@ class CompactRoutesTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("RouteLeg", schemas)
         self.assertFalse(set(schemas["RouteSummary"]["properties"]) & FORBIDDEN)
         self.assertEqual(set(schemas["RouteSummary"]["properties"]),
-                         {"transport_type", "duration_minutes", "distance_meter", "line_name", "vehicle_number", "legs"})
+                         {"transport_type", "duration_minutes", "distance_meter", "total_fare_amount", "legs"})
         for name, schema in schemas.items():
-            if name in {"MusicCandidate", "SelectedMusic"}:
-                continue  # Separate spreadsheet music API returns the backend's candidate ID.
             self.assertFalse(set(schema.get("properties", {})) & FORBIDDEN)

@@ -223,9 +223,9 @@ class RoutingTests(unittest.IsolatedAsyncioTestCase):
             for item in result.days[1].items:
                 self.assertEqual(item.route_from_previous.transport_type, "PUBLIC_TRANSPORT")
                 self.assertEqual(item.route_from_previous.duration_minutes, 10)  # BUS, not faster SUBWAY
-                self.assertEqual(item.route_from_previous.legs[0].vehicle_number, "141(심야)")
-                self.assertEqual(item.route_from_previous.legs[0].start.name, "출발")
-                self.assertEqual(item.route_from_previous.legs[0].end.name, "도착")
+                self.assertEqual(item.route_from_previous.legs[0].vehicle_number, ["141(심야)"])
+                self.assertEqual(item.route_from_previous.legs[0].boarding_stop.name, "출발")
+                self.assertEqual(item.route_from_previous.legs[0].alighting_stop.name, "도착")
         overnight = stream_routes.itinerary.days[1].items[0].route_from_previous
         self.assertEqual(overnight.duration_minutes, 10)
         self.assertTrue(any(float(req.url.params["start_y"]) == pool[2].latitude

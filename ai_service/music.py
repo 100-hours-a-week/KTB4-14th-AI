@@ -1,28 +1,79 @@
-"""Verify a freely suggested song; never invent a DB ID or a YouTube video ID."""
+"""Resolve an actual YouTube music video without an API key or media download."""
 from __future__ import annotations
 
+import asyncio
 from collections import OrderedDict
+from contextlib import suppress
+import html
+import json
+import re
+import sys
 import time
 import unicodedata
-from urllib.parse import urlencode
 
 import httpx
-from pydantic import ValidationError
 
 from ai_service.errors import ServiceUnavailable
 from ai_service.schemas import MusicRecommendation, MusicSuggestion
 
 
 def normalized(value: str) -> str:
-    return "".join(c for c in unicodedata.normalize("NFKC", value).casefold() if c.isalnum())
+    return "".join(c for c in unicodedata.normalize("NFKC", html.unescape(value)).casefold() if c.isalnum())
 
 
-class MusicCatalog:
+def matches_song(title: str, author: str, suggestion: MusicSuggestion) -> bool:
+    """Conservative metadata matching, not proof of an official rights holder."""
+    # Word boundaries avoid treating Yellow/봄 as Yellowstone/봄날.
+    tokens = re.findall(r"[^\W_]+", unicodedata.normalize("NFKC", html.unescape(suggestion.title)).casefold())
+    pattern = r"(?<!\w)" + r"[\W_]*".join(re.escape(token) for token in tokens) + r"(?!\w)"
+    if not tokens or not re.search(pattern, unicodedata.normalize("NFKC", html.unescape(title)).casefold()):
+        return False
+    if normalized(suggestion.artist) not in normalized(title + " " + author):
+        return False
+    variants = r"\b(?:cover|live|remix|karaoke|reaction|instrumental|slowed|sped\s*up)\b|커버|라이브|노래방"
+    requested = suggestion.title + " " + suggestion.artist
+    return not any(normalized(word) not in normalized(requested)
+                   for word in re.findall(variants, title, re.IGNORECASE))
+
+
+class YouTubeMusic:
     def __init__(self, client: httpx.AsyncClient):
         self.client = client
         self.cache: OrderedDict[tuple[str, str], tuple[float, MusicRecommendation]] = OrderedDict()
+        self.search_slots = asyncio.Semaphore(2)
 
-    async def verify(self, suggestion: MusicSuggestion) -> MusicRecommendation | None:
+    async def _search(self, query: str) -> list[dict]:
+        # A subprocess allows SSE disconnect/timeout to stop extraction immediately.
+        # Flat metadata only: no video/audio downloads, login, cookies or user config.
+        async with self.search_slots:
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    sys.executable, "-m", "yt_dlp", "--ignore-config", "--no-cache-dir",
+                    "--flat-playlist", "--skip-download", "--dump-single-json", "--no-warnings",
+                    "--socket-timeout", "8", "--retries", "0", "--extractor-retries", "0",
+                    "--", "ytsearch5:" + query,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+                )
+            except OSError as exc:
+                raise ServiceUnavailable() from exc
+            try:
+                stdout, _ = await asyncio.wait_for(process.communicate(), timeout=20)
+                if process.returncode:
+                    raise ServiceUnavailable()
+                payload = json.loads(stdout)
+                entries = payload.get("entries") if isinstance(payload, dict) else None
+                if not isinstance(entries, list):
+                    raise ValueError("invalid YouTube search response")
+                return entries[:5]
+            except (TimeoutError, ValueError) as exc:
+                raise ServiceUnavailable() from exc
+            finally:
+                if process.returncode is None:
+                    with suppress(ProcessLookupError):
+                        process.kill()
+                    await process.wait()
+
+    async def find_video(self, suggestion: MusicSuggestion) -> MusicRecommendation | None:
         key = (normalized(suggestion.title), normalized(suggestion.artist))
         if not all(key):
             return None
@@ -30,35 +81,37 @@ class MusicCatalog:
         if cached and cached[0] > time.monotonic():
             self.cache.move_to_end(key)
             return cached[1].model_copy(deep=True)
-        try:
-            response = await self.client.get(
-                "https://itunes.apple.com/search",
-                params={"term": f"{suggestion.title} {suggestion.artist}", "media": "music",
-                        "entity": "song", "country": "US", "limit": 20},
-                timeout=10.0,
-            )
-            response.raise_for_status()
-            records = response.json()["results"]
-            if not isinstance(records, list):
-                raise ValueError("invalid catalogue response")
-        except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
-            raise ServiceUnavailable() from exc
-        for record in records:
-            if not isinstance(record, dict) or record.get("kind") != "song":
+        entries = await self._search(f"{suggestion.artist} {suggestion.title} official audio")
+        for entry in entries:
+            if not isinstance(entry, dict):
                 continue
-            title, artist = record.get("trackName"), record.get("artistName")
-            if not isinstance(title, str) or not isinstance(artist, str):
+            video_id, title = entry.get("id"), entry.get("title")
+            author = entry.get("channel") or entry.get("uploader") or ""
+            if (not isinstance(video_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id)
+                    or not isinstance(title, str) or not isinstance(author, str)
+                    or entry.get("live_status") in ("is_live", "is_upcoming")
+                    or not matches_song(title, author, suggestion)):
                 continue
-            # Exact normalized title+artist prevents choosing a cover or live version.
-            if (normalized(title), normalized(artist)) != key:
-                continue
+            # Construct only from a real search result ID, never from model output/URL.
+            url = "https://www.youtube.com/watch?v=" + video_id
             try:
-                song = MusicRecommendation(
-                    title=title, artist=artist,
-                    youtube_url="https://www.youtube.com/results?" + urlencode({"search_query": f"{artist} {title} official audio"}),
+                response = await self.client.get(
+                    "https://www.youtube.com/oembed", params={"url": url, "format": "json"}, timeout=8.0,
                 )
-            except ValidationError:
+                if response.status_code in {401, 403, 404, 410}:
+                    continue  # Try another result, without bypassing restrictions.
+                response.raise_for_status()
+                metadata = response.json()
+                if not isinstance(metadata, dict):
+                    raise ValueError("invalid YouTube metadata")
+            except (httpx.HTTPError, ValueError) as exc:
+                raise ServiceUnavailable() from exc
+            verified_title, verified_author = metadata.get("title"), metadata.get("author_name")
+            if (metadata.get("type") != "video" or not isinstance(verified_title, str)
+                    or not isinstance(verified_author, str)
+                    or not matches_song(verified_title, verified_author, suggestion)):
                 continue
+            song = MusicRecommendation(title=suggestion.title, artist=suggestion.artist, youtube_url=url)
             self.cache[key] = (time.monotonic() + 600, song)
             self.cache.move_to_end(key)
             if len(self.cache) > 128:
