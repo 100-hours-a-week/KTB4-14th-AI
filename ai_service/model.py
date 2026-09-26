@@ -60,7 +60,7 @@ class OpenAIPlanner:
         self, context: dict, feedback: str | None = None, *, places_only: bool = False
     ) -> ModelSelection:
         if not self.settings.openai_api_key:
-            raise ServiceUnavailable()
+            raise ServiceUnavailable(reason="openai_api_key_missing")
         prompt = SYSTEM_PROMPT
         if places_only:
             prompt += (
@@ -134,7 +134,7 @@ class OpenAIPlanner:
                     return selected
                 messages.append({"role": "assistant", "content": choice.model_dump_json()})
             except GenerationFailed as exc:
-                raise MusicRecommendationFailed() from exc
+                raise MusicRecommendationFailed(reason="music_model_refused") from exc
             except (InvalidModelOutput, ValidationError):
                 pass
             messages.append(
@@ -144,11 +144,11 @@ class OpenAIPlanner:
                     "다른 실제 발매곡 한 곡을 정식 곡명·가수로 반환하세요.",
                 }
             )
-        raise MusicRecommendationFailed()
+        raise MusicRecommendationFailed(reason="music_video_not_verified")
 
     async def _complete(self, messages: list[dict], schema: dict, name: str) -> str:
         if not self.settings.openai_api_key:
-            raise ServiceUnavailable()
+            raise ServiceUnavailable(reason="openai_api_key_missing")
         try:
             response = await self.client.post(
                 "https://api.openai.com/v1/chat/completions",
@@ -171,7 +171,7 @@ class OpenAIPlanner:
             response.raise_for_status()
         except httpx.HTTPError as exc:
             # Never forward upstream bodies, credentials or headers to the caller.
-            raise ServiceUnavailable() from exc
+            raise ServiceUnavailable(reason="openai_request_failed", detail={"error": type(exc).__name__, "http_status": getattr(getattr(exc, "response", None), "status_code", None)}) from exc
         try:
             choice = response.json()["choices"][0]
             if not isinstance(choice, dict) or not isinstance(
@@ -179,7 +179,7 @@ class OpenAIPlanner:
             ):
                 raise InvalidModelOutput("invalid model response envelope")
             if choice["message"].get("refusal"):
-                raise GenerationFailed("요청한 조건으로 일정을 생성할 수 없습니다.")
+                raise GenerationFailed("요청한 조건으로 일정을 생성할 수 없습니다.", reason="openai_refusal")
             if choice.get("finish_reason") != "stop":
                 raise InvalidModelOutput("model response is incomplete")
             raw = choice["message"]["content"]

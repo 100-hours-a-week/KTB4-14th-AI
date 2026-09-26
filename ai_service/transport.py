@@ -77,7 +77,7 @@ def resolve_day_transports(request: ItineraryRequest) -> dict[str, str]:
         if marker.group("range_start"):
             first, last = int(marker.group("range_start")), int(marker.group("range_end"))
             if not 1 <= first <= last <= len(dates):
-                raise GenerationFailed("추가 요청의 이동수단 날짜 범위가 여행 기간과 맞지 않습니다.")
+                raise GenerationFailed("추가 요청의 이동수단 날짜 범위가 여행 기간과 맞지 않습니다.", reason="transport_day_range_invalid")
             for date in dates[first - 1:last]:
                 overrides.setdefault(date, set()).update(positive)
             continue
@@ -90,13 +90,13 @@ def resolve_day_transports(request: ItineraryRequest) -> dict[str, str]:
             number = 1 if ordinal == "첫" else ORDINALS.get(ordinal, 0)
         date = marker.group("date") or (dates[number - 1] if 1 <= number <= len(dates) else None)
         if date not in result:
-            raise GenerationFailed("추가 요청의 이동수단 적용 날짜가 여행 기간을 벗어납니다.")
+            raise GenerationFailed("추가 요청의 이동수단 적용 날짜가 여행 기간을 벗어납니다.", reason="transport_day_out_of_range")
         overrides.setdefault(date, set()).update(positive)
     for date, modes in overrides.items():
         # A named bus/subway refines the broad public-transport choice.
         if modes & {"BUS", "SUBWAY"}:
             modes.discard("PUBLIC_TRANSPORT")
         if len(modes) != 1:
-            raise GenerationFailed(f"{date}의 이동수단 요청이 여러 가지입니다. 날짜별로 하나를 지정해주세요.")
+            raise GenerationFailed(f"{date}의 이동수단 요청이 여러 가지입니다. 날짜별로 하나를 지정해주세요.", reason="transport_day_conflict", detail={"date": date})
         result[date] = next(iter(modes))
     return result

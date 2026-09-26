@@ -118,11 +118,11 @@ class KakaoRoutes:
             base_transport(transport) in {"PUBLIC_TRANSPORT", "WALK"}
             and not self.settings.kakao_rest_api_key
         ):
-            raise RoutingUnavailable()
+            raise RoutingUnavailable(reason="kakao_api_key_missing")
 
     async def _get(self, mode, origin, destination):
         if not self.settings.kakao_rest_api_key:
-            raise RoutingUnavailable()
+            raise RoutingUnavailable(reason="kakao_api_key_missing")
         try:
             response = await self.client.get(
                 "https://dapi.kakao.com/v2/routing/" + mode,
@@ -147,7 +147,7 @@ class KakaoRoutes:
                 raise ValueError("invalid routing response")
             return payload
         except (httpx.HTTPError, ValueError, TypeError) as exc:
-            raise RoutingUnavailable() from exc
+            raise RoutingUnavailable(reason="kakao_route_request_failed", detail={"mode": mode, "error": type(exc).__name__, "http_status": getattr(getattr(exc, "response", None), "status_code", None)}) from exc
 
     async def _walk(self, origin, destination, departure, *, fallback=False):
         payload = await self._get("walk", origin, destination)
@@ -169,7 +169,7 @@ class KakaoRoutes:
                 message=NO_TRANSIT_MESSAGE if fallback else None,
             )
         if payload["status"] != "OK":
-            raise RoutingUnavailable()
+            raise RoutingUnavailable(reason="kakao_walk_route_failed", detail={"status": payload["status"]})
         route = payload["route"]
         properties = route["properties"]
         seconds = number(properties["totalTime"])
@@ -228,7 +228,7 @@ class KakaoRoutes:
                 and all(s["properties"]["type"] in {"WALKING", restriction} for s in r["steps"])
             ]
             if not options:
-                raise GenerationFailed("요청한 이동수단만 이용하는 경로를 찾지 못했습니다. 이동수단 조건을 변경해주세요.")
+                raise GenerationFailed("요청한 이동수단만 이용하는 경로를 찾지 못했습니다. 이동수단 조건을 변경해주세요.", reason="restricted_transport_route_missing", detail={"restriction": restriction})
         option = min(options, key=lambda r: number(r["properties"]["totalTime"]))
         if not option["steps"]:
             raise ValueError("missing transit steps")
@@ -355,13 +355,13 @@ class KakaoRoutes:
                 # only a route that exists solely via another vehicle is rejected below.
                 return await self._walk(origin, destination, departure, fallback=True)
             if payload["status"] != "OK":
-                raise RoutingUnavailable()
+                raise RoutingUnavailable(reason="kakao_transit_route_failed", detail={"status": payload["status"]})
             return await self._transit(
                 payload, origin, destination, departure,
                 restriction=transport if transport in {"BUS", "SUBWAY"} else None,
             )
         except (KeyError, ValueError, TypeError, IndexError, AttributeError) as exc:
-            raise RoutingUnavailable() from exc
+            raise RoutingUnavailable(reason="kakao_route_response_invalid", detail={"transport": transport, "error": type(exc).__name__}) from exc
 
 
 async def schedule_with_routes(
@@ -376,7 +376,7 @@ async def schedule_with_routes(
     )
 
     policy = PACE_POLICIES[PACE_ALIASES[request.preference.pace_type]]
-    windows = day_windows(request)
+    windows = day_windows(request, schedule=True)
     by_id = {p.provider_place_id: p for p in places}
     if [d.date for d in selection.days] != [w["date"] for w in windows]:
         raise InvalidModelOutput("include every requested date")
