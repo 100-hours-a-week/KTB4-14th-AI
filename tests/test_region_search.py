@@ -6,7 +6,7 @@ import httpx
 from pydantic import ValidationError
 
 from ai_service.config import Settings
-from ai_service.errors import GenerationFailed
+from ai_service.errors import GenerationFailed, ServiceUnavailable
 from ai_service.places import KakaoPlaces, in_region
 from ai_service.schemas import ItineraryStreamRequest, Region
 
@@ -50,6 +50,81 @@ class RegionTests(unittest.TestCase):
 
 
 class RegionSearchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_provider_rejection_is_not_reported_as_no_places(self):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda req: httpx.Response(429, json={"message": "private-provider-body"})
+        )) as client:
+            with self.assertLogs("uvicorn.error.audigo", level="INFO") as logs, self.assertRaises(ServiceUnavailable):
+                await KakaoPlaces(client, Settings(kakao_rest_api_key="secret-key")).collect(busan_request())
+        log = "".join(logs.output)
+        self.assertIn('"http_status": 429', log)
+        self.assertNotIn("secret-key", log)
+        self.assertNotIn("private-provider-body", log)
+
+    async def test_provider_canonical_region_accepts_alias_and_still_rejects_other_city(self):
+        request = busan_request()
+        request.region.full_name = "강릉"
+
+        def handle(req):
+            if req.url.path.endswith("/address.json"):
+                docs = [{"address_type": "REGION", "address_name": "강원특별자치도 강릉시", "x": "128.87", "y": "37.75"}]
+            else:
+                group = req.url.params.get("category_group_code", "AT4")
+                inside = {**place_document(group), "address_name": "강원 강릉시 교동"}
+                outside = {**inside, "id": "outside", "address_name": "강원 속초시 교동"}
+                docs = [inside, outside]
+            return httpx.Response(200, json={"documents": docs})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+            places = KakaoPlaces(client, Settings(kakao_rest_api_key="test-only"))
+            pool = await places.collect(request, include_accommodation=False)
+            hotels = await places.accommodations(request, 37.75, 128.87)
+        self.assertEqual({p.category for p in pool}, {"관광", "식당"})
+        self.assertEqual(len(hotels), 1)
+        self.assertTrue(all(p.provider_place_id != "outside" for p in pool + hotels))
+        self.assertEqual(request.region.full_name, "강릉")
+
+    async def test_empty_keywords_fall_back_once_to_categories_with_same_radius(self):
+        calls = []
+
+        def handle(req):
+            calls.append(req)
+            if req.url.path.endswith("/address.json"):
+                docs = [{"x": "129.07", "y": "35.18"}]
+            elif req.url.path.endswith("/category.json"):
+                docs = [place_document(req.url.params["category_group_code"])]
+            else:
+                docs = []
+            return httpx.Response(200, json={"documents": docs})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+            pool = await KakaoPlaces(client, Settings(kakao_rest_api_key="test-only")).collect(busan_request(), include_accommodation=False)
+        self.assertEqual({p.category for p in pool}, {"관광", "식당"})
+        fallback = [r for r in calls if r.url.path.endswith("/category.json")]
+        self.assertEqual(len(fallback), 2)
+        self.assertEqual({r.url.params["radius"] for r in calls if "radius" in r.url.params}, {"8000"})
+
+    async def test_empty_pool_has_diagnostics_and_preserves_error_contract(self):
+        def handle(req):
+            docs = [{"x": "129.07", "y": "35.18"}] if req.url.path.endswith("/address.json") else [
+                {**place_document("AT4"), "address_name": "서울 중구"}]
+            return httpx.Response(200, json={"documents": docs})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+            with self.assertLogs("uvicorn.error.audigo", level="INFO") as logs, self.assertRaises(GenerationFailed) as error:
+                await KakaoPlaces(client, Settings(kakao_rest_api_key="secret-test-value")).collect(busan_request())
+        self.assertEqual(error.exception.code, "ai_itinerary_generation_failed")
+        self.assertEqual(error.exception.reason, "no_place_candidates")
+        self.assertIn('"outside_region":', logs.output[0])
+        self.assertNotIn("secret-test-value", "".join(logs.output))
+
+    async def test_ambiguous_region_does_not_choose_first_city(self):
+        docs = [{"address_type": "REGION", "address_name": name, "x": "129", "y": "35"}
+                for name in ["부산 중구", "서울 중구"]]
+        async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"documents": docs}))) as client:
+            with self.assertRaises(GenerationFailed) as error:
+                await KakaoPlaces(client, Settings(kakao_rest_api_key="test-only")).collect(busan_request())
+        self.assertEqual(error.exception.reason, "ambiguous_region")
+
     async def test_exact_request_uses_normalized_address_and_candidate_queries(self):
         calls = []
 
@@ -101,6 +176,18 @@ class RegionSearchTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0].category, "숙소")
+
+    async def test_accommodations_fall_back_across_border_only_when_region_has_none(self):
+        doc = {**place_document("AD5"), "id": "across", "address_name": "경남 양산시 물금읍"}
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda req: httpx.Response(200, json={"documents": [doc]})
+        )) as client:
+            with self.assertLogs("uvicorn.error.audigo", level="INFO") as logs:
+                result = await KakaoPlaces(client, Settings(kakao_rest_api_key="test-only")).accommodations(
+                    busan_request(), 35.3, 129.0
+                )
+        self.assertEqual([p.provider_place_id for p in result], ["across"])
+        self.assertIn("accommodation_region_fallback", "\n".join(logs.output))
 
     async def test_genuinely_missing_region_keeps_existing_failure(self):
         calls = []

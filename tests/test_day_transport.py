@@ -194,12 +194,24 @@ class RoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([leg.mode for leg in default.legs], ["SUBWAY"])
 
     async def test_bus_without_matching_route_fails_instead_of_using_subway(self):
-        for payload in (transit_payload(*self.pool[:2], modes=("SUBWAY",)), {"status": "NO_RESULTS"}):
-            async def get(*args):
-                return payload
-            self.router._get = get
-            with self.assertRaises(GenerationFailed):
-                await self.router.route(*self.pool[:2], self.departure, "BUS")
+        async def get(*args):
+            return transit_payload(*self.pool[:2], modes=("SUBWAY",))
+        self.router._get = get
+        with self.assertRaises(GenerationFailed):
+            await self.router.route(*self.pool[:2], self.departure, "BUS")
+
+    async def test_bus_day_walks_when_no_transit_exists(self):
+        walked = object()
+
+        async def get(kind, *args):
+            return {"status": "NO_RESULTS"}
+
+        async def walk(*args, fallback=False):
+            self.assertTrue(fallback)
+            return walked
+
+        self.router._get, self.router._walk = get, walk
+        self.assertIs(await self.router.route(*self.pool[:2], self.departure, "BUS"), walked)
 
     async def test_sync_and_sse_routes_use_destination_day_including_overnight(self):
         pool = self.pool

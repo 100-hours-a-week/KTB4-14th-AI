@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 
-from ai_service.errors import GenerationFailed, InvalidModelOutput
+from ai_service.diagnostics import failure, record
+from ai_service.errors import ApiError, GenerationFailed, InvalidModelOutput
 from ai_service.features import (
     PACE_POLICIES,
     build_context,
     complete_selection,
     day_windows,
+    validate_generation_window,
     schedule_selection,
     select_candidates,
     validate_itinerary,
 )
 from ai_service.model import OpenAIPlanner
+from ai_service.music import fallback_music
 from ai_service.places import KakaoPlaces, distance_km, travel_minutes
 from ai_service.routing import KakaoRoutes, schedule_with_routes
 from ai_service.schemas import (
@@ -172,7 +175,7 @@ async def recommend_places(
             )
         window["needs_accommodation"] = False
     feedback = None
-    for _ in range(2):
+    for attempt in range(2):
         try:
             selection = await planner.generate(context, feedback, places_only=True)
             selection = complete_selection(request, selection, places, places_only=True)
@@ -180,6 +183,7 @@ async def recommend_places(
             return selection
         except InvalidModelOutput as exc:
             feedback = str(exc)
+            record("place_selection_retry", attempt=attempt + 1, reason=feedback)
     raise GenerationFailed(
         "필수 장소와 여행 시간을 만족하는 장소·식당을 추천하지 못했습니다."
     )
@@ -256,7 +260,7 @@ async def recommend_accommodations(
             [pool[next_items[0].provider_place_id]] if next_items else []
         )
         candidates.sort(key=lambda p: sum(distance_km(p, anchor) for anchor in anchors))
-        chosen = None
+        chosen, rejections = None, {}
         for candidate in candidates:
             proposal = combined.model_copy(deep=True)
             proposal.days[index].items.append(
@@ -270,9 +274,12 @@ async def recommend_accommodations(
                 chosen = candidate
                 combined, pool = proposal, proposed_pool
                 break
-            except InvalidModelOutput:
+            except InvalidModelOutput as exc:
+                rejections[str(exc)] = rejections.get(str(exc), 0) + 1
                 continue
         if chosen is None:
+            record("accommodation_unavailable", day_number=index + 1,
+                   candidates=len(candidates), rejections=rejections)
             raise GenerationFailed(
                 "추천 장소의 동선과 시간을 만족하는 숙소를 찾지 못했습니다."
             )
@@ -317,7 +324,7 @@ async def generation_stages(
 ):
     """Each yield is sent before executing the next phase; no database/job store."""
     request = body.itinerary_request()
-    day_windows(request)  # Validate explicit transport constraints before provider calls.
+    validate_generation_window(request)  # Reject impossible windows before provider calls.
     yield "PLACES", "STARTED", None
     places = select_candidates(
         request, await client.collect(request, include_accommodation=False)
@@ -339,7 +346,11 @@ async def generation_stages(
     yield "ROUTES", "COMPLETED", routes
 
     yield "MUSIC", "STARTED", None
-    music = await planner.recommend_music(request)
+    try:
+        music = await planner.recommend_music(request)
+    except ApiError as exc:
+        failure("music_fallback", exc)
+        music = fallback_music()
     result = GenerationResult(**routes.model_dump(), music=music)
     yield "MUSIC", "COMPLETED", music
     yield "COMPLETE", "COMPLETED", result

@@ -521,19 +521,24 @@ def validate_itinerary(
     return result
 
 
+def validate_generation_window(request: ItineraryRequest) -> list[dict]:
+    windows = day_windows(request)
+    if not any(w["max_items"] for w in windows):
+        raise GenerationFailed("여행 시간 안에 장소를 방문할 여유가 없습니다.", reason="insufficient_trip_time")
+    if len(request.required_places) > sum(w["max_items"] for w in windows):
+        raise GenerationFailed(
+            "여행 기간과 속도에 비해 필수 방문 장소가 너무 많습니다.", reason="too_many_required_places"
+        )
+    return windows
+
+
 async def generate_itinerary(
     request: ItineraryRequest,
     places_client: KakaoPlaces,
     planner: OpenAIPlanner,
     router=None,
 ) -> ItineraryResponse:
-    windows = day_windows(request)
-    if not any(w["max_items"] for w in windows):
-        raise GenerationFailed("여행 시간 안에 장소를 방문할 여유가 없습니다.")
-    if len(request.required_places) > sum(w["max_items"] for w in windows):
-        raise GenerationFailed(
-            "여행 기간과 속도에 비해 필수 방문 장소가 너무 많습니다."
-        )
+    windows = validate_generation_window(request)
     places = select_candidates(request, await places_client.collect(request))
     categories = {p.category for p in places}
     if (

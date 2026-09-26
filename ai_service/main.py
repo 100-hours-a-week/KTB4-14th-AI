@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from copy import deepcopy
 from contextlib import asynccontextmanager
-import logging
 from uuid import uuid4
 from typing import Annotated
 
@@ -14,8 +13,9 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from ai_service.auth import require_api_token
-from ai_service.api_examples import GENERATION_REQUEST_EXAMPLES, MUSIC_REQUEST_EXAMPLE, MUSIC_RESPONSE_EXAMPLES, ROUTE_RESPONSE_EXAMPLE
+from ai_service.api_examples import GENERATION_REQUEST_EXAMPLES, MUSIC_REQUEST_EXAMPLE, MUSIC_RESPONSE_EXAMPLES, ROUTE_RESPONSE_EXAMPLE, ITINERARY_RESPONSE_EXAMPLES
 from ai_service.config import Settings
+from ai_service.diagnostics import request_id as log_request_id, record, failure
 from ai_service.errors import ApiError, ServiceUnavailable
 from ai_service.features import generate_itinerary
 from ai_service.model import OpenAIPlanner
@@ -35,8 +35,18 @@ from ai_service.backend_contract import stream_backend_generation
 from ai_service.transport import resolve_day_transports
 
 
-logger = logging.getLogger(__name__)
 ERROR_RESPONSES = {code: {"model": ErrorResponse} for code in (400, 401, 422, 500, 503)}
+ITINERARY_RESPONSES = {
+    code: {
+        **ERROR_RESPONSES.get(code, {}),
+        "description": example["description"],
+        "content": {"application/json": {"examples": {
+            "default": {"summary": example["value"].get("message", "여행 일정 생성 성공"), "value": example["value"]},
+            **example.get("alternatives", {}),
+        }}},
+    }
+    for code, example in ITINERARY_RESPONSE_EXAMPLES.items()
+}
 STREAM_RESPONSE = {
     "description": (
         "feature-travel SSE: PLACE_RECOMMEND, STAY_RECOMMEND, ROUTE_OPTIMIZE, MUSIC_RECOMMEND. "
@@ -85,12 +95,17 @@ def create_app(
     @app.middleware("http")
     async def attach_request_id(request: Request, call_next):
         request.state.request_id = f"req_{uuid4().hex}"
-        response = await call_next(request)
-        response.headers["X-Request-Id"] = request.state.request_id
-        return response
+        token = log_request_id.set(request.state.request_id)
+        try:
+            response = await call_next(request)
+            response.headers["X-Request-Id"] = request.state.request_id
+            return response
+        finally:
+            log_request_id.reset(token)
 
     @app.exception_handler(ApiError)
     async def handle_api_error(request: Request, exc: ApiError):
+        failure("request_failed", exc, http_status=exc.status_code)
         data = None
         if exc.status_code == 503:
             data = {"error_message": exc.message}
@@ -107,6 +122,9 @@ def create_app(
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(request: Request, exc: RequestValidationError):
         errors = exc.errors()
+        record("request_invalid", http_status=400, errors=[{
+            "field": ".".join(map(str, error["loc"])), "type": error["type"]
+        } for error in errors[:10]])
         branches = {"LegacyGenerationRequest", "TravelGenerationRequest"}
         if isinstance(exc.body, dict):
             branch = ("LegacyGenerationRequest" if "generation_job_id" in exc.body or "region" in exc.body
@@ -148,11 +166,7 @@ def create_app(
     @app.exception_handler(Exception)
     async def handle_unexpected_error(request: Request, exc: Exception):
         # Log only type and correlation ID; upstream exceptions may contain secrets.
-        logger.error(
-            "Unexpected %s request_id=%s",
-            type(exc).__name__,
-            getattr(request.state, "request_id", "unknown"),
-        )
+        failure("unexpected_error", exc, request_id=getattr(request.state, "request_id", "unknown"))
         return JSONResponse(
             status_code=500,
             content={"message": "internal_server_error", "data": None},
@@ -171,7 +185,7 @@ def create_app(
     @protected.post(
         "/itineraries/generate",
         response_model=ItineraryResponse,
-        responses=ERROR_RESPONSES,
+        responses=ITINERARY_RESPONSES,
         tags=["V1"],
     )
     async def create_itinerary(
@@ -201,7 +215,7 @@ def create_app(
         "/api/ai/v1/itinerary-jobs/stream",
         response_class=StreamingResponse,
         responses={
-            **ERROR_RESPONSES,
+            **{code: response for code, response in ITINERARY_RESPONSES.items() if code != 200},
             200: STREAM_RESPONSE,
         },
         tags=["V1"],
@@ -275,6 +289,12 @@ def create_app(
         # examples. Restore literal response bodies after schema serialization.
         for code, example in MUSIC_RESPONSE_EXAMPLES.items():
             responses[str(code)]["content"]["application/json"]["example"] = deepcopy(example["value"])
+        for path in ("/internal/ai/itineraries/generate", "/api/ai/v1/itinerary-jobs/stream"):
+            responses = schema["paths"][path]["post"]["responses"]
+            for code, response in ITINERARY_RESPONSES.items():
+                if code == 200 and path.endswith("/stream"):
+                    continue
+                responses[str(code)]["content"]["application/json"] = deepcopy(response["content"]["application/json"])
         schema["components"]["schemas"]["RouteSummary"]["examples"] = [deepcopy(ROUTE_RESPONSE_EXAMPLE)]
         return schema
 
