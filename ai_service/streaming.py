@@ -35,7 +35,7 @@ async def stream_generation(
         while True:
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
-                raise ServiceUnavailable()
+                raise ServiceUnavailable(reason="stream_timeout", detail={"timeout_seconds": settings.stream_timeout_seconds})
             if pending is None:
                 pending = asyncio.create_task(anext(generator))
             done, _ = await asyncio.wait(
@@ -43,7 +43,7 @@ async def stream_generation(
             )
             # A result arriving after the deadline must not be emitted as success.
             if asyncio.get_running_loop().time() >= deadline:
-                raise ServiceUnavailable()
+                raise ServiceUnavailable(reason="stream_timeout", detail={"timeout_seconds": settings.stream_timeout_seconds})
             if not done:
                 yield ": keep-alive\n\n"
                 continue

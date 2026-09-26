@@ -17,4 +17,5 @@ def failure(event: str, exc: Exception, **fields) -> None:
     frames = [{"file": frame.filename.rsplit("/", 1)[-1], "line": frame.lineno,
                "function": frame.name} for frame in traceback.extract_tb(exc.__traceback__)]
     record(event, level=logging.ERROR, error_type=type(exc).__name__, code=getattr(exc, "code", "internal_server_error"),
-           reason=getattr(exc, "reason", None), frames=frames, **fields)
+           reason=getattr(exc, "reason", None), detail=getattr(exc, "detail", None) or None,
+           frames=frames, **fields)

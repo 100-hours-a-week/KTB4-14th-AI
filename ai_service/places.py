@@ -142,7 +142,7 @@ class KakaoPlaces:
     async def _get(self, endpoint: str, params: dict) -> list[dict]:
         started = time.monotonic()
         if not self.settings.kakao_rest_api_key:
-            raise ServiceUnavailable()
+            raise ServiceUnavailable(reason="kakao_api_key_missing")
         try:
             async with self.semaphore:
                 response = await self.client.get(
@@ -164,7 +164,7 @@ class KakaoPlaces:
             record("place_provider_failed", provider="kakao", endpoint=endpoint,
                    http_status=exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None,
                    error_type=type(exc).__name__, elapsed_ms=round((time.monotonic() - started) * 1000))
-            raise ServiceUnavailable() from exc
+            raise ServiceUnavailable(reason="kakao_places_request_failed", detail={"endpoint": endpoint, "error": type(exc).__name__, "http_status": exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None}) from exc
 
     async def collect(
         self, request: ItineraryRequest, *, include_accommodation: bool = True
@@ -179,16 +179,18 @@ class KakaoPlaces:
                 })
                 document = next((doc for doc in documents if str(doc.get("id")) == required.provider_place_id), None)
                 if document is None:
-                    raise GenerationFailed("필수 장소의 주소·카테고리를 확인할 수 없습니다.")
+                    raise GenerationFailed("필수 장소의 주소·카테고리를 확인할 수 없습니다.", reason="required_place_not_found", detail={"provider_place_id": required.provider_place_id})
                 required.address = required.address or document.get("address_name") or ""
                 required.road_address = required.road_address or document.get("road_address_name") or ""
                 required.category = required.category or document.get("category_group_code") or document.get("category_name") or ""
                 if not required.address or category_of(required.category) is None:
-                    raise GenerationFailed("필수 장소의 주소·카테고리를 확인할 수 없습니다.")
+                    raise GenerationFailed("필수 장소의 주소·카테고리를 확인할 수 없습니다.", reason="required_place_not_found", detail={"provider_place_id": required.provider_place_id})
             category = category_of(required.category)
             if category is None:
                 raise GenerationFailed(
-                    "필수 장소의 카테고리를 관광·식당·숙소 중 하나로 확인해 주세요."
+                    "필수 장소의 카테고리를 관광·식당·숙소 중 하나로 확인해 주세요.",
+                    reason="required_place_category_unsupported",
+                    detail={"provider_place_id": required.provider_place_id},
                 )
             pool[required.provider_place_id] = Place(
                 **required.model_dump(exclude={"order", "category"}),
@@ -227,7 +229,7 @@ class KakaoPlaces:
             ):
                 raise ValueError("invalid center")
         except (KeyError, TypeError, ValueError) as exc:
-            raise ServiceUnavailable() from exc
+            raise ServiceUnavailable(reason="region_center_invalid") from exc
 
         # Cluster new places around required stops (or the regional center).
         # A city-wide pool can otherwise produce several hours of zigzag transfers.

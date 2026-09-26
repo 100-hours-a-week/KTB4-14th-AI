@@ -198,7 +198,7 @@ def create_app(
             request.state.travel_plan_id = body.travel_plan_id
         body = body.generation_context()
         if not settings.openai_api_key or not settings.kakao_rest_api_key:
-            raise ServiceUnavailable()
+            raise ServiceUnavailable(reason="provider_keys_missing")
         for mode in set(resolve_day_transports(body).values()):
             app.state.routes.require_configured(mode)
         try:
@@ -207,7 +207,7 @@ def create_app(
                     body, app.state.places, app.state.planner, app.state.routes
                 )
         except TimeoutError as exc:
-            raise ServiceUnavailable() from exc
+            raise ServiceUnavailable(reason="generation_timeout", detail={"timeout_seconds": settings.generation_timeout_seconds}) from exc
 
     backend_router = APIRouter(dependencies=[Depends(require_api_token(settings.api_token))])
 
@@ -230,7 +230,7 @@ def create_app(
             request.state.travel_plan_id = body.travel_plan_id
         body = body.generation_context()
         if not settings.openai_api_key or not settings.kakao_rest_api_key:
-            raise ServiceUnavailable()
+            raise ServiceUnavailable(reason="provider_keys_missing")
         for mode in set(resolve_day_transports(body).values()):
             app.state.routes.require_configured(mode)
         return StreamingResponse(
@@ -275,7 +275,7 @@ def create_app(
                     **selected.model_dump(), travel_plan_id=body.travel_plan_id,
                 ))
         except TimeoutError as exc:
-            raise ServiceUnavailable() from exc
+            raise ServiceUnavailable(reason="music_timeout", detail={"timeout_seconds": settings.generation_timeout_seconds}) from exc
 
     app.include_router(protected)
     app.include_router(backend_router)

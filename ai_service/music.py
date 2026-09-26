@@ -66,18 +66,18 @@ class YouTubeMusic:
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
                 )
             except OSError as exc:
-                raise ServiceUnavailable() from exc
+                raise ServiceUnavailable(reason="youtube_search_launch_failed", detail={"error": type(exc).__name__}) from exc
             try:
                 stdout, _ = await asyncio.wait_for(process.communicate(), timeout=20)
                 if process.returncode:
-                    raise ServiceUnavailable()
+                    raise ServiceUnavailable(reason="youtube_search_failed", detail={"returncode": process.returncode})
                 payload = json.loads(stdout)
                 entries = payload.get("entries") if isinstance(payload, dict) else None
                 if not isinstance(entries, list):
                     raise ValueError("invalid YouTube search response")
                 return entries[:5]
             except (TimeoutError, ValueError) as exc:
-                raise ServiceUnavailable() from exc
+                raise ServiceUnavailable(reason="youtube_search_timeout_or_invalid", detail={"error": type(exc).__name__}) from exc
             finally:
                 if process.returncode is None:
                     with suppress(ProcessLookupError):
@@ -116,7 +116,7 @@ class YouTubeMusic:
                 if not isinstance(metadata, dict):
                     raise ValueError("invalid YouTube metadata")
             except (httpx.HTTPError, ValueError) as exc:
-                raise ServiceUnavailable() from exc
+                raise ServiceUnavailable(reason="youtube_oembed_failed", detail={"error": type(exc).__name__, "http_status": getattr(getattr(exc, "response", None), "status_code", None)}) from exc
             verified_title, verified_author = metadata.get("title"), metadata.get("author_name")
             if (metadata.get("type") != "video" or not isinstance(verified_title, str)
                     or not isinstance(verified_author, str)

@@ -50,7 +50,36 @@ PACE_POLICIES = {
 }
 
 
-def day_windows(request: ItineraryRequest) -> list[dict]:
+# Daily time windows (local time).
+# - PLACE_DAY (12h): what the model plans against when picking tourist spots and
+#   restaurants. Kept tight so the picked places leave slack for later stages.
+# - SCHEDULE_DAY (~15h, 09:00-23:59): used once the hotel and real transfers are
+#   added (accommodations, routes, final itinerary). Real routes/hotel detours are
+#   longer than the estimates, so these stages get room instead of failing the trip.
+#   Start stays 09:00 (users see the same day start); the end cannot pass midnight
+#   because every item belongs to one date.
+# Item-count limits (min/max_items) always come from PLACE_DAY so both stages agree
+# on how many places a day should have.
+PLACE_DAY = (time(9), time(21))
+SCHEDULE_DAY = (time(9), time(23, 59))
+
+
+def day_windows(request: ItineraryRequest, *, schedule: bool = False) -> list[dict]:
+    """One window per travel date: when visits may happen and how many fit.
+
+    schedule=False -> PLACE_DAY (places stage); schedule=True -> SCHEDULE_DAY
+    for start/end/available_minutes, with the item limits of PLACE_DAY.
+    """
+    windows = _day_windows(request, PLACE_DAY)
+    if schedule:
+        for window, wide in zip(windows, _day_windows(request, SCHEDULE_DAY)):
+            window.update(start=wide["start"], end=wide["end"],
+                          available_minutes=wide["available_minutes"])
+    return windows
+
+
+def _day_windows(request: ItineraryRequest, bounds: tuple[time, time]) -> list[dict]:
+    day_start, day_end = bounds
     arrival, departure = request.duration.local_bounds()
     transports = resolve_day_transports(request)
     policy = PACE_POLICIES[PACE_ALIASES[request.preference.pace_type]]
@@ -58,9 +87,9 @@ def day_windows(request: ItineraryRequest) -> list[dict]:
     for index in range((departure.date() - arrival.date()).days + 1):
         day = arrival.date() + timedelta(days=index)
         earliest_arrival = arrival + timedelta(minutes=ARRIVAL_BUFFER_MINUTES[PACE_ALIASES[request.preference.pace_type]])
-        start = max(datetime.combine(day, time(9)), earliest_arrival if index == 0 else arrival)
-        end = min(datetime.combine(day, time(21)), departure)
-        if day == arrival.date() and arrival.time() >= time(21):
+        start = max(datetime.combine(day, day_start), earliest_arrival if index == 0 else arrival)
+        end = min(datetime.combine(day, day_end), departure)
+        if day == arrival.date() and arrival.time() >= day_end:
             end = min(datetime.combine(day, time(23, 59)), departure)
         start = min(start, end)
         # Public schedules have minute precision. Never round arrival down into
@@ -92,13 +121,20 @@ def day_windows(request: ItineraryRequest) -> list[dict]:
     return windows
 
 
+def hotel_rest_end(start: datetime, end: datetime, minimum: int) -> datetime:
+    """When the hotel "rest" item ends: the usual 21:00 (PLACE_DAY end), later only
+    when a late check-in needs the extended SCHEDULE_DAY time for its minimum stay."""
+    usual = start.replace(hour=PLACE_DAY[1].hour, minute=PLACE_DAY[1].minute, second=0, microsecond=0)
+    return min(end, max(usual, start + timedelta(minutes=minimum)))
+
+
 def accommodation_period(cursor: datetime, end: datetime, minimum: int) -> tuple[datetime, int]:
-    """Planning assumption: check in from 15:00, then rest until the day ends.
+    """Planning assumption: check in from 15:00, then rest until hotel_rest_end.
 
     This is not a verified property check-in time or next-day checkout time.
     """
     start = max(cursor, cursor.replace(hour=15, minute=0, second=0, microsecond=0))
-    stay = int((end - start).total_seconds() / 60)
+    stay = int((hotel_rest_end(start, end, minimum) - start).total_seconds() / 60)
     if stay < minimum:
         raise InvalidModelOutput("leave time for accommodation from 15:00 until the daily end")
     return start, stay
@@ -327,7 +363,7 @@ def schedule_selection(
     request: ItineraryRequest, selection: ModelSelection, places: list[Place]
 ) -> ModelItinerary:
     """Turn the model's ordered places into a feasible minute-precision schedule."""
-    windows = day_windows(request)
+    windows = day_windows(request, schedule=True)
     if [d.date for d in selection.days] != [w["date"] for w in windows]:
         raise InvalidModelOutput(
             "include ALL dates exactly once: " + ", ".join(w["date"] for w in windows)
@@ -401,7 +437,7 @@ def validate_itinerary(
     *,
     routes: dict[tuple[int, int], RouteSummary] | None = None,
 ) -> list[ItineraryDay]:
-    windows = day_windows(request)
+    windows = day_windows(request, schedule=True)
     if [day.date for day in generated.days] != [w["date"] for w in windows]:
         raise InvalidModelOutput(
             "days must contain every requested date exactly once in order"
@@ -447,7 +483,8 @@ def validate_itinerary(
             visit_start = datetime.fromisoformat(f"{window['date']}T{item.start_time}")
             visit_end = visit_start + timedelta(minutes=item.stay_minutes)
             if place.category == "숙소":
-                if visit_start.hour < 15 or visit_end != end or item.stay_minutes < minimum:
+                if (visit_start.hour < 15 or visit_end != hotel_rest_end(visit_start, end, minimum)
+                        or item.stay_minutes < minimum):
                     raise InvalidModelOutput("accommodation must cover check-in/rest through the daily end, from 15:00 or later")
             route = (
                 routes.get((len(result) + 1, sequence)) if routes is not None else None
@@ -545,9 +582,9 @@ async def generate_itinerary(
         any(w["needs_tour_and_restaurant"] for w in windows)
         and not {"관광", "식당"} <= categories
     ):
-        raise GenerationFailed("관광 장소 또는 식당 후보가 부족합니다.")
+        raise GenerationFailed("관광 장소 또는 식당 후보가 부족합니다.", reason="no_place_candidates")
     if any(w["needs_accommodation"] for w in windows) and "숙소" not in categories:
-        raise GenerationFailed("숙소 후보가 부족합니다.")
+        raise GenerationFailed("숙소 후보가 부족합니다.", reason="no_accommodation_candidates")
     context = build_context(request, places)
     feedback = None
     for attempt in range(2):
@@ -568,7 +605,8 @@ async def generate_itinerary(
             feedback = str(exc)
     else:
         raise GenerationFailed(
-            "필수 장소와 시간 조건을 만족하는 일정을 생성하지 못했습니다."
+            "필수 장소와 시간 조건을 만족하는 일정을 생성하지 못했습니다.",
+            reason="itinerary_validation_failed", detail={"last_feedback": feedback},
         )
 
 
