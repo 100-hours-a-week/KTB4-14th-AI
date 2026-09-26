@@ -131,3 +131,25 @@ class SpreadsheetContractTests(unittest.TestCase):
             value = spec["paths"][endpoint]["post"]["requestBody"]["content"]["application/json"]["examples"][example_key]["value"]
             self.assertEqual(value, example)
             schema.model_validate(value)
+
+    def test_itinerary_swagger_has_concrete_success_and_error_examples(self):
+        from ai_service.api_examples import ITINERARY_RESPONSE_EXAMPLES
+        with TestClient(create_app(settings=Settings())) as client:
+            spec = client.get('/openapi.json').json()
+        for path in ('/internal/ai/itineraries/generate', '/api/ai/v1/itinerary-jobs/stream'):
+            responses = spec['paths'][path]['post']['responses']
+            for code, example in ITINERARY_RESPONSE_EXAMPLES.items():
+                if code == 200 and path.endswith('/stream'):
+                    self.assertIn('text/event-stream', responses['200']['content'])
+                    continue
+                shown = responses[str(code)]['content']['application/json']['examples']['default']['value']
+                self.assertEqual(shown, example['value'])
+                self.assertNotIn('additionalProp1', json.dumps(shown))
+                if code in (401, 500):
+                    self.assertIn('data', shown)
+                    self.assertIsNone(shown['data'])
+            self.assertEqual(responses['503']['content']['application/json']['examples']['routing']['value']['message'], 'routing_service_unavailable')
+        success = ITINERARY_RESPONSE_EXAMPLES[200]['value']
+        self.assertEqual(ItineraryResponse.model_validate(success).model_dump(mode='json'), success)
+        self.assertNotIn('travel_plan_id', success)
+        self.assertIsNone(success['days'][0]['items'][0]['route_from_previous'])

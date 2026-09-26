@@ -3,13 +3,13 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 import json
-import logging
+import time
 
 from ai_service.errors import ApiError, ServiceUnavailable
 from ai_service.pipeline import generation_stages
+from ai_service.diagnostics import request_id as log_request_id, record, failure
 
 
-logger = logging.getLogger(__name__)
 STAGES = ("PLACES", "ACCOMMODATIONS", "ROUTES", "MUSIC")
 
 
@@ -20,6 +20,9 @@ def encode_event(name: str, sequence: int, payload: dict) -> str:
 async def stream_generation(
     body, places, planner, settings, request_id: str, router=None
 ):
+    token = log_request_id.set(request_id)
+    started = time.monotonic()
+    stage_started = started
     generator = generation_stages(body, places, planner, router)
     pending = None
     sequence = 0
@@ -51,6 +54,11 @@ async def stream_generation(
             finally:
                 pending = None
             sequence += 1
+            if status == "STARTED":
+                stage_started = time.monotonic()
+            record("generation_stage", stage=stage, status=status,
+                   elapsed_ms=round((time.monotonic() - started) * 1000),
+                   stage_ms=round((time.monotonic() - stage_started) * 1000))
             event = (
                 "complete"
                 if stage == "COMPLETE"
@@ -73,11 +81,8 @@ async def stream_generation(
     except asyncio.CancelledError:
         raise  # Client disconnected; cancellation closes in-flight HTTP requests.
     except Exception as exc:
-        logger.exception(
-            "Pipeline failed request_id=%s error=%s",
-            request_id,
-            exc,
-        )
+        failure("pipeline_failed", exc, stage=stage,
+                elapsed_ms=round((time.monotonic() - started) * 1000))
         if isinstance(exc, ApiError):
             code, message = exc.code, exc.message
         else:
@@ -102,4 +107,7 @@ async def stream_generation(
             pending.cancel()
             with suppress(asyncio.CancelledError, Exception):
                 await pending
-        await generator.aclose()
+        try:
+            await generator.aclose()
+        finally:
+            log_request_id.reset(token)

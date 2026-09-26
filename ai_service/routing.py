@@ -351,8 +351,8 @@ class KakaoRoutes:
                 "ENDNODES_NULL",
                 "EQUAL_POINTS",
             }:
-                if transport in {"BUS", "SUBWAY"}:
-                    raise GenerationFailed("요청한 이동수단의 경로를 찾지 못했습니다. 이동수단 조건을 변경해주세요.")
+                # No transit at all (e.g. a short hop) walks even under a BUS/SUBWAY day;
+                # only a route that exists solely via another vehicle is rejected below.
                 return await self._walk(origin, destination, departure, fallback=True)
             if payload["status"] != "OK":
                 raise RoutingUnavailable()

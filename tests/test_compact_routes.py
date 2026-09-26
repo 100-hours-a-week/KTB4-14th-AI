@@ -132,7 +132,7 @@ class CompactRoutesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(final["itinerary"]["days"][1]["items"][0]["route_from_previous"]["duration_minutes"], 10)
 
     async def test_missing_hotel_returns_422_at_accommodation_stage(self):
-        with self.assertLogs("ai_service.streaming", level="ERROR"):
+        with self.assertLogs("uvicorn.error.audigo", level="ERROR"):
             events = await self.events(PlaceClient(hotels=False))
         self.assertEqual(events[-1]["stage"], "ACCOMMODATIONS")
         self.assertEqual(events[-1]["status"], "FAILED")
@@ -141,22 +141,20 @@ class CompactRoutesTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(set(event) == {"stage", "status"} for event in events[:-1]))
         self.assertFalse(any(e["stage"] in {"ROUTES", "COMPLETE"} for e in events))
 
-    async def test_music_error_uses_compact_error_contract(self):
+    async def test_music_error_falls_back_instead_of_failing_trip(self):
         class FailingPlanner(Planner):
             async def recommend_music(self, body):
                 raise MusicRecommendationFailed()
 
-        with self.assertLogs("ai_service.streaming", level="ERROR"):
+        with self.assertLogs("uvicorn.error.audigo", level="ERROR") as logs:
             events = [json.loads(chunk.split("data: ", 1)[1])
                       async for chunk in stream_generation(self.body, self.places, FailingPlanner(), Settings(), "req_test", self.router)
                       if "data: " in chunk]
+        self.assertIn("music_fallback", "\n".join(logs.output))
+        self.assertFalse(any(e["status"] == "FAILED" for e in events))
         final = events[-1]
-        self.assertEqual(final["stage"], "MUSIC")
-        self.assertEqual(final["status"], "FAILED")
-        self.assertEqual(final["message"], "ai_music_recommendation_failed")
-        self.assertEqual(set(final), {"generation_job_id", "stage", "status", "message", "data"})
-        self.assertEqual(set(final["data"]), {"error_message"})
-        self.assertTrue(all(set(event) == {"stage", "status"} for event in events[:-1]))
+        self.assertEqual(final["stage"], "COMPLETE")
+        self.assertEqual(final["data"]["music"]["artist"], "조용필")
         self.assertFalse(all_keys(events) & FORBIDDEN)
 
     def test_http_stream_uses_same_compact_schema_and_header_trace_id(self):

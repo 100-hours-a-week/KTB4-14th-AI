@@ -16,9 +16,10 @@ class ServiceUnavailable(ApiError):
 
 class GenerationFailed(ApiError):
     def __init__(
-        self, message: str = "추천 가능한 여행 일정을 생성하지 못했습니다."
+        self, message: str = "추천 가능한 여행 일정을 생성하지 못했습니다.", *, reason: str | None = None
     ) -> None:
         super().__init__(422, "ai_itinerary_generation_failed", message)
+        self.reason = reason
 
 
 class RoutingUnavailable(ApiError):
