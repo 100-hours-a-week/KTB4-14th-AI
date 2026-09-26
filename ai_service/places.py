@@ -4,11 +4,13 @@ import asyncio
 import math
 import re
 import unicodedata
+import time
 
 import httpx
 from pydantic import ValidationError
 
 from ai_service.config import Settings
+from ai_service.diagnostics import record
 from ai_service.errors import GenerationFailed, ServiceUnavailable
 from ai_service.schemas import ItineraryRequest, Place, TRANSPORT_ALIASES
 from ai_service.transport import base_transport, resolve_day_transports
@@ -135,8 +137,10 @@ class KakaoPlaces:
         self.client = client
         self.settings = settings
         self.semaphore = asyncio.Semaphore(4)
+        self._canonical_regions: dict[str, str] = {}
 
     async def _get(self, endpoint: str, params: dict) -> list[dict]:
+        started = time.monotonic()
         if not self.settings.kakao_rest_api_key:
             raise ServiceUnavailable()
         try:
@@ -157,6 +161,9 @@ class KakaoPlaces:
                 raise ValueError("invalid documents")
             return documents
         except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+            record("place_provider_failed", provider="kakao", endpoint=endpoint,
+                   http_status=exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None,
+                   error_type=type(exc).__name__, elapsed_ms=round((time.monotonic() - started) * 1000))
             raise ServiceUnavailable() from exc
 
     async def collect(
@@ -191,13 +198,26 @@ class KakaoPlaces:
             )
 
         documents = await self._get("address", {"query": request.region.full_name})
+        # Resolve aliases using the provider's administrative address, never by
+        # stripping city/district suffixes (which can silently broaden the area).
+        regions = {d.get("address_name"): d for d in documents
+                   if d.get("address_type") == "REGION" and d.get("address_name")}
+        if len(regions) > 1:
+            raise GenerationFailed("여행 지역을 시·군·구까지 명확하게 지정해 주세요.", reason="ambiguous_region")
+        region = request.region.full_name
+        if regions:
+            region, document = next(iter(regions.items()))
+            documents = [document]
+        if len(self._canonical_regions) >= 128:
+            self._canonical_regions.pop(next(iter(self._canonical_regions)))
+        self._canonical_regions[request.region.full_name] = region
         if not documents:
             # Region search is only used to establish a geographic center.
             documents = await self._get(
                 "keyword", {"query": request.region.full_name, "size": 1}
             )
         if not documents:
-            raise GenerationFailed("여행 지역의 위치를 찾을 수 없습니다.")
+            raise GenerationFailed("여행 지역의 위치를 찾을 수 없습니다.", reason="region_not_found")
         try:
             x, y = float(documents[0]["x"]), float(documents[0]["y"])
             if (
@@ -244,7 +264,7 @@ class KakaoPlaces:
                         "x": anchor_x,
                         "y": anchor_y,
                         "radius": radius,
-                        "query": f"{request.region.full_name} {query}",
+                        "query": f"{region} {query}",
                         "size": 15,
                         "page": page,
                     }
@@ -254,37 +274,59 @@ class KakaoPlaces:
         results = await asyncio.gather(*calls)
         limits = {"관광": 60, "식당": 45, "숙소": 15}
         counts = {category: 0 for category in limits}
-        for result in results:
-            for doc in result:
-                try:
-                    category = GROUPS.get(
-                        doc.get("category_group_code", "")
-                    ) or category_of(doc.get("category_name", ""))
-                    if category is None or not in_region(
-                        request.region.full_name, doc.get("address_name", "")
-                    ):
+        stats = {"received": 0, "outside_region": 0, "unsupported_category": 0, "invalid_document": 0}
+
+        def add_results(batches):
+            for result in batches:
+                for doc in result:
+                    stats["received"] += 1
+                    try:
+                        category = GROUPS.get(
+                            doc.get("category_group_code", "")
+                        ) or category_of(doc.get("category_name", ""))
+                        if category is None:
+                            stats["unsupported_category"] += 1
+                            continue
+                        if not in_region(region, doc.get("address_name", "")):
+                            stats["outside_region"] += 1
+                            continue
+                        place = Place(
+                            provider_place_id=doc["id"],
+                            place_name=doc["place_name"],
+                            address=doc["address_name"],
+                            road_address=doc.get("road_address_name", ""),
+                            latitude=float(doc["y"]),
+                            longitude=float(doc["x"]),
+                            category=category,
+                            source_category=doc.get("category_name", category),
+                        )
+                    except (ValidationError, KeyError, TypeError, ValueError):
+                        stats["invalid_document"] += 1
                         continue
-                    place = Place(
-                        provider_place_id=doc["id"],
-                        place_name=doc["place_name"],
-                        address=doc["address_name"],
-                        road_address=doc.get("road_address_name", ""),
-                        latitude=float(doc["y"]),
-                        longitude=float(doc["x"]),
-                        category=category,
-                        source_category=doc.get("category_name", category),
-                    )
-                except (ValidationError, KeyError, TypeError, ValueError):
-                    continue
-                if (
-                    place.provider_place_id not in pool
-                    and counts[category] < limits[category]
-                ):
-                    pool[place.provider_place_id] = place
-                    counts[category] += 1
+                    if (
+                        place.provider_place_id not in pool
+                        and counts[category] < limits[category]
+                    ):
+                        pool[place.provider_place_id] = place
+                        counts[category] += 1
+        add_results(results)
+        # Keyword search may be empty even when category search has real places.
+        # One bounded fallback, same radius/anchors and the same region checks.
+        needed = [("관광", "AT4"), ("식당", "FD6")]
+        if include_accommodation:
+            needed.append(("숙소", "AD5"))
+        missing = [group for category, group in needed if not any(p.category == category for p in pool.values())]
+        if missing:
+            fallback = await asyncio.gather(*(self._get("category", {
+                "category_group_code": group, "x": ax, "y": ay, "radius": radius,
+                "sort": "distance", "size": 15,
+            }) for group in missing for ax, ay in anchors))
+            add_results(fallback)
+        record("place_collection", canonical_region=region, radius=radius, anchors=len(anchors),
+               fallback_groups=missing, accepted=counts, required_count=len(request.required_places), **stats)
         if not any(not p.is_required for p in pool.values()):
             raise GenerationFailed(
-                "해당 지역에서 새로 추천할 수 있는 카카오 장소가 없습니다."
+                "해당 지역에서 새로 추천할 수 있는 카카오 장소가 없습니다.", reason="no_place_candidates"
             )
         return list(pool.values())
 
@@ -302,12 +344,11 @@ class KakaoPlaces:
                 "size": 15,
             },
         )
-        result = {}
+        region = self._canonical_regions.get(request.region.full_name, request.region.full_name)
+        result, outside = {}, {}
         for doc in documents:
             try:
-                if doc.get("category_group_code") != "AD5" or not in_region(
-                    request.region.full_name, doc.get("address_name")
-                ):
+                if doc.get("category_group_code") != "AD5":
                     continue
                 place = Place(
                     provider_place_id=doc["id"],
@@ -321,5 +362,11 @@ class KakaoPlaces:
                 )
             except (ValidationError, KeyError, TypeError, ValueError):
                 continue
-            result[place.provider_place_id] = place
+            target = result if in_region(region, place.address) else outside
+            target[place.provider_place_id] = place
+        if not result and outside:
+            # Anchors near a region border (or a required place outside it) only have
+            # lodging across the border; a nearby stay beats failing the whole trip.
+            record("accommodation_region_fallback", canonical_region=region, candidates=len(outside))
+            return list(outside.values())
         return list(result.values())

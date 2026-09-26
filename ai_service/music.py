@@ -10,6 +10,7 @@ import re
 import sys
 import time
 import unicodedata
+from urllib.parse import urlencode
 
 import httpx
 
@@ -34,6 +35,16 @@ def matches_song(title: str, author: str, suggestion: MusicSuggestion) -> bool:
     requested = suggestion.title + " " + suggestion.artist
     return not any(normalized(word) not in normalized(requested)
                    for word in re.findall(variants, title, re.IGNORECASE))
+
+
+def fallback_music() -> MusicRecommendation:
+    # Music is an extra: an unverifiable pick must not fail an otherwise complete trip.
+    return MusicRecommendation(
+        title="여행을 떠나요",
+        artist="조용필",
+        youtube_url="https://www.youtube.com/results?"
+        + urlencode({"search_query": "조용필 여행을 떠나요 official audio"}),
+    )
 
 
 class YouTubeMusic:

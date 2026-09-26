@@ -231,7 +231,7 @@ class TravelGenerationRequest(Duration):
         places = []
         for index, place in enumerate(self.required_places, 1):
             if place.place_name is None or place.latitude is None or place.longitude is None:
-                raise GenerationFailed("필수 장소의 장소명·위도·경도가 없습니다. 백엔드에서 재생성 장소 상세를 복구해 전달해 주세요.")
+                raise GenerationFailed("필수 장소의 장소명·위도·경도가 없습니다. 백엔드에서 재생성 장소 상세를 복구해 전달해 주세요.", reason="required_place_details_missing")
             places.append(RequiredPlace(
                 provider=place.provider, provider_place_id=place.provider_place_id,
                 place_name=place.place_name, address=place.address or "",

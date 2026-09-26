@@ -104,3 +104,16 @@ cd /Users/samrobert/Documents/GitHub/AI-parking-assignment/development
 ## 요청에서 400이 발생할 때
 
 응답의 `data.error_message`에서 누락된 필드나 JSON 문법 오류를 확인하세요. Swagger의 사용자 중첩 요청 예시는 `generation_job_id`를 받습니다. 문서에서 복사한 줄 끝의 역슬래시, `<br>` 같은 표기 문자는 JSON에 넣지 않습니다.
+
+## 실제 일정 생성 검증
+
+`tests/`는 외부 API를 모의 응답으로 대체하는 회귀 테스트입니다. 실제 생성 검증은 서버를 실행한 뒤 별도 터미널에서 아래 명령으로 진행합니다. **실제 외부 API 호출 비용이 발생합니다.** 키는 기존 `.env`에서 읽으며 출력하지 않습니다. 실행 중인 서버와 같은 인증 설정을 사용해야 합니다.
+
+```bash
+cd /Users/samrobert/Documents/GitHub/AI-parking-assignment/development
+./.venv/bin/python scripts/check_generation_live.py --live --base-url http://127.0.0.1:8000
+```
+
+서울·부산 반복 요청, 강릉·제주, 일반 JSON, 시간 부족·잘못된 요청·장소 상세 누락을 검사합니다. HTTP 200만 확인하지 않고 SSE의 최종 결과와 오류까지 확인하며, 실패하면 종료 코드 1을 반환합니다. 결과는 기본 `/tmp/audigo-generation-e2e.json`에 저장됩니다. 프론트·백엔드 저장까지의 전체 앱 테스트는 별도로 필요합니다.
+
+[실패 원인·수정 내용·실검증 기록](../문서/여행생성_실패_수정_검증.md)
