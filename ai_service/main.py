@@ -91,6 +91,13 @@ def create_app(
 
     @app.exception_handler(ApiError)
     async def handle_api_error(request: Request, exc: ApiError):
+        logger.warning(
+            "API error: code=%s status=%s message=%s request_id=%s",
+            exc.code,
+            exc.status_code,
+            exc.message,
+            getattr(request.state, "request_id", None),
+        )
         data = None
         if exc.status_code == 503:
             data = {"error_message": exc.message}
