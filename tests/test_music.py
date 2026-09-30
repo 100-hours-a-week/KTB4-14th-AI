@@ -12,7 +12,7 @@ from ai_service.errors import MusicRecommendationFailed, ServiceUnavailable
 from ai_service.main import create_app
 from ai_service.model import OpenAIPlanner
 from ai_service.music import YouTubeMusic
-from ai_service.schemas import ItineraryRequest, ItineraryStreamRequest, MusicSuggestion
+from ai_service.schemas import ItineraryRequest, MusicSuggestion
 from test_day_transport import request
 
 VIDEO_ID = 'abcdefghijk'
@@ -144,17 +144,15 @@ class MusicTests(unittest.IsolatedAsyncioTestCase):
 
 
 class MusicContractTests(unittest.TestCase):
-    def test_stream_request_has_only_existing_itinerary_fields(self):
-        fields = ItineraryStreamRequest.model_json_schema()['properties']
-        self.assertEqual(set(fields), set(ItineraryRequest.model_json_schema()['properties']))
+    def test_generation_request_has_only_existing_itinerary_fields(self):
         data = request().model_dump(mode='json')
-        self.assertEqual(ItineraryStreamRequest.model_validate(data).itinerary_request(), request())
+        self.assertEqual(ItineraryRequest.model_validate(data), request())
         with TestClient(create_app(settings=Settings(api_token='test-only'))) as client:
             schema = client.get('/openapi.json').json()
             self.assertNotIn('music_candidates', schema['components']['schemas']['TravelGenerationRequest']['properties'])
             self.assertNotIn('youtube.com/results', json.dumps(schema))
             data['music_candidates'] = []
-            response = client.post('/api/ai/v1/itinerary-jobs/stream', json=data,
+            response = client.post('/internal/ai/itineraries/generate', json=data,
                                    headers={'Authorization': 'Bearer test-only'})
             self.assertEqual(response.status_code, 400)
 

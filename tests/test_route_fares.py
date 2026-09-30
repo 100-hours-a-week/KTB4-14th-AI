@@ -127,14 +127,11 @@ class RouteFareTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RouteOpenApiTests(unittest.TestCase):
-    def test_json_schema_and_sse_examples_match_public_contract(self):
+    def test_json_schema_example_matches_public_contract(self):
         with TestClient(create_app(settings=Settings())) as client:
             spec = client.get('/openapi.json').json()
         example = spec['components']['schemas']['RouteSummary']['examples'][0]
         self.assertEqual(example, ROUTE_RESPONSE_EXAMPLE)
         self.assertEqual(RouteSummary.model_validate(example).model_dump(mode='json'), example)
-        event = spec['paths']['/api/ai/v1/itinerary-jobs/stream']['post']['responses']['200']['content']['text/event-stream']['examples']['result']['value']
-        data = json.loads(event.split('data: ',1)[1])
-        route = data['result']['days'][0]['routes'][0]
-        self.assertEqual({k:v for k,v in route.items() if k not in ('from_sequence','to_sequence','order')}, example)
-        self.assertIsNone(route['legs'][0]['boarding_stop']['station_number'])
+        self.assertNotIn('/api/ai/v1/itinerary-jobs/stream', spec['paths'])
+        self.assertIsNone(example['legs'][0]['boarding_stop']['station_number'])

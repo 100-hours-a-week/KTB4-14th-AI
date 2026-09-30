@@ -1,5 +1,4 @@
 import copy
-import json
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -14,15 +13,18 @@ from ai_service.schemas import GenerationResult, ItineraryResponse, LegacyGenera
 
 HEADERS = {"Authorization": "Bearer test-only"}
 SETTINGS = Settings(api_token="test-only", openai_api_key="test", kakao_rest_api_key="test")
-PATHS = ("/internal/ai/itineraries/generate", "/api/ai/v1/itinerary-jobs/stream")
+PATHS = ("/internal/ai/itineraries/generate",)
 
 
 class NestedRequestTests(unittest.TestCase):
     def test_exact_user_request_reaches_itinerary_generator(self):
         context = LegacyGenerationRequest.model_validate(EXAMPLE).generation_context()
         result = ItineraryResponse(**context.model_dump(), title="제주 일정", days=[])
-        generate = AsyncMock(return_value=result)
-        with patch("ai_service.main.generate_itinerary", generate), TestClient(create_app(settings=SETTINGS)) as client:
+        generate = AsyncMock(return_value=GenerationResult(
+            itinerary=result,
+            music={"title": "테스트", "artist": "테스트", "youtube_url": "https://www.youtube.com/watch?v=abcdefghijk"},
+        ))
+        with patch("ai_service.main.generate_plan", generate), TestClient(create_app(settings=SETTINGS)) as client:
             response = client.post(PATHS[0], json=EXAMPLE, headers=HEADERS)
         self.assertEqual(response.status_code, 200, response.text)
         received = generate.call_args.args[0]
@@ -36,26 +38,8 @@ class NestedRequestTests(unittest.TestCase):
         self.assertEqual(response.json()["generation_job_id"], 10)
         self.assertEqual(response.json()["preference"]["budget_type"], "KRW")
 
-    def test_stream_accepts_nested_request_and_preserves_job_identity(self):
-        async def pipeline(body, *args):
-            self.assertEqual(body.generation_job_id, 10)
-            yield "PLACES", "STARTED", None
-            yield "COMPLETE", "COMPLETED", GenerationResult(
-                itinerary=ItineraryResponse(**body.model_dump(), title="제주 일정", days=[]),
-                music={"title": "테스트", "artist": "테스트", "youtube_url": "https://www.youtube.com/watch?v=abcdefghijk"},
-            )
-
-        with patch("ai_service.streaming.generation_stages", side_effect=pipeline), TestClient(create_app(settings=SETTINGS)) as client:
-            response = client.post(PATHS[1], json=EXAMPLE, headers=HEADERS)
-        self.assertEqual(response.status_code, 200, response.text)
-        events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
-        self.assertEqual(events[-2]["generation_job_id"], 10)
-        self.assertNotIn("travel_plan_id", events[-2])
-        self.assertEqual(events[-2]["result"]["title"], "제주 일정")
-        self.assertEqual(sum("result" in event for event in events), 1)
-
     def test_failure_reports_job_id_without_treating_it_as_travel_plan_id(self):
-        with patch("ai_service.main.generate_itinerary", AsyncMock(side_effect=GenerationFailed("테스트 실패"))), TestClient(create_app(settings=SETTINGS)) as client:
+        with patch("ai_service.main.generate_plan", AsyncMock(side_effect=GenerationFailed("테스트 실패"))), TestClient(create_app(settings=SETTINGS)) as client:
             response = client.post(PATHS[0], json=EXAMPLE, headers=HEADERS)
         self.assertEqual(response.status_code, 422)
         self.assertEqual(response.json()["data"]["generation_job_id"], 10)

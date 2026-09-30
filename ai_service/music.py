@@ -55,8 +55,8 @@ class YouTubeMusic:
         self.cache: OrderedDict[tuple[str, str], tuple[float, MusicRecommendation]] = OrderedDict()
         self.search_slots = asyncio.Semaphore(2)
 
-    async def _search(self, query: str) -> list[dict]:
-        # 별도 프로세스로 실행해 SSE 중단·시간 초과 때 검색도 즉시 종료한다.
+    async def _search(self, query: str, *, limit: int = 5) -> list[dict]:
+        # 별도 프로세스로 실행해 요청 취소·시간 초과 때 검색도 즉시 종료한다.
         # 영상·음원은 받지 않고 로그인·쿠키·사용자 설정도 사용하지 않는다.
         async with self.search_slots:
             try:
@@ -64,7 +64,7 @@ class YouTubeMusic:
                     sys.executable, "-m", "yt_dlp", "--ignore-config", "--no-cache-dir",
                     "--flat-playlist", "--skip-download", "--dump-single-json", "--no-warnings",
                     "--socket-timeout", "8", "--retries", "0", "--extractor-retries", "0",
-                    "--", "ytsearch5:" + query,
+                    "--", f"ytsearch{limit}:" + query,
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
                 )
             except OSError as exc:
@@ -77,7 +77,7 @@ class YouTubeMusic:
                 entries = payload.get("entries") if isinstance(payload, dict) else None
                 if not isinstance(entries, list):
                     raise ValueError("invalid YouTube search response")
-                return entries[:5]
+                return entries[:limit]
             except (TimeoutError, ValueError) as exc:
                 raise ServiceUnavailable(reason="youtube_search_timeout_or_invalid", detail={"error": type(exc).__name__}) from exc
             finally:
@@ -97,38 +97,43 @@ class YouTubeMusic:
             return cached[1].model_copy(deep=True)
         entries = await self._search(f"{suggestion.artist} {suggestion.title} official audio")
         for entry in entries:
-            if not isinstance(entry, dict):
-                continue
-            video_id, title = entry.get("id"), entry.get("title")
-            author = entry.get("channel") or entry.get("uploader") or ""
-            if (not isinstance(video_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id)
-                    or not isinstance(title, str) or not isinstance(author, str)
-                    or entry.get("live_status") in ("is_live", "is_upcoming")
-                    or not matches_song(title, author, suggestion)):
-                continue
-            # 영상 URL은 모델 출력이 아니라 실제 검색 결과의 ID로 만든다.
-            url = "https://www.youtube.com/watch?v=" + video_id
-            try:
-                response = await self.client.get(
-                    "https://www.youtube.com/oembed", params={"url": url, "format": "json"}, timeout=8.0,
-                )
-                if response.status_code in {401, 403, 404, 410}:
-                    continue  # 접근 제한을 우회하지 않고 다른 결과를 확인한다.
-                response.raise_for_status()
-                metadata = response.json()
-                if not isinstance(metadata, dict):
-                    raise ValueError("invalid YouTube metadata")
-            except (httpx.HTTPError, ValueError) as exc:
-                raise ServiceUnavailable(reason="youtube_oembed_failed", detail={"error": type(exc).__name__, "http_status": getattr(getattr(exc, "response", None), "status_code", None)}) from exc
-            verified_title, verified_author = metadata.get("title"), metadata.get("author_name")
-            if (metadata.get("type") != "video" or not isinstance(verified_title, str)
-                    or not isinstance(verified_author, str)
-                    or not matches_song(verified_title, verified_author, suggestion)):
-                continue
-            song = MusicRecommendation(title=suggestion.title, artist=suggestion.artist, youtube_url=url)
-            self.cache[key] = (time.monotonic() + 600, song)
-            self.cache.move_to_end(key)
-            if len(self.cache) > 128:
-                self.cache.popitem(last=False)
-            return song.model_copy(deep=True)
+            song = await self.verify_entry(entry, suggestion)
+            if song is not None:
+                self.cache[key] = (time.monotonic() + 600, song)
+                self.cache.move_to_end(key)
+                if len(self.cache) > 128:
+                    self.cache.popitem(last=False)
+                return song.model_copy(deep=True)
         return None
+
+    async def verify_entry(self, entry: dict, suggestion: MusicSuggestion) -> MusicRecommendation | None:
+        """이미 찾은 영상 한 개를 제목·가수와 공개 메타데이터로 검증한다."""
+        if not isinstance(entry, dict):
+            return None
+        video_id, title = entry.get("id"), entry.get("title")
+        author = entry.get("channel") or entry.get("uploader") or ""
+        if (not isinstance(video_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id)
+                or not isinstance(title, str) or not isinstance(author, str)
+                or entry.get("live_status") in ("is_live", "is_upcoming")
+                or not matches_song(title, author, suggestion)):
+            return None
+        # 영상 URL은 모델 출력이 아니라 실제 검색 결과의 ID로 만든다.
+        url = "https://www.youtube.com/watch?v=" + video_id
+        try:
+            response = await self.client.get(
+                "https://www.youtube.com/oembed", params={"url": url, "format": "json"}, timeout=8.0,
+            )
+            if response.status_code in {401, 403, 404, 410}:
+                return None  # 접근 제한을 우회하지 않고 다른 결과를 확인한다.
+            response.raise_for_status()
+            metadata = response.json()
+            if not isinstance(metadata, dict):
+                raise ValueError("invalid YouTube metadata")
+        except (httpx.HTTPError, ValueError) as exc:
+            raise ServiceUnavailable(reason="youtube_oembed_failed", detail={"error": type(exc).__name__, "http_status": getattr(getattr(exc, "response", None), "status_code", None)}) from exc
+        verified_title, verified_author = metadata.get("title"), metadata.get("author_name")
+        if (metadata.get("type") != "video" or not isinstance(verified_title, str)
+                or not isinstance(verified_author, str)
+                or not matches_song(verified_title, verified_author, suggestion)):
+            return None
+        return MusicRecommendation(title=suggestion.title, artist=suggestion.artist, youtube_url=url)

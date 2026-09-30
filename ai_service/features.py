@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime, time, timedelta
+from itertools import permutations
 import json
 import logging
 import math
 
 from ai_service.errors import GenerationFailed, InvalidModelOutput
-from ai_service.model import OpenAIPlanner
-from ai_service.places import KakaoPlaces, distance_km, travel_minutes
+from ai_service.group_policy import daily_item_reduction, movement_buffer_minutes, proximity_floor
+from ai_service.places import distance_km, travel_minutes
 from ai_service.transport import base_transport, resolve_day_transports
 from ai_service.schemas import (
     ItineraryDay,
@@ -95,6 +96,12 @@ def _day_windows(request: ItineraryRequest, bounds: tuple[time, time]) -> list[d
         min_stay = min(policy[category][0] for category in ("관광", "식당", "숙소"))
         maximum = min(policy["max_items"], max(0, minutes // min_stay))
         minimum = min(maximum, math.ceil(policy["min_items"] * minutes / 720))
+        if maximum:
+            # 필수 장소는 밀도 축소보다 우선한다. 날짜 배분은 모델이 결정한다.
+            required_floor = min(maximum, len(request.required_places))
+            category_floor = 2 if minutes >= 240 else 1
+            maximum = max(required_floor, min(maximum, category_floor), maximum - daily_item_reduction(request.headcount))
+            minimum = min(max(1 if minimum else 0, minimum - daily_item_reduction(request.headcount)), maximum)
         windows.append(
             {
                 "date": day.isoformat(),
@@ -103,6 +110,8 @@ def _day_windows(request: ItineraryRequest, bounds: tuple[time, time]) -> list[d
                 "start": start.strftime("%H:%M"),
                 "end": end.strftime("%H:%M"),
                 "available_minutes": minutes,
+                **({"group_transfer_buffer_minutes": movement_buffer_minutes(request.headcount)}
+                   if request.headcount >= 10 else {}),
                 "min_items": minimum,
                 "max_items": maximum,
                 "needs_accommodation": day < departure.date()
@@ -144,12 +153,17 @@ def select_candidates(request: ItineraryRequest, places: list[Place]) -> list[Pl
     for category, limit in limits.items():
         candidates = [p for p in places if p.category == category and not p.is_required]
         # 필수 장소와 가까운 후보를 반영하되 검색 관련성과 지역 다양성도 유지한다.
-        if required and request.preference.distance_preference is not None:
+        anchors = required or (places[:1] if request.headcount >= 10 else [])
+        if anchors and (request.preference.distance_preference is not None or request.headcount >= 5):
             nearest = sorted(
-                candidates, key=lambda p: min(distance_km(p, r) for r in required)
+                candidates, key=lambda p: min(distance_km(p, r) for r in anchors)
             )
             nearby_count = round(
-                limit * (100 - request.preference.distance_preference) / 100
+                limit * max(
+                    (100 - request.preference.distance_preference) / 100
+                    if request.preference.distance_preference is not None else 0,
+                    proximity_floor(request.headcount),
+                )
             )
             chosen = nearest[:nearby_count]
             chosen_ids = {p.provider_place_id for p in chosen}
@@ -159,6 +173,67 @@ def select_candidates(request: ItineraryRequest, places: list[Place]) -> list[Pl
         else:
             chosen = candidates[:limit]
         result.extend(chosen)
+    return result
+
+
+def optimize_group_order(
+    request: ItineraryRequest, selection: ModelSelection, places: list[Place]
+) -> ModelSelection:
+    """선택된 장소만 재정렬해 단체 여행의 불필요한 왕복을 줄인다."""
+    if request.headcount < 5:
+        return selection
+    by_id = {place.provider_place_id: place for place in places}
+    required_order = {place.provider_place_id: place.order for place in request.required_places}
+    result = selection.model_copy(deep=True)
+    previous = None
+    for day in result.days:
+        original = [by_id[item.provider_place_id] for item in day.items]
+        if len(original) < 3:
+            previous = original[-1] if original else previous
+            continue
+        distances = {}
+
+        def km(a, b):
+            key = (a.provider_place_id, b.provider_place_id)
+            if key not in distances:
+                distances[key] = distance_km(a, b)
+            return distances[key]
+
+        def valid(path):
+            orders = [required_order[p.provider_place_id] for p in path if p.provider_place_id in required_order]
+            return (
+                orders == sorted(orders)
+                and all(p.category != "숙소" or i == len(path) - 1 for i, p in enumerate(path))
+                and all(a.category != b.category or a.category != "식당" for a, b in zip(path, path[1:]))
+            )
+
+        def score(path):
+            points = ([previous] if previous else []) + list(path)
+            legs = [km(a, b) for a, b in zip(points, points[1:])]
+            # 가까운 곳으로 돌아오는 경로는 같은 지역을 반복 방문하는 것으로 본다.
+            backtrack = sum(
+                min(km(a, b), km(b, c))
+                for a, b, c in zip(points, points[1:], points[2:])
+                if km(a, c) < min(km(a, b), km(b, c)) * 0.5
+            )
+            return sum(legs) + backtrack * (0.25 if request.headcount < 10 else 0.5)
+
+        if not valid(original):
+            previous = original[-1]
+            continue
+        best, best_score = original, score(original)
+        # 하루 최대 8곳이라 전체 순열을 살펴도 범위가 작다.
+        for path in permutations(original):
+            if not valid(path):
+                continue
+            candidate_score = score(path)
+            if candidate_score < best_score:
+                best, best_score = path, candidate_score
+        current_score = score(original)
+        threshold = 0.85 if request.headcount < 10 else 0.95 if request.headcount < 20 else 1.0
+        if best_score < current_score * threshold:
+            day.items = [SelectionItem(provider_place_id=p.provider_place_id) for p in best]
+        previous = by_id[day.items[-1].provider_place_id]
     return result
 
 
@@ -326,7 +401,8 @@ def build_context(request: ItineraryRequest, places: list[Place]) -> dict:
     policy = PACE_POLICIES[PACE_ALIASES[request.preference.pace_type]]
     windows = day_windows(request)
     matrices = {
-        mode: [[travel_minutes(a, b, mode) for b in places] for a in places]
+        mode: [[travel_minutes(a, b, mode) + (movement_buffer_minutes(request.headcount) if a.provider_place_id != b.provider_place_id else 0)
+                for b in places] for a in places]
         for mode in {w["transport_type"] for w in windows}
     }
     return {
@@ -342,7 +418,11 @@ def build_context(request: ItineraryRequest, places: list[Place]) -> dict:
             for p in places
         ],
         "travel_edges": {
-            "description": "Estimated minutes by date. Use the destination day's matrix, including transfers from the previous night's lodging. Row/column order follows place_ids.",
+            "description": (
+                "Estimated planning minutes including group movement slack, not provider route duration. Use the destination day's matrix, including transfers from the previous night's lodging. Row/column order follows place_ids."
+                if request.headcount >= 10 else
+                "Estimated minutes by date. Use the destination day's matrix, including transfers from the previous night's lodging. Row/column order follows place_ids."
+            ),
             "place_ids": [p.provider_place_id for p in places],
             "minutes_by_date": {w["date"]: matrices[w["transport_type"]] for w in windows},
         },
@@ -372,6 +452,7 @@ def schedule_selection(
             chosen.append(place)
             transfers.append(
                 travel_minutes(previous, place, window["transport_type"])
+                + window.get("group_transfer_buffer_minutes", 0)
                 if previous
                 else 0
             )
@@ -493,7 +574,9 @@ def validate_itinerary(
                     else 0
                 )
             )
-            earliest = previous_end + timedelta(minutes=transfer)
+            earliest = previous_end + timedelta(
+                minutes=transfer + (window.get("group_transfer_buffer_minutes", 0) if previous_place else 0)
+            )
             if visit_start < earliest or visit_end > end:
                 raise InvalidModelOutput(
                     f"{window['date']} item {sequence}: start at/after {earliest.strftime('%H:%M')}, "
@@ -559,48 +642,6 @@ def validate_generation_window(request: ItineraryRequest) -> list[dict]:
             "여행 기간과 속도에 비해 필수 방문 장소가 너무 많습니다.", reason="too_many_required_places"
         )
     return windows
-
-
-async def generate_itinerary(
-    request: ItineraryRequest,
-    places_client: KakaoPlaces,
-    planner: OpenAIPlanner,
-    router=None,
-) -> ItineraryResponse:
-    """JSON 응답용 생성 흐름을 실행하고 검증 실패 시 한 번 수정 요청한다."""
-    windows = validate_generation_window(request)
-    places = select_candidates(request, await places_client.collect(request))
-    categories = {p.category for p in places}
-    if (
-        any(w["needs_tour_and_restaurant"] for w in windows)
-        and not {"관광", "식당"} <= categories
-    ):
-        raise GenerationFailed("관광 장소 또는 식당 후보가 부족합니다.", reason="no_place_candidates")
-    if any(w["needs_accommodation"] for w in windows) and "숙소" not in categories:
-        raise GenerationFailed("숙소 후보가 부족합니다.", reason="no_accommodation_candidates")
-    context = build_context(request, places)
-    feedback = None
-    for attempt in range(2):
-        try:
-            selection = await planner.generate(context, feedback)
-            selection = complete_selection(request, selection, places)
-            from ai_service.routing import KakaoRoutes, schedule_with_routes
-
-            router = router or KakaoRoutes(planner.client, planner.settings)
-            result = await schedule_with_routes(
-                request, selection, places, planner.settings.openai_model, router
-            )
-            return result.itinerary
-        except InvalidModelOutput as exc:
-            logger.warning(
-                "Itinerary validation failed on attempt %s: %s", attempt + 1, str(exc)
-            )
-            feedback = str(exc)
-    else:
-        raise GenerationFailed(
-            "필수 장소와 시간 조건을 만족하는 일정을 생성하지 못했습니다.",
-            reason="itinerary_validation_failed", detail={"last_feedback": feedback},
-        )
 
 
 def make_itinerary_response(

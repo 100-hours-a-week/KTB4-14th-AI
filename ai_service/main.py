@@ -9,7 +9,7 @@ from typing import Annotated
 import httpx
 from fastapi import APIRouter, Body, Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from ai_service.auth import require_api_token
@@ -17,8 +17,10 @@ from ai_service.api_examples import GENERATION_REQUEST_EXAMPLES, MUSIC_REQUEST_E
 from ai_service.config import Settings
 from ai_service.diagnostics import request_id as log_request_id, record, failure
 from ai_service.errors import ApiError, ServiceUnavailable
-from ai_service.features import generate_itinerary
+from ai_service.e5_music import E5MusicRecommender
+from ai_service.pipeline import generate_plan
 from ai_service.model import OpenAIPlanner
+from ai_service.music import YouTubeMusic
 from ai_service.places import KakaoPlaces
 from ai_service.routing import KakaoRoutes
 from ai_service.schemas import (
@@ -30,8 +32,6 @@ from ai_service.schemas import (
     TravelGenerationRequest,
     LegacyGenerationRequest,
 )
-from ai_service.streaming import encode_event
-from ai_service.backend_contract import stream_backend_generation
 from ai_service.transport import resolve_day_transports
 
 
@@ -47,34 +47,6 @@ ITINERARY_RESPONSES = {
     }
     for code, example in ITINERARY_RESPONSE_EXAMPLES.items()
 }
-STREAM_RESPONSE = {
-    "description": (
-        "feature-travel SSE: PLACE_RECOMMEND, STAY_RECOMMEND, ROUTE_OPTIMIZE, MUSIC_RECOMMEND. "
-        "단계별 STARTED/DONE 이벤트를 전송합니다. 최종 일정은 음악 생성 성공 후 "
-        "ROUTE_OPTIMIZE_DONE의 result에 한 번만 전송하며, complete는 완료 상태만 보냅니다. "
-        "백엔드가 ROUTE_OPTIMIZE_DONE 수신 즉시 저장하므로 이 이벤트는 음악 성공까지 지연합니다. "
-        "result.days[].routes[].legs는 sequence 순서로 도보·버스·지하철 구간을 제공합니다. boarding_stop/alighting_stop에는 이름·검증된 station_number(미확인 null)·버스 번호 배열이 포함됩니다. vehicle_number는 버스 번호 배열, line_name은 지하철 노선 배열입니다. 각 구간에 duration_minute와 distance_meter를 제공합니다. route.total_fare_amount는 선택한 카카오 경로 전체 요금이며 구간 합산하지 않습니다. "
-        "HTTP 200 이후에도 error 이벤트로 실패할 수 있습니다. 인증 Bearer 토큰이 필요합니다."
-    ),
-    "content": {"text/event-stream": {"schema": {"type": "string"}, "examples": {
-        "started": {"value": encode_event("PLACE_RECOMMEND_STARTED", 1, {"stage": "PLACE_RECOMMEND", "status": "RUNNING"})},
-        "done": {"value": encode_event("PLACE_RECOMMEND_DONE", 2, {"stage": "PLACE_RECOMMEND", "status": "DONE"})},
-        "result": {"summary": "승하차·요금 구조 예시. 방문 항목은 생략했으며 이름·요금은 실제 조회 결과가 아닙니다.", "value": encode_event("ROUTE_OPTIMIZE_DONE", 8, {
-            "travel_plan_id": 10, "stage": "ROUTE_OPTIMIZE", "status": "DONE",
-            "result": {"title": "여행 일정", "days": [{"day_number": 1, "travel_date": "2026-09-25", "items": [],
-                "routes": [{"from_sequence": 1, "to_sequence": 2, "order": 1, **ROUTE_RESPONSE_EXAMPLE}]}], "music": {
-                "title": "Spring Day", "artist": "BTS", "youtube_url": "https://www.youtube.com/watch?v=xEeFrLSkMm8"
-            }},
-        })},
-        "complete": {"value": encode_event("complete", 9, {"travel_plan_id": 10, "stage": "COMPLETE", "status": "COMPLETED"})},
-        "error": {"value": encode_event("error", 8, {
-            "travel_plan_id": 10, "stage": "MUSIC_RECOMMEND", "status": "FAILED",
-            "message": "ai_music_recommendation_failed", "data": {"error_message": "추천 가능한 음악을 선택하지 못했습니다."},
-        })},
-    }}},
-}
-
-
 def create_app(
     *,
     settings: Settings | None = None,
@@ -89,6 +61,9 @@ def create_app(
             app.state.places = KakaoPlaces(client, settings)
             app.state.planner = OpenAIPlanner(client, settings)
             app.state.routes = KakaoRoutes(client, settings)
+            app.state.music_recommender = E5MusicRecommender(
+                YouTubeMusic(client), settings.e5_model_dir
+            )
             yield
 
     app = FastAPI(title="Audigo AI API", version="1.0.0", lifespan=lifespan)
@@ -207,52 +182,12 @@ def create_app(
             app.state.routes.require_configured(mode)
         try:
             async with asyncio.timeout(settings.generation_timeout_seconds):
-                return await generate_itinerary(
+                result = await generate_plan(
                     body, app.state.places, app.state.planner, app.state.routes
                 )
+                return result.itinerary
         except TimeoutError as exc:
             raise ServiceUnavailable(reason="generation_timeout", detail={"timeout_seconds": settings.generation_timeout_seconds}) from exc
-
-    backend_router = APIRouter(dependencies=[Depends(require_api_token(settings.api_token))])
-
-    @backend_router.post(
-        "/api/ai/v1/itinerary-jobs/stream",
-        response_class=StreamingResponse,
-        responses={
-            **{code: response for code, response in ITINERARY_RESPONSES.items() if code != 200},
-            200: STREAM_RESPONSE,
-        },
-        tags=["V1"],
-    )
-    async def stream_itinerary(
-        body: Annotated[LegacyGenerationRequest | TravelGenerationRequest, Body(openapi_examples=GENERATION_REQUEST_EXAMPLES)],
-        request: Request,
-    ):
-        # 백엔드가 소비하는 SSE 형식으로 단계별 생성 상태를 보낸다.
-        if isinstance(body, LegacyGenerationRequest):
-            request.state.generation_job_id = body.generation_job_id
-        else:
-            request.state.travel_plan_id = body.travel_plan_id
-        body = body.generation_context()
-        if not settings.openai_api_key or not settings.kakao_rest_api_key:
-            raise ServiceUnavailable(reason="provider_keys_missing")
-        for mode in set(resolve_day_transports(body).values()):
-            app.state.routes.require_configured(mode)
-        return StreamingResponse(
-            stream_backend_generation(
-                body,
-                app.state.places,
-                app.state.planner,
-                settings,
-                request.state.request_id,
-                app.state.routes,
-            ),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache, no-transform",
-                "X-Accel-Buffering": "no",
-            },
-        )
 
     @protected.post(
         "/music/recommend",
@@ -266,7 +201,7 @@ def create_app(
             for code, example in MUSIC_RESPONSE_EXAMPLES.items()
         },
         tags=["V1"],
-        description="여행 지역·기간·테마에 맞는 곡 한 개를 추천하고 실제 YouTube 영상 링크를 반환합니다. 후보 목록은 받지 않습니다.",
+        description="여행 시작일의 한국 시간 월에 맞는 계절을 반영해 YouTube 실시간 후보를 multilingual-e5-small로 정렬하고, 검증된 음악 영상 한 개를 반환합니다. 후보 목록은 받지 않습니다.",
     )
     async def recommend_music(
         body: Annotated[MusicRequest, Body(openapi_examples={"travel": {"summary": "여행 정보 기반 음악 추천", "value": MUSIC_REQUEST_EXAMPLE}})],
@@ -275,7 +210,7 @@ def create_app(
         request.state.travel_plan_id = body.travel_plan_id
         try:
             async with asyncio.timeout(settings.generation_timeout_seconds):
-                selected = await app.state.planner.recommend_music(body)
+                selected = await app.state.music_recommender.recommend(body)
                 return MusicResponse(data=SelectedMusic(
                     **selected.model_dump(), travel_plan_id=body.travel_plan_id,
                 ))
@@ -283,7 +218,6 @@ def create_app(
             raise ServiceUnavailable(reason="music_timeout", detail={"timeout_seconds": settings.generation_timeout_seconds}) from exc
 
     app.include_router(protected)
-    app.include_router(backend_router)
 
     default_openapi = app.openapi
 
@@ -293,12 +227,9 @@ def create_app(
         # FastAPI가 예시의 data:null을 생략하므로 직렬화 후 원래 응답 예시를 복원한다.
         for code, example in MUSIC_RESPONSE_EXAMPLES.items():
             responses[str(code)]["content"]["application/json"]["example"] = deepcopy(example["value"])
-        for path in ("/internal/ai/itineraries/generate", "/api/ai/v1/itinerary-jobs/stream"):
-            responses = schema["paths"][path]["post"]["responses"]
-            for code, response in ITINERARY_RESPONSES.items():
-                if code == 200 and path.endswith("/stream"):
-                    continue
-                responses[str(code)]["content"]["application/json"] = deepcopy(response["content"]["application/json"])
+        responses = schema["paths"]["/internal/ai/itineraries/generate"]["post"]["responses"]
+        for code, response in ITINERARY_RESPONSES.items():
+            responses[str(code)]["content"]["application/json"] = deepcopy(response["content"]["application/json"])
         schema["components"]["schemas"]["RouteSummary"]["examples"] = [deepcopy(ROUTE_RESPONSE_EXAMPLE)]
         return schema
 

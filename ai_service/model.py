@@ -70,6 +70,24 @@ class OpenAIPlanner:
                 "day_windows는 숙소 슬롯과 체크인 시간을 이미 제외한 제한입니다. "
                 "요청의 필수 숙소 order도 고려하여 그 전후 필수 관광/식당을 적절한 날짜에 배치하세요."
             )
+        headcount = context["request"]["headcount"]
+        if headcount >= 5:
+            prompt += (
+                "\n인원수가 많을수록 같은 지역의 장소를 연속 방문하고 불필요한 지역 왕복을 줄이세요. "
+                "필수 장소·테마·음식 취향·거리 선호는 유지하세요. "
+                "장소 수용 인원, 단체 예약 가능 여부, 차량 종류·대수는 확인 정보가 없으면 추측하지 마세요. "
+            )
+            if headcount >= 20:
+                prompt += (
+                    "20명 이상 대규모 단체입니다. 장소 수보다 짧고 단순한 이동을 우선하고 "
+                    "PACKED여도 단체 이동 여유시간 안에서만 장소를 채우세요. "
+                )
+            elif headcount >= 10:
+                prompt += (
+                    "10명 이상 단체입니다. 가까운 장소를 하루에 묶고 잦은 지역 왕복을 피하세요. "
+                )
+            else:
+                prompt += "5~9명 소규모 그룹이므로 복잡한 동선의 우선순위를 약간 낮추세요. "
         messages = [
             {"role": "system", "content": prompt},
             {

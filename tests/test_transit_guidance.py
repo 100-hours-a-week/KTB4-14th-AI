@@ -1,17 +1,14 @@
-import json
 import unittest
 from datetime import datetime
 
 import httpx
-from fastapi.testclient import TestClient
 
 from ai_service.config import Settings
 from ai_service.errors import RoutingUnavailable
-from ai_service.main import create_app
 from ai_service.routing import KakaoRoutes, summarize_route
 from ai_service.schemas import KST
-from test_compact_routes import PlaceClient, Planner, all_keys
-from test_day_transport import http_request, places, transit_payload
+from test_compact_routes import all_keys
+from test_day_transport import places, transit_payload
 
 
 def transfer_payload(origin, destination):
@@ -104,67 +101,3 @@ class TransitGuidanceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["legs"][0]["line_name"], ["2호선"])
         self.assertNotIn("vehicle_number", result)
         self.assertEqual(result["legs"][0]["vehicle_number"], [])
-
-
-class PublicTransitGuidanceTests(unittest.TestCase):
-    def test_backend_sse_keeps_bus_guidance_and_car_has_none(self):
-        def handle(req):
-            p = req.url.params
-            origin = type("Point", (), {"latitude": float(p["start_y"]), "longitude": float(p["start_x"])})()
-            destination = type("Point", (), {"latitude": float(p["end_y"]), "longitude": float(p["end_x"])})()
-            payload = transit_payload(origin, destination)
-            for route in payload["routes"]:
-                route["properties"]["fare"] = {"value": 1650}
-            return httpx.Response(200, json=payload)
-
-        app = create_app(settings=Settings(api_token="test-only", openai_api_key="test", kakao_rest_api_key="test"), transport=httpx.MockTransport(handle))
-        with TestClient(app) as client:
-            app.state.places, app.state.planner = PlaceClient(), Planner()
-            response = client.post("/api/ai/v1/itinerary-jobs/stream", json=http_request(), headers={"Authorization": "Bearer test-only"})
-            json_response = client.post("/internal/ai/itineraries/generate", json=http_request(), headers={"Authorization": "Bearer test-only"})
-            original_route = app.state.routes.route
-
-            async def with_verified_numbers(*args):
-                details = await original_route(*args)
-                for leg in details.legs:
-                    if leg.mode == "BUS":
-                        leg.start.station_number = "00123"
-                        leg.end.station_number = "00456"
-                return details
-
-            # Fixture represents already-verified external stop data, not Kakao fields.
-            app.state.routes.route = with_verified_numbers
-            enriched_response = client.post("/api/ai/v1/itinerary-jobs/stream", json=http_request(), headers={"Authorization": "Bearer test-only"})
-            schema = client.get("/openapi.json").json()["components"]["schemas"]["TransitStopSummary"]
-            self.assertIn("station_number", schema["properties"])
-
-        self.assertEqual(json_response.status_code, 200, json_response.text)
-        for day in json_response.json()["days"]:
-            for item in day["items"]:
-                route = item.get("route_from_previous")
-                if route:
-                    self.assertEqual(route["total_fare_amount"], None if day["day_number"] == 1 else 1650)
-                    if day["day_number"] == 2:
-                        self.assertEqual(route["legs"][0]["boarding_stop"]["vehicle_number"], ["141(심야)"])
-        self.assertEqual(response.status_code, 200)
-        events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
-        result = next(event["result"] for event in events if "result" in event)
-        for route in result["days"][0]["routes"]:
-            self.assertEqual(route["transport_type"], "CAR")
-            self.assertNotIn("legs", route)
-            self.assertIsNone(route["total_fare_amount"])
-            self.assertNotIn("vehicle_number", route)
-        for route in result["days"][1]["routes"]:
-            self.assertEqual(route["total_fare_amount"], 1650)
-            self.assertEqual(route["legs"][0]["vehicle_number"], ["141(심야)"])
-            self.assertEqual(route["legs"][0]["boarding_stop"], {"name": "출발", "station_number": None, "vehicle_number": ["141(심야)"]})
-            self.assertEqual(route["legs"][0]["alighting_stop"], {"name": "도착", "station_number": None, "vehicle_number": ["141(심야)"]})
-        self.assertEqual(sum("result" in event for event in events), 1)
-        self.assertFalse(all_keys(events) & {"path", "stops", "instructions", "vehicles"})
-
-        self.assertEqual(enriched_response.status_code, 200)
-        enriched_events = [json.loads(line[6:]) for line in enriched_response.text.splitlines() if line.startswith("data: ")]
-        enriched_result = next(event["result"] for event in enriched_events if "result" in event)
-        for route in enriched_result["days"][1]["routes"]:
-            self.assertEqual(route["legs"][0]["boarding_stop"]["station_number"], "00123")
-            self.assertEqual(route["legs"][0]["alighting_stop"]["station_number"], "00456")

@@ -5,7 +5,7 @@ import httpx
 
 from ai_service.config import Settings
 from ai_service.errors import GenerationFailed
-from ai_service.features import build_context, generate_itinerary, schedule_selection, validate_itinerary
+from ai_service.features import build_context, schedule_selection, validate_itinerary
 from ai_service.pipeline import connect_routes
 from ai_service.places import travel_minutes
 from ai_service.routing import KakaoRoutes
@@ -213,32 +213,21 @@ class RoutingTests(unittest.IsolatedAsyncioTestCase):
         self.router._get, self.router._walk = get, walk
         self.assertIs(await self.router.route(*self.pool[:2], self.departure, "BUS"), walked)
 
-    async def test_sync_and_sse_routes_use_destination_day_including_overnight(self):
+    async def test_routes_use_destination_day_including_overnight(self):
         pool = self.pool
-
-        class Places:
-            async def collect(self, body):
-                return pool
-
-        class Planner:
-            settings = Settings()
-            async def generate(self, context, feedback):
-                return selection()
-
-        sync = await generate_itinerary(request(), Places(), Planner(), self.router)
-        stream_routes = await connect_routes(request(), selection(), pool, "test", self.router)
-        for result in (sync, stream_routes.itinerary):
-            self.assertIsNone(result.days[0].items[0].route_from_previous)
-            for item in result.days[0].items[1:]:
-                self.assertEqual(item.route_from_previous.transport_type, "CAR")
-                self.assertNotIn("legs", item.route_from_previous.model_dump())
-            for item in result.days[1].items:
-                self.assertEqual(item.route_from_previous.transport_type, "PUBLIC_TRANSPORT")
-                self.assertEqual(item.route_from_previous.duration_minutes, 10)  # BUS, not faster SUBWAY
-                self.assertEqual(item.route_from_previous.legs[0].vehicle_number, ["141(심야)"])
-                self.assertEqual(item.route_from_previous.legs[0].boarding_stop.name, "출발")
-                self.assertEqual(item.route_from_previous.legs[0].alighting_stop.name, "도착")
-        overnight = stream_routes.itinerary.days[1].items[0].route_from_previous
+        routed = await connect_routes(request(), selection(), pool, "test", self.router)
+        result = routed.itinerary
+        self.assertIsNone(result.days[0].items[0].route_from_previous)
+        for item in result.days[0].items[1:]:
+            self.assertEqual(item.route_from_previous.transport_type, "CAR")
+            self.assertNotIn("legs", item.route_from_previous.model_dump())
+        for item in result.days[1].items:
+            self.assertEqual(item.route_from_previous.transport_type, "PUBLIC_TRANSPORT")
+            self.assertEqual(item.route_from_previous.duration_minutes, 10)  # BUS, not faster SUBWAY
+            self.assertEqual(item.route_from_previous.legs[0].vehicle_number, ["141(심야)"])
+            self.assertEqual(item.route_from_previous.legs[0].boarding_stop.name, "출발")
+            self.assertEqual(item.route_from_previous.legs[0].alighting_stop.name, "도착")
+        overnight = routed.itinerary.days[1].items[0].route_from_previous
         self.assertEqual(overnight.duration_minutes, 10)
         self.assertTrue(any(float(req.url.params["start_y"]) == pool[2].latitude
                             and float(req.url.params["end_y"]) == pool[3].latitude for req in self.calls))

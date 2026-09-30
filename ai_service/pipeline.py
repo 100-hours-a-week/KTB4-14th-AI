@@ -1,4 +1,4 @@
-"""SSE 일정 생성의 단계별 흐름을 조정한다.
+"""일정 생성의 네 단계를 조정한다.
 
 여행 시간 사전 검증 후 장소 선택 → 숙소 선택 → 실제 경로 반영 → 음악 추천 순서로 진행한다.
 장소 선택은 12시간 창에서 검증하고 한 번 수정할 수 있다. 숙소와 경로는 더 넓은
@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import time
 
 from ai_service.diagnostics import failure, record
 from ai_service.errors import ApiError, GenerationFailed, InvalidModelOutput
@@ -15,6 +16,7 @@ from ai_service.features import (
     build_context,
     complete_selection,
     day_windows,
+    optimize_group_order,
     validate_generation_window,
     schedule_selection,
     select_candidates,
@@ -25,27 +27,15 @@ from ai_service.music import fallback_music
 from ai_service.places import KakaoPlaces, distance_km, travel_minutes
 from ai_service.routing import KakaoRoutes, schedule_with_routes
 from ai_service.schemas import (
-    Accommodation,
-    AccommodationsResult,
     Coordinate,
     GenerationResult,
     ItineraryRequest,
-    ItineraryStreamRequest,
     ModelSelection,
     PACE_ALIASES,
     Place,
-    PlacesResult,
-    PlaceResponse,
-    RecommendedDay,
-    RecommendedItem,
     RoutesResult,
     SelectionItem,
 )
-
-
-def public_place(place: Place) -> PlaceResponse:
-    """후보 선정에만 쓰는 내부 필드를 제외하고 공개 장소 응답을 만든다."""
-    return PlaceResponse.model_validate(place.model_dump(exclude={"source_category", "is_required"}))
 
 
 def lodging_days(request: ItineraryRequest, places: list[Place]) -> set[int]:
@@ -111,11 +101,13 @@ def places_day_minutes(
     자동 축소와 검증 단계에서 같은 계산을 사용한다.
     """
     minutes = reserve * (policy["숙소"][0] + 20)
+    minutes += reserve * window.get("group_transfer_buffer_minutes", 0)
     previous = arriving_from
     for place in day_places:
         minutes += policy[place.category][0]
         if previous is not None:
             minutes += travel_minutes(previous, place, window["transport_type"])
+            minutes += window.get("group_transfer_buffer_minutes", 0)
         previous = place
     return minutes
 
@@ -248,7 +240,8 @@ def validate_places_selection(
                 f"{day.date}: select {minimum}..{maximum} tourist/restaurant places, leaving room for lodging"
             )
         # 시간 부족으로 자동 축소했다면 최소 장소 수보다 적어도 허용한다.
-        cheapest_extra = min(policy["관광"][0], policy["식당"][0]) + 5
+        cheapest_extra = (min(policy["관광"][0], policy["식당"][0]) + 5
+                          + window.get("group_transfer_buffer_minutes", 0))
         if len(day.items) < minimum and needed_minutes + cheapest_extra <= window["available_minutes"]:
             raise InvalidModelOutput(
                 f"{day.date}: select {minimum}..{maximum} tourist/restaurant places, leaving room for lodging"
@@ -313,6 +306,7 @@ async def recommend_places(
         try:
             selection = await planner.generate(context, feedback, places_only=True)
             selection = complete_selection(request, selection, places, places_only=True)
+            selection = optimize_group_order(request, selection, places)
             selection = trim_places_to_time(request, selection, places)
             validate_places_selection(request, selection, places)
             return selection
@@ -332,38 +326,16 @@ async def recommend_places(
     )
 
 
-def places_result(selection: ModelSelection, places: list[Place]) -> PlacesResult:
-    by_id = {p.provider_place_id: p for p in places}
-    return PlacesResult(
-        title=selection.title,
-        days=[
-            RecommendedDay(
-                day_number=index,
-                travel_date=day.date,
-                items=[
-                    RecommendedItem(
-                        **public_place(by_id[item.provider_place_id]).model_dump(),
-                        sequence=sequence,
-                    )
-                    for sequence, item in enumerate(day.items, 1)
-                ],
-            )
-            for index, day in enumerate(selection.days, 1)
-        ],
-    )
-
-
 async def recommend_accommodations(
     request: ItineraryRequest,
     selection: ModelSelection,
     places: list[Place],
     client: KakaoPlaces,
-) -> tuple[ModelSelection, list[Place], AccommodationsResult]:
+) -> tuple[ModelSelection, list[Place]]:
     """각 숙박일에 전체 일정의 시간 제약을 만족하는 숙소를 선택한다."""
     combined = selection.model_copy(deep=True)
     pool = {p.provider_place_id: p for p in places}
     required = required_hotels_by_day(request, selection, places)
-    recommendations = []
     for index in sorted(lodging_days(request, places)):
         day = combined.days[index]
         day_places = [pool[i.provider_place_id] for i in day.items]
@@ -430,14 +402,7 @@ async def recommend_accommodations(
                 detail={"day_number": index + 1, "candidates": len(candidates),
                         "rejections": rejections},
             )
-        recommendations.append(
-            Accommodation(
-                day_number=index + 1,
-                travel_date=day.date,
-                place=public_place(chosen),
-            )
-        )
-    # 숙소 결과를 보내기 전에 전체 일정과 필수 장소를 마지막으로 검사한다.
+    # 경로 단계 전에 전체 일정과 필수 장소를 마지막으로 검사한다.
     try:
         generated = schedule_selection(request, combined, list(pool.values()))
         validate_itinerary(request, generated, list(pool.values()))
@@ -446,11 +411,7 @@ async def recommend_accommodations(
             "추천 장소와 숙소를 여행 시간 안에 배치할 수 없습니다.",
             reason="accommodation_schedule_invalid", detail={"validation": str(exc)},
         ) from exc
-    return (
-        combined,
-        list(pool.values()),
-        AccommodationsResult(accommodations=recommendations),
-    )
+    return combined, list(pool.values())
 
 
 async def connect_routes(
@@ -471,41 +432,60 @@ async def connect_routes(
 
 
 
-async def generation_stages(
-    body: ItineraryStreamRequest,
+async def generate_plan(
+    body: ItineraryRequest,
     client: KakaoPlaces,
     planner: OpenAIPlanner,
     router: KakaoRoutes | None = None,
-):
-    """단계 시작·완료를 순서대로 내보내며 별도 작업 저장소는 사용하지 않는다."""
-    request = body.itinerary_request()
-    validate_generation_window(request)  # 외부 API 호출 전에 불가능한 기간을 거른다.
-    yield "PLACES", "STARTED", None
-    places = select_candidates(
-        request, await client.collect(request, include_accommodation=False)
-    )
-    selection = await recommend_places(request, places, planner)
-    yield "PLACES", "COMPLETED", places_result(selection, places)
+) -> GenerationResult:
+    """장소·숙소·경로·음악을 순서대로 생성하고 내부 최종 결과를 반환한다."""
+    started = time.monotonic()
+    stage_started = started
+    stage = "PLACE_RECOMMEND"
 
-    yield "ACCOMMODATIONS", "STARTED", None
-    selection, places, accommodations = await recommend_accommodations(
-        request, selection, places, client
-    )
-    yield "ACCOMMODATIONS", "COMPLETED", accommodations
+    def begin(name: str) -> None:
+        nonlocal stage, stage_started
+        stage, stage_started = name, time.monotonic()
+        record("generation_stage", stage=stage, status="STARTED",
+               elapsed_ms=round((stage_started - started) * 1000))
 
-    yield "ROUTES", "STARTED", None
-    router = router or KakaoRoutes(planner.client, planner.settings)
-    routes = await connect_routes(
-        request, selection, places, planner.settings.openai_model, router
-    )
-    yield "ROUTES", "COMPLETED", routes
+    def done() -> None:
+        now = time.monotonic()
+        record("generation_stage", stage=stage, status="COMPLETED",
+               elapsed_ms=round((now - started) * 1000),
+               stage_ms=round((now - stage_started) * 1000))
 
-    yield "MUSIC", "STARTED", None
     try:
-        music = await planner.recommend_music(request)
-    except ApiError as exc:
-        failure("music_fallback", exc)
-        music = fallback_music()
-    result = GenerationResult(**routes.model_dump(), music=music)
-    yield "MUSIC", "COMPLETED", music
-    yield "COMPLETE", "COMPLETED", result
+        validate_generation_window(body)  # 외부 API 호출 전에 불가능한 기간을 거른다.
+        begin("PLACE_RECOMMEND")
+        places = select_candidates(
+            body, await client.collect(body, include_accommodation=False)
+        )
+        selection = await recommend_places(body, places, planner)
+        done()
+
+        begin("STAY_RECOMMEND")
+        selection, places = await recommend_accommodations(
+            body, selection, places, client
+        )
+        done()
+
+        begin("ROUTE_OPTIMIZE")
+        router = router or KakaoRoutes(planner.client, planner.settings)
+        routes = await connect_routes(
+            body, selection, places, planner.settings.openai_model, router
+        )
+        done()
+
+        begin("MUSIC_RECOMMEND")
+        try:
+            music = await planner.recommend_music(body)
+        except ApiError as exc:
+            failure("music_fallback", exc)
+            music = fallback_music()
+        done()
+        return GenerationResult(itinerary=routes.itinerary, music=music)
+    except Exception as exc:
+        failure("pipeline_failed", exc, stage=stage,
+                elapsed_ms=round((time.monotonic() - started) * 1000))
+        raise

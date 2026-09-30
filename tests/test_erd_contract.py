@@ -9,12 +9,13 @@ from ai_service.features import make_itinerary_response, schedule_selection, val
 from ai_service.main import create_app
 from ai_service.schemas import Duration, ItineraryRequest, ModelItinerary, ModelSelection, Preference
 from test_day_transport import places, request, selection, http_request
+from test_compact_routes import PlaceClient, Planner
 
 
 class ErdContractTests(unittest.TestCase):
     def test_service_error_uses_existing_error_message_key(self):
         with TestClient(create_app(settings=Settings(api_token="test-only"))) as client:
-            for endpoint in ("/internal/ai/itineraries/generate", "/api/ai/v1/itinerary-jobs/stream"):
+            for endpoint in ("/internal/ai/itineraries/generate",):
                 with self.subTest(endpoint=endpoint):
                     response = client.post(endpoint, json=http_request(),
                                            headers={"Authorization": "Bearer test-only"})
@@ -69,20 +70,10 @@ class ErdContractTests(unittest.TestCase):
     def test_http_and_openapi_keep_existing_keys(self):
         settings = Settings(api_token="test-only-" * 4, openai_api_key="test", kakao_rest_api_key="test")
         app = create_app(settings=settings)
-        pool = places()
-
-        class Places:
-            async def collect(self, body):
-                return pool
-
-        class Planner:
-            async def generate(self, context, feedback):
-                return selection()
-
         planner = Planner()
         planner.settings = settings
         with TestClient(app) as client:
-            app.state.places = Places()
+            app.state.places = PlaceClient()
             app.state.planner = planner
             headers = {"Authorization": "Bearer " + settings.api_token}
             data = http_request(request(None, "CAR"))

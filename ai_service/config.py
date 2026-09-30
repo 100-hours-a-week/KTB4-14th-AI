@@ -19,11 +19,10 @@ class Settings:
     openai_model: str = "gpt-4o-mini"
     model_timeout_seconds: float = 60.0
     kakao_timeout_seconds: float = 10.0
-    # 모든 SSE 단계를 포함해 생성이 5분을 넘으면 실패 처리한다.
+    # 네 단계 전체 생성이 5분을 넘으면 실패 처리한다.
     generation_timeout_seconds: float = 300.0
-    stream_timeout_seconds: float = 300.0
-    stream_heartbeat_seconds: float = 10.0
     routing_timeout_seconds: float = 10.0
+    e5_model_dir: Path = Path(__file__).resolve().parents[1] / "model"
 
     @classmethod
     def from_env(cls, env_file: Path = ENV_FILE) -> "Settings":
@@ -37,4 +36,5 @@ class Settings:
             openai_api_key=values.get("OPENAI_API_KEY") or values.get("OPEN_API_KEY"),
             kakao_rest_api_key=values.get("KAKAO_REST_API_KEY"),
             openai_model=values.get("OPENAI_MODEL") or "gpt-4o-mini",
+            e5_model_dir=Path(values.get("E5_MODEL_DIR") or cls.e5_model_dir),
         )
