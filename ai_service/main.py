@@ -80,6 +80,7 @@ def create_app(
     settings: Settings | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> FastAPI:
+    """외부 API 클라이언트와 인증·오류 처리·엔드포인트를 묶어 앱을 만든다."""
     settings = settings or Settings.from_env()
 
     @asynccontextmanager
@@ -94,6 +95,7 @@ def create_app(
 
     @app.middleware("http")
     async def attach_request_id(request: Request, call_next):
+        # 요청별 ID를 응답과 로그에 함께 남겨 장애 추적에 사용한다.
         request.state.request_id = f"req_{uuid4().hex}"
         token = log_request_id.set(request.state.request_id)
         try:
@@ -121,6 +123,7 @@ def create_app(
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(request: Request, exc: RequestValidationError):
+        # 두 요청 형식 중 실제 입력에 해당하는 형식의 오류만 사용자에게 보여준다.
         errors = exc.errors()
         record("request_invalid", http_status=400, errors=[{
             "field": ".".join(map(str, error["loc"])), "type": error["type"]
@@ -133,7 +136,7 @@ def create_app(
             errors = selected or errors
         descriptions = []
         for error in errors[:5]:
-            # Never echo input values, the request body, or exception contexts.
+            # 입력값·본문·예외 내부 정보는 오류 응답에 노출하지 않는다.
             path = ".".join(str(part) for part in error["loc"] if part != "body" and not any(name in str(part) for name in branches)) or "body"
             reason = {
                 "missing": "필수 값이 없습니다.",
@@ -165,7 +168,7 @@ def create_app(
 
     @app.exception_handler(Exception)
     async def handle_unexpected_error(request: Request, exc: Exception):
-        # Log only type and correlation ID; upstream exceptions may contain secrets.
+        # 상위 서비스 예외에는 비밀값이 있을 수 있어 유형과 요청 ID만 기록한다.
         failure("unexpected_error", exc, request_id=getattr(request.state, "request_id", "unknown"))
         return JSONResponse(
             status_code=500,
@@ -192,6 +195,7 @@ def create_app(
         body: Annotated[LegacyGenerationRequest | TravelGenerationRequest, Body(openapi_examples=GENERATION_REQUEST_EXAMPLES)],
         request: Request,
     ):
+        # 두 입력 DTO를 공통 생성 요청으로 변환한 뒤 제한 시간 안에 일정을 만든다.
         if isinstance(body, LegacyGenerationRequest):
             request.state.generation_job_id = body.generation_job_id
         else:
@@ -224,6 +228,7 @@ def create_app(
         body: Annotated[LegacyGenerationRequest | TravelGenerationRequest, Body(openapi_examples=GENERATION_REQUEST_EXAMPLES)],
         request: Request,
     ):
+        # 백엔드가 소비하는 SSE 형식으로 단계별 생성 상태를 보낸다.
         if isinstance(body, LegacyGenerationRequest):
             request.state.generation_job_id = body.generation_job_id
         else:
@@ -285,8 +290,7 @@ def create_app(
     def openapi_with_response_examples():
         schema = default_openapi()
         responses = schema["paths"]["/internal/ai/music/recommend"]["post"]["responses"]
-        # FastAPI's OpenAPI encoder drops None, including explicit data:null in
-        # examples. Restore literal response bodies after schema serialization.
+        # FastAPI가 예시의 data:null을 생략하므로 직렬화 후 원래 응답 예시를 복원한다.
         for code, example in MUSIC_RESPONSE_EXAMPLES.items():
             responses[str(code)]["content"]["application/json"]["example"] = deepcopy(example["value"])
         for path in ("/internal/ai/itineraries/generate", "/api/ai/v1/itinerary-jobs/stream"):

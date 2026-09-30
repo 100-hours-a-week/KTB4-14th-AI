@@ -1,4 +1,4 @@
-"""Copyable examples matching feature-travel's backend AI request DTO."""
+"""feature-travel 요청·응답 형식에 맞춘 복사용 API 예시."""
 
 ITINERARY_REQUEST_EXAMPLE = {
     "travel_plan_id": 10,
@@ -60,7 +60,7 @@ MUSIC_RESPONSE_EXAMPLES = {
     },
 }
 
-# Nested request supplied by the user; IDs retain their original meaning.
+# 사용자 중첩 요청 예시이며 두 ID의 의미를 바꾸지 않는다.
 LEGACY_ITINERARY_REQUEST_EXAMPLE = {
     "generation_job_id": 10,
     "region": {"region_id": 1, "full_name": "제주특별자치도 서귀포시"},
@@ -86,7 +86,7 @@ GENERATION_REQUEST_EXAMPLES = {
 }
 
 
-# Illustrative route only; numbers/names are not a live journey quotation.
+# 경로 구조 설명용 예시이며 이름과 수치는 실시간 조회 결과가 아니다.
 ROUTE_RESPONSE_EXAMPLE = {
     "transport_type": "PUBLIC_TRANSPORT",
     "duration_minutes": 37,
@@ -118,7 +118,7 @@ ROUTE_RESPONSE_EXAMPLE = {
 }
 
 
-# A one-day Jeju response shape example, not a live recommendation or fare quote.
+# 제주 1일 응답 구조 예시이며 실제 추천이나 요금 안내가 아니다.
 ITINERARY_RESPONSE_EXAMPLE = {
     "generation_job_id": 10,
     "region": {"region_id": 1, "full_name": "제주특별자치도 서귀포시"},

@@ -1,4 +1,4 @@
-"""Resolve explicit Korean day-scoped travel preferences without changing the API."""
+"""추가 요청 문장에서 날짜별 이동수단 지정을 해석한다."""
 
 from __future__ import annotations
 
@@ -37,11 +37,12 @@ MODE_NAMES = {
 
 
 def base_transport(mode: str) -> str:
-    # BUS/SUBWAY are internal restrictions, never new public request enum values.
+    # BUS/SUBWAY는 내부 경로 제한이며 공개 요청의 새 enum 값은 아니다.
     return "PUBLIC_TRANSPORT" if mode in {"BUS", "SUBWAY"} else TRANSPORT_ALIASES[mode]
 
 
 def resolve_day_transports(request: ItineraryRequest) -> dict[str, str]:
+    """기본 이동수단에 날짜별 명시 요청을 적용하고 충돌을 검증한다."""
     arrival, departure = request.duration.local_bounds()
     dates = [
         (arrival.date() + timedelta(days=i)).isoformat()
@@ -54,14 +55,14 @@ def resolve_day_transports(request: ItineraryRequest) -> dict[str, str]:
     for i, marker in enumerate(markers):
         end = markers[i + 1].start() if i + 1 < len(markers) else len(text)
         clause = text[marker.end():end]
-        # Do not extend a day's scope into a new unrelated sentence.
+        # 날짜 지정의 범위가 다음 문장까지 퍼지지 않게 한다.
         clause = re.split(r"[.!?\n]", clause, maxsplit=1)[0]
         modes = list(MODE.finditer(clause))
         positive = set()
         for j, match in enumerate(modes):
             end = modes[j + 1].start() if j + 1 < len(modes) else len(clause)
             suffix = clause[match.end():end]
-            # A shared predicate also negates coordinated names: "버스나 지하철은 필요 없다".
+            # "버스나 지하철은 필요 없다"처럼 함께 묶인 이동수단도 부정한다.
             k = j + 1
             while k < len(modes) and re.fullmatch(r"\s*(?:나|이나|와|과|또는|/|,|및)\s*", suffix):
                 end = modes[k + 1].start() if k + 1 < len(modes) else len(clause)
@@ -93,7 +94,7 @@ def resolve_day_transports(request: ItineraryRequest) -> dict[str, str]:
             raise GenerationFailed("추가 요청의 이동수단 적용 날짜가 여행 기간을 벗어납니다.", reason="transport_day_out_of_range")
         overrides.setdefault(date, set()).update(positive)
     for date, modes in overrides.items():
-        # A named bus/subway refines the broad public-transport choice.
+        # 버스·지하철 지정이 있으면 포괄적인 대중교통 지정을 좁힌다.
         if modes & {"BUS", "SUBWAY"}:
             modes.discard("PUBLIC_TRANSPORT")
         if len(modes) != 1:

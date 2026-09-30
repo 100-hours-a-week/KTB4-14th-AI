@@ -12,6 +12,7 @@ bearer = HTTPBearer(auto_error=False)
 def require_api_token(
     expected_token: str | None,
 ):
+    """Bearer 토큰을 안전하게 비교하는 FastAPI 인증 의존성을 만든다."""
     async def dependency(
         credentials: HTTPAuthorizationCredentials | None = Security(bearer),
     ) -> None:

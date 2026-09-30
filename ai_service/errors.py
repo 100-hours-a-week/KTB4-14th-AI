@@ -1,12 +1,7 @@
-"""API errors shared by the HTTP handlers and the SSE pipeline.
+"""HTTP와 SSE 생성 흐름이 공유하는 API 오류 형식.
 
-Every ApiError carries two layers of information:
-
-- ``code`` / ``message``: the public contract sent to the backend (unchanged wire format).
-- ``reason`` / ``detail``: operator-only diagnostics written to the logs by
-  ``diagnostics.failure``. ``reason`` is a stable snake_case failure code you can
-  search for in CloudWatch; ``detail`` holds safe numbers/IDs (never API keys,
-  provider response bodies or user free text).
+code/message는 외부 응답, reason/detail은 운영 로그에 사용한다.
+운영 정보에는 API 키·외부 응답 본문·사용자 자유 입력을 넣지 않는다.
 """
 from __future__ import annotations
 
@@ -30,7 +25,7 @@ class ApiError(Exception):
 
 
 class ServiceUnavailable(ApiError):
-    """An upstream (OpenAI, Kakao, YouTube) or time budget failed; retrying may succeed."""
+    """외부 서비스나 제한 시간 문제로 재시도 시 성공할 수 있는 오류."""
 
     def __init__(self, *, reason: str | None = None, detail: dict | None = None) -> None:
         super().__init__(
@@ -40,7 +35,7 @@ class ServiceUnavailable(ApiError):
 
 
 class GenerationFailed(ApiError):
-    """The request cannot be turned into a valid itinerary; retrying the same input will not help."""
+    """현재 요청 조건으로 유효한 일정을 만들 수 없을 때의 오류."""
 
     def __init__(
         self,
@@ -65,11 +60,9 @@ class RoutingUnavailable(ApiError):
 
 
 class InvalidModelOutput(ValueError):
-    """Safe validation feedback for one bounded model repair attempt.
+    """모델 재생성에 사용할 내부 검증 피드백.
 
-    Not an ApiError: it never reaches the client directly. The pipeline sends its
-    text back to the model as correction feedback, and converts it to
-    GenerationFailed only after the retries are exhausted.
+    클라이언트에는 직접 전달하지 않고 재시도 후에도 실패하면 GenerationFailed로 바꾼다.
     """
 
 

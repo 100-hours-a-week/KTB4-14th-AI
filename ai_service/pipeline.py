@@ -1,30 +1,9 @@
-"""Staged itinerary generation used by the SSE endpoints.
+"""SSE 일정 생성의 단계별 흐름을 조정한다.
 
-Flow (generation_stages) and where each stage can fail. Every failure is an
-ApiError with a ``reason`` code; search CloudWatch for ``"pipeline_failed"`` and
-the request_id, then read ``reason`` / ``detail`` / ``frames``.
-
-0. validate_generation_window  trip too short, too many required places
-                                (insufficient_trip_time, too_many_required_places)
-1. PLACES          Kakao collects tourist spots/restaurants around the region, then
-                   the model picks places per day (recommend_places). Planned
-                   against the 12h PLACE_DAY window. Over-full days are trimmed
-                   automatically; the model gets one correction retry.
-                   (no_place_candidates, places_validation_failed,
-                    kakao_places_request_failed, openai_request_failed)
-2. ACCOMMODATIONS  For each night, the nearest hotel that keeps the whole trip
-                   feasible (recommend_accommodations). Scheduled against the
-                   wider SCHEDULE_DAY window.
-                   (accommodation_unavailable, accommodation_schedule_invalid)
-3. ROUTES          Real Kakao walk/transit routes between consecutive items; the
-                   day is rescheduled with the real transfer times (connect_routes).
-                   (routes_exceed_trip_time, kakao_route_request_failed,
-                    restricted_transport_route_missing)
-4. MUSIC           One song verified on YouTube. Never fails the trip: on error a
-                   fallback song is used and ``music_fallback`` is logged.
-Operational events (INFO): place_collection, place_selection_retry (with per-day
-available/needed minutes), place_selection_trimmed, accommodation_region_fallback,
-generation_stage (timings).
+여행 시간 사전 검증 후 장소 선택 → 숙소 선택 → 실제 경로 반영 → 음악 추천 순서로 진행한다.
+장소 선택은 12시간 창에서 검증하고 한 번 수정할 수 있다. 숙소와 경로는 더 넓은
+일정 창에서 전체 여행 가능 여부를 다시 검사한다. 음악 추천 실패에는 대체곡을 쓴다.
+실패 원인은 pipeline_failed 로그의 request_id, reason, detail로 추적한다.
 """
 from __future__ import annotations
 
@@ -65,13 +44,15 @@ from ai_service.schemas import (
 
 
 def public_place(place: Place) -> PlaceResponse:
+    """후보 선정에만 쓰는 내부 필드를 제외하고 공개 장소 응답을 만든다."""
     return PlaceResponse.model_validate(place.model_dump(exclude={"source_category", "is_required"}))
 
 
 def lodging_days(request: ItineraryRequest, places: list[Place]) -> set[int]:
+    """숙박이 필요한 날짜와 당일 방문용 필수 숙소 날짜를 구한다."""
     windows = day_windows(request)
     days = {i for i, w in enumerate(windows) if w["needs_accommodation"]}
-    # A specifically requested hotel may be a day-use visit on a single-day trip.
+    # 1일 여행에서도 필수 숙소는 당일 방문 장소일 수 있다.
     if not days and any(p.is_required and p.category == "숙소" for p in places):
         days.add(len(windows) - 1)
     return days
@@ -82,6 +63,7 @@ def required_hotels_by_day(
     selection: ModelSelection,
     places: list[Place],
 ) -> dict[int, Place]:
+    """필수 숙소의 방문 순서를 지키며 각 숙소를 배치할 날짜를 결정한다."""
     by_id = {p.provider_place_id: p for p in places}
     order = {p.provider_place_id: p.order for p in request.required_places}
     visits = {
@@ -123,16 +105,10 @@ def places_day_minutes(
     day_places: list[Place], window: dict, reserve: int, policy: dict,
     arriving_from: Place | None = None,
 ) -> int:
-    """Minimum minutes one day of the PLACES stage needs.
+    """장소 체류·예상 이동·숙소 여유를 합쳐 하루 최소 소요 시간을 구한다.
 
-    = minimum stay of every place + estimated transfer between consecutive places
-      + (lodging day only) minimum hotel stay + 20 minutes to reach it
-      + (day 2+) the morning transfer from last night's area. The hotel is not
-        known yet; it is picked near the previous day's last place, so that place
-        (``arriving_from``) stands in for it, exactly as the accommodation stage
-        checks it. Without this, short departure days passed here and then
-        failed every hotel candidate later.
-    Both the validator and the automatic trimming use this so they never disagree.
+    다음 날 첫 이동은 전날 마지막 장소를 숙소 위치의 근사값으로 사용한다.
+    자동 축소와 검증 단계에서 같은 계산을 사용한다.
     """
     minutes = reserve * (policy["숙소"][0] + 20)
     previous = arriving_from
@@ -147,18 +123,14 @@ def places_day_minutes(
 def trim_places_to_time(
     request: ItineraryRequest, selection: ModelSelection, places: list[Place]
 ) -> ModelSelection:
-    """Drop optional places from days whose minimum schedule exceeds the day window.
+    """하루 시간이 부족하면 가장 많은 시간을 절약하는 선택 장소부터 줄인다.
 
-    The model often picks too many / too distant places for a short day (e.g. the
-    departure day). Instead of failing the whole trip after the retries, remove the
-    optional place that saves the most minutes until the day fits. Required places,
-    the last tourist spot / restaurant of a day that needs both, and removals that
-    would put two restaurants back to back are never touched. If a day still does
-    not fit, validate_places_selection reports the exact numbers.
+    필수 장소, 필요한 카테고리의 마지막 장소, 식당 연속 방문을 유발하는 삭제는 제외한다.
+    그래도 시간이 부족하면 검증 단계에서 필요한 시간을 보고한다.
     """
     windows = day_windows(request)
     if [d.date for d in selection.days] != [w["date"] for w in windows]:
-        return selection  # The validator explains the date mismatch to the model.
+        return selection  # 날짜 불일치는 검증 단계에서 모델에 설명한다.
     by_id = {p.provider_place_id: p for p in places}
     lodging = lodging_days(request, places)
     policy = PACE_POLICIES[PACE_ALIASES[request.preference.pace_type]]
@@ -207,7 +179,7 @@ def trim_places_to_time(
 def places_budget_report(
     request: ItineraryRequest, selection: ModelSelection | None, places: list[Place]
 ) -> list[dict]:
-    """Per-day numbers for logs: why a day did or did not fit its time window."""
+    """날짜별 가용 시간과 필요 시간을 로그용으로 요약한다."""
     windows = day_windows(request)
     by_id = {p.provider_place_id: p for p in places}
     lodging = lodging_days(request, places)
@@ -238,10 +210,9 @@ def places_budget_report(
 def validate_places_selection(
     request: ItineraryRequest, selection: ModelSelection, places: list[Place]
 ) -> None:
-    """Check the PLACES-stage output before accommodations are searched.
+    """숙소 검색 전 장소 선택 결과의 필수 조건을 검증한다.
 
-    Raises InvalidModelOutput with a short English instruction; recommend_places
-    sends that text back to the model as correction feedback.
+    실패 이유는 모델의 수정 요청에 다시 사용된다.
     """
     windows = day_windows(request)
     if [d.date for d in selection.days] != [w["date"] for w in windows]:
@@ -276,8 +247,7 @@ def validate_places_selection(
             raise InvalidModelOutput(
                 f"{day.date}: select {minimum}..{maximum} tourist/restaurant places, leaving room for lodging"
             )
-        # Fewer places than the pace minimum is fine when time, not choice, is the
-        # limit (trim_places_to_time removed them); otherwise ask for more.
+        # 시간 부족으로 자동 축소했다면 최소 장소 수보다 적어도 허용한다.
         cheapest_extra = min(policy["관광"][0], policy["식당"][0]) + 5
         if len(day.items) < minimum and needed_minutes + cheapest_extra <= window["available_minutes"]:
             raise InvalidModelOutput(
@@ -307,13 +277,9 @@ def validate_places_selection(
 async def recommend_places(
     request: ItineraryRequest, places: list[Place], planner: OpenAIPlanner
 ) -> ModelSelection:
-    """Stage 1 (PLACE_RECOMMEND): the model picks tourist spots/restaurants per day.
+    """관광지·식당을 날짜별로 고르고 보완·시간 조정·검증을 거친다.
 
-    Per attempt: model output -> complete_selection (fill missing categories, cap
-    counts) -> trim_places_to_time (fit each day's time window) -> validation.
-    A validation failure is sent back to the model once as feedback; after the
-    last attempt the trip fails with reason=places_validation_failed and the
-    per-day budget numbers are logged.
+    검증 실패는 모델에 한 번 피드백하며 재시도까지 실패하면 원인을 기록한다.
     """
     context = build_context(request, places)
     lodging = lodging_days(request, places)
@@ -330,7 +296,7 @@ async def recommend_places(
         pid for pid in context["required_order"] if pid in allowed
     ]
     policy = PACE_POLICIES[PACE_ALIASES[request.preference.pace_type]]
-    # The model sees the budget left after reserving the night's hotel slot.
+    # 숙소에 필요한 시간과 한 자리를 미리 빼고 모델에 남은 범위를 전달한다.
     for index, window in enumerate(context["day_windows"]):
         if index in lodging:
             window["min_items"] = max(0, window["min_items"] - 1)
@@ -393,6 +359,7 @@ async def recommend_accommodations(
     places: list[Place],
     client: KakaoPlaces,
 ) -> tuple[ModelSelection, list[Place], AccommodationsResult]:
+    """각 숙박일에 전체 일정의 시간 제약을 만족하는 숙소를 선택한다."""
     combined = selection.model_copy(deep=True)
     pool = {p.provider_place_id: p for p in places}
     required = required_hotels_by_day(request, selection, places)
@@ -423,7 +390,7 @@ async def recommend_accommodations(
             candidates = await client.accommodations(
                 request, center.latitude, center.longitude
             )
-            # Do not move a required hotel ahead of its required-order slot.
+            # 필수 숙소를 지정된 방문 순서보다 앞으로 당기지 않는다.
             candidates = [
                 p
                 for p in candidates
@@ -445,8 +412,7 @@ async def recommend_accommodations(
             )
             proposed_pool = {**pool, candidate.provider_place_id: candidate}
             try:
-                # Try every night against the whole trip so the following morning
-                # also has enough transfer time. Published place selections stay fixed.
+                # 다음 날 아침 이동까지 포함해 전체 일정을 검증하며 장소 선택은 유지한다.
                 schedule_selection(request, proposal, list(proposed_pool.values()))
                 chosen = candidate
                 combined, pool = proposal, proposed_pool
@@ -459,8 +425,7 @@ async def recommend_accommodations(
                    candidates=len(candidates), rejections=rejections)
             raise GenerationFailed(
                 "추천 장소의 동선과 시간을 만족하는 숙소를 찾지 못했습니다.",
-                # candidates == 0: Kakao returned no lodging near the day's places.
-                # candidates > 0: every hotel broke the time window (see rejections).
+                # 후보 0개는 검색 결과 없음, 1개 이상은 모든 후보가 시간 제약 위반이다.
                 reason="accommodation_unavailable",
                 detail={"day_number": index + 1, "candidates": len(candidates),
                         "rejections": rejections},
@@ -472,7 +437,7 @@ async def recommend_accommodations(
                 place=public_place(chosen),
             )
         )
-    # Final feasibility/required-place check before emitting the lodging result.
+    # 숙소 결과를 보내기 전에 전체 일정과 필수 장소를 마지막으로 검사한다.
     try:
         generated = schedule_selection(request, combined, list(pool.values()))
         validate_itinerary(request, generated, list(pool.values()))
@@ -500,7 +465,7 @@ async def connect_routes(
     except InvalidModelOutput as exc:
         raise GenerationFailed(
             "조회한 이동시간과 필수 장소를 여행 시간 안에 배치할 수 없습니다. 여행 시간을 늘리거나 장소를 줄여주세요.",
-            # Real Kakao transfer times are longer than the PLACES-stage estimates.
+            # 실제 카카오 이동시간은 장소 선택 단계의 추정치보다 길 수 있다.
             reason="routes_exceed_trip_time", detail={"validation": str(exc)},
         ) from exc
 
@@ -512,9 +477,9 @@ async def generation_stages(
     planner: OpenAIPlanner,
     router: KakaoRoutes | None = None,
 ):
-    """Each yield is sent before executing the next phase; no database/job store."""
+    """단계 시작·완료를 순서대로 내보내며 별도 작업 저장소는 사용하지 않는다."""
     request = body.itinerary_request()
-    validate_generation_window(request)  # Reject impossible windows before provider calls.
+    validate_generation_window(request)  # 외부 API 호출 전에 불가능한 기간을 거른다.
     yield "PLACES", "STARTED", None
     places = select_candidates(
         request, await client.collect(request, include_accommodation=False)

@@ -1,4 +1,4 @@
-"""Wire adapter for feature-travel's existing SSE parser and persistence service."""
+"""기존 feature-travel의 SSE 파서와 저장 형식에 맞추는 변환 계층."""
 import json
 
 from ai_service.streaming import encode_event, stream_generation
@@ -13,6 +13,7 @@ STAGE_NAMES = {
 
 
 def backend_result(generated: dict) -> dict:
+    """내부 일정의 장소·경로를 백엔드가 저장하는 날짜별 구조로 바꾼다."""
     itinerary = generated["itinerary"]
     days = []
     for day in itinerary["days"]:
@@ -31,8 +32,7 @@ def backend_result(generated: dict) -> dict:
                     **route, "order": len(routes) + 1,
                 })
             elif route is not None:
-                # The backend cannot express a cross-day endpoint in PendingRoute.
-                # Preserve the data without falsely connecting two items in this day.
+                # 날짜를 넘는 이동은 백엔드의 PendingRoute로 표현할 수 없어 장소에 보관한다.
                 stop["route_from_previous"] = route
             items.append(stop)
             previous = item
@@ -41,10 +41,9 @@ def backend_result(generated: dict) -> dict:
 
 
 async def stream_backend_generation(body, places, planner, settings, request_id, router=None):
-    """Keep results single-copy; release ROUTE DONE only after music succeeds.
+    """최종 결과를 한 번만 보내고 음악 단계까지 끝난 뒤 경로 완료를 알린다.
 
-    feature-travel saves immediately on ROUTE_OPTIMIZE DONE. Delaying that event
-    prevents a later music failure from following a prematurely committed success.
+    백엔드는 ROUTE_OPTIMIZE_DONE 수신 즉시 저장하므로 완료 이벤트를 늦춘다.
     """
     identity = ({"travel_plan_id": body.travel_plan_id} if body.travel_plan_id is not None
                 else {"generation_job_id": body.generation_job_id})
@@ -66,6 +65,7 @@ async def stream_backend_generation(body, places, planner, settings, request_id,
                 })
                 return
             if stage == "ROUTES" and status == "COMPLETED":
+                # 음악 추천이 끝나기 전에는 백엔드의 저장 트리거를 보내지 않는다.
                 continue
             if stage == "COMPLETE":
                 result = backend_result(data["data"])

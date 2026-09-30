@@ -46,6 +46,7 @@ TRANSPORT_ALIASES = {
 
 
 class StrictModel(BaseModel):
+    """알 수 없는 필드를 거부하는 요청·응답 모델의 공통 기반."""
     model_config = ConfigDict(
         extra="forbid", str_strip_whitespace=True, allow_inf_nan=False
     )
@@ -58,11 +59,12 @@ class Region(StrictModel):
     @field_validator("full_name", mode="before")
     @classmethod
     def normalize_full_name(cls, value):
-        # Canonically equivalent Hangul must produce the same provider search.
+        # 같은 한글 표기는 정규화해 카카오 검색 결과가 달라지지 않게 한다.
         return unicodedata.normalize("NFC", value) if isinstance(value, str) else value
 
 
 class Duration(StrictModel):
+    """도착·출발 시각을 검증하고 한국 시간 기준 범위를 제공한다."""
     arrival_datetime: datetime = Field(
         description="여행 도착 일시. 시간대 표기가 없으면 한국시간(Asia/Seoul)으로 해석",
         examples=["2026-09-19T10:00:00"],
@@ -119,7 +121,7 @@ class Preference(StrictModel):
             raise ValueError("unsupported pace_type")
         if self.transport_type not in TRANSPORT_ALIASES:
             raise ValueError("unsupported transport_type")
-        # Keep accepted input aliases, but emit the ERD's canonical enum values.
+        # 입력 별칭은 받되 응답에는 ERD의 표준 enum 값을 사용한다.
         self.pace_type = PACE_ALIASES[self.pace_type]
         self.transport_type = TRANSPORT_ALIASES[self.transport_type]
         if self.budget_min is not None and self.budget_max is not None:
@@ -141,7 +143,7 @@ class RequiredPlace(StrictModel):
 
 
 class ItineraryRequest(StrictModel):
-    """Internal generation context; HTTP requests use TravelGenerationRequest."""
+    """두 HTTP 요청 형식을 변환한 뒤 사용하는 공통 내부 생성 조건."""
 
     generation_job_id: int | None = Field(default=None, gt=0)
     travel_plan_id: int | None = Field(default=None, gt=0)
@@ -166,7 +168,7 @@ class LegacyGenerationPreference(Preference):
 
 
 class LegacyGenerationRequest(StrictModel):
-    """Nested user request, accepted alongside the backend's flat DTO."""
+    """백엔드의 평면 DTO와 함께 받는 사용자 중첩 요청 형식."""
 
     generation_job_id: int = Field(gt=0)
     region: Region
@@ -185,7 +187,7 @@ class LegacyGenerationRequest(StrictModel):
         return self
 
     def generation_context(self) -> ItineraryStreamRequest:
-        # Preserve the request keys and job ID; never reinterpret it as a travel plan ID.
+        # 작업 ID를 여행 ID로 바꾸지 않고 원래 요청 식별자를 유지한다.
         return ItineraryStreamRequest.model_validate(self.model_dump(by_alias=False))
 
 
@@ -207,7 +209,7 @@ class BackendPlaceContext(StrictModel):
 
 
 class TravelGenerationRequest(Duration):
-    """Matches feature-travel's AiTravelGenerationRequest, not the frontend DTO."""
+    """feature-travel의 AiTravelGenerationRequest와 맞춘 백엔드 요청 형식."""
 
     travel_plan_id: int = Field(gt=0)
     region_id: int = Field(gt=0)
@@ -226,6 +228,7 @@ class TravelGenerationRequest(Duration):
         return self
 
     def generation_context(self) -> ItineraryStreamRequest:
+        """필수 장소의 상세값을 확인한 뒤 내부 공통 요청으로 변환한다."""
         from ai_service.errors import GenerationFailed
 
         places = []
@@ -262,13 +265,12 @@ class PlaceResponse(StrictModel):
 
 
 class Place(PlaceResponse):
-    # Provider metadata is kept internally for candidate selection only.
+    # 제공자 메타데이터는 후보 선택에만 쓰고 공개 응답에는 넣지 않는다.
     source_category: str
     is_required: bool = False
 
 
-# Model output contains only candidate IDs and scheduling decisions. It cannot invent
-# coordinates, place names or provider identifiers in the public response.
+# 모델은 후보 ID와 순서만 고르며 장소명·좌표·제공자 ID는 서버가 채운다.
 class SelectionItem(StrictModel):
     provider_place_id: str
 
@@ -309,7 +311,7 @@ class RouteStop(StrictModel):
     latitude: float | None = Field(default=None, ge=-90, le=90)
     longitude: float | None = Field(default=None, ge=-180, le=180)
     station_id: str | None = None
-    # Displayed stop number from a verified stop data source; not a provider ID.
+    # 정류장 번호는 확인된 표시값이며 제공자 내부 ID가 아니다.
     station_number: str | None = Field(default=None, min_length=1, max_length=32)
 
 
@@ -390,7 +392,7 @@ class TransitLegSummary(StrictModel):
 
 
 class RouteSummary(StrictModel):
-    """Public route contract; detailed geometry stays inside the route provider."""
+    """상세 좌표를 제외한 공개 경로 응답 형식."""
 
     transport_type: str
     duration_minutes: int = Field(ge=0)
@@ -496,7 +498,7 @@ class ItineraryStreamRequest(ItineraryRequest):
 
 
 class MusicSuggestion(StrictModel):
-    """Internal model output only: video URL is resolved from YouTube."""
+    """모델은 곡명·가수만 제안하고 영상 URL은 YouTube 조회로 결정한다."""
     title: NonEmpty
     artist: NonEmpty
 

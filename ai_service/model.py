@@ -51,6 +51,7 @@ CAR인 날짜에는 버스 번호, 지하철역, 환승 안내를 추천하지 �
 
 
 class OpenAIPlanner:
+    """모델에 후보 장소 선택과 음악 추천을 요청하고 결과 형식을 검증한다."""
     def __init__(self, client: httpx.AsyncClient, settings: Settings):
         self.client = client
         self.settings = settings
@@ -59,6 +60,7 @@ class OpenAIPlanner:
     async def generate(
         self, context: dict, feedback: str | None = None, *, places_only: bool = False
     ) -> ModelSelection:
+        """후보 ID와 날짜로 JSON Schema를 좁혀 장소 선택을 요청한다."""
         if not self.settings.openai_api_key:
             raise ServiceUnavailable(reason="openai_api_key_missing")
         prompt = SYSTEM_PROMPT
@@ -101,6 +103,7 @@ class OpenAIPlanner:
     async def recommend_music(
         self, request: ItineraryRequest | MusicRequest
     ) -> MusicRecommendation:
+        """추천 곡의 실제 YouTube 영상을 확인하고 실패 시 다시 추천받는다."""
         context = {
             "region": request.region.model_dump(),
             "duration": request.duration.model_dump(mode="json"),
@@ -147,6 +150,7 @@ class OpenAIPlanner:
         raise MusicRecommendationFailed(reason="music_video_not_verified")
 
     async def _complete(self, messages: list[dict], schema: dict, name: str) -> str:
+        """지정한 JSON Schema에 맞는 모델 응답 문자열을 가져온다."""
         if not self.settings.openai_api_key:
             raise ServiceUnavailable(reason="openai_api_key_missing")
         try:
@@ -170,7 +174,7 @@ class OpenAIPlanner:
             )
             response.raise_for_status()
         except httpx.HTTPError as exc:
-            # Never forward upstream bodies, credentials or headers to the caller.
+            # 외부 응답 본문·인증정보·헤더를 호출자에게 전달하지 않는다.
             raise ServiceUnavailable(reason="openai_request_failed", detail={"error": type(exc).__name__, "http_status": getattr(getattr(exc, "response", None), "status_code", None)}) from exc
         try:
             choice = response.json()["choices"][0]
@@ -187,7 +191,7 @@ class OpenAIPlanner:
                 raise InvalidModelOutput("model content must be JSON text")
             return raw
         except (KeyError, IndexError, TypeError, ValueError, ValidationError) as exc:
-            # Do not expose raw output, which may repeat private user input.
+            # 원본 출력에 사용자 입력이 섞일 수 있어 그대로 노출하지 않는다.
             raise InvalidModelOutput(
                 "model output must be complete JSON matching the schema"
             ) from exc

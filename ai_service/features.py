@@ -50,25 +50,17 @@ PACE_POLICIES = {
 }
 
 
-# Daily time windows (local time).
-# - PLACE_DAY (12h): what the model plans against when picking tourist spots and
-#   restaurants. Kept tight so the picked places leave slack for later stages.
-# - SCHEDULE_DAY (~15h, 09:00-23:59): used once the hotel and real transfers are
-#   added (accommodations, routes, final itinerary). Real routes/hotel detours are
-#   longer than the estimates, so these stages get room instead of failing the trip.
-#   Start stays 09:00 (users see the same day start); the end cannot pass midnight
-#   because every item belongs to one date.
-# Item-count limits (min/max_items) always come from PLACE_DAY so both stages agree
-# on how many places a day should have.
+# 장소 선택은 09~21시 안에서 계획해 숙소·실제 이동에 쓸 여유를 남긴다.
+# 숙소와 경로를 넣은 최종 일정은 같은 날짜의 23:59까지 허용한다.
+# 하루 장소 수 제한은 두 단계 모두 PLACE_DAY 기준으로 계산한다.
 PLACE_DAY = (time(9), time(21))
 SCHEDULE_DAY = (time(9), time(23, 59))
 
 
 def day_windows(request: ItineraryRequest, *, schedule: bool = False) -> list[dict]:
-    """One window per travel date: when visits may happen and how many fit.
+    """날짜별 방문 가능 시간과 장소 수 제한을 구한다.
 
-    schedule=False -> PLACE_DAY (places stage); schedule=True -> SCHEDULE_DAY
-    for start/end/available_minutes, with the item limits of PLACE_DAY.
+    schedule=True이면 시간만 넓히고 장소 수 제한은 유지한다.
     """
     windows = _day_windows(request, PLACE_DAY)
     if schedule:
@@ -79,6 +71,7 @@ def day_windows(request: ItineraryRequest, *, schedule: bool = False) -> list[di
 
 
 def _day_windows(request: ItineraryRequest, bounds: tuple[time, time]) -> list[dict]:
+    """도착·출발 시각과 날짜별 이동수단을 반영한 하루 시간 창을 만든다."""
     day_start, day_end = bounds
     arrival, departure = request.duration.local_bounds()
     transports = resolve_day_transports(request)
@@ -92,14 +85,13 @@ def _day_windows(request: ItineraryRequest, bounds: tuple[time, time]) -> list[d
         if day == arrival.date() and arrival.time() >= day_end:
             end = min(datetime.combine(day, time(23, 59)), departure)
         start = min(start, end)
-        # Public schedules have minute precision. Never round arrival down into
-        # unavailable time (e.g. 13:00:30 must first allow a 13:01 visit).
+        # 일정은 분 단위이므로 도착 시각을 내림해 사용 불가능한 시간을 넣지 않는다.
         if start.second or start.microsecond:
             start = start.replace(second=0, microsecond=0) + timedelta(minutes=1)
         end = end.replace(second=0, microsecond=0)
         start = min(start, end)
         minutes = max(0, int((end - start).total_seconds() / 60))
-        # Short boundary dates may be transit-only. They remain present in days[].
+        # 첫날·마지막 날이 이동만 가능한 경우에도 결과의 날짜는 유지한다.
         min_stay = min(policy[category][0] for category in ("관광", "식당", "숙소"))
         maximum = min(policy["max_items"], max(0, minutes // min_stay))
         minimum = min(maximum, math.ceil(policy["min_items"] * minutes / 720))
@@ -122,16 +114,15 @@ def _day_windows(request: ItineraryRequest, bounds: tuple[time, time]) -> list[d
 
 
 def hotel_rest_end(start: datetime, end: datetime, minimum: int) -> datetime:
-    """When the hotel "rest" item ends: the usual 21:00 (PLACE_DAY end), later only
-    when a late check-in needs the extended SCHEDULE_DAY time for its minimum stay."""
+    """숙소 휴식 종료를 보통 21시로 두되 늦은 체크인에는 최소 체류를 보장한다."""
     usual = start.replace(hour=PLACE_DAY[1].hour, minute=PLACE_DAY[1].minute, second=0, microsecond=0)
     return min(end, max(usual, start + timedelta(minutes=minimum)))
 
 
 def accommodation_period(cursor: datetime, end: datetime, minimum: int) -> tuple[datetime, int]:
-    """Planning assumption: check in from 15:00, then rest until hotel_rest_end.
+    """15시 이후 체크인과 휴식을 일정에 배치한다.
 
-    This is not a verified property check-in time or next-day checkout time.
+    실제 숙소의 체크인·체크아웃 정책을 확인한 값은 아니다.
     """
     start = max(cursor, cursor.replace(hour=15, minute=0, second=0, microsecond=0))
     stay = int((hotel_rest_end(start, end, minimum) - start).total_seconds() / 60)
@@ -141,6 +132,7 @@ def accommodation_period(cursor: datetime, end: datetime, minimum: int) -> tuple
 
 
 def select_candidates(request: ItineraryRequest, places: list[Place]) -> list[Place]:
+    """필수 장소를 보존하면서 카테고리별 후보 수를 제한한다."""
     days = len(day_windows(request))
     required = [p for p in places if p.is_required]
     result = required.copy()
@@ -151,8 +143,7 @@ def select_candidates(request: ItineraryRequest, places: list[Place]) -> list[Pl
     }
     for category, limit in limits.items():
         candidates = [p for p in places if p.category == category and not p.is_required]
-        # Keep both preference search relevance and geographic variety. Stronger
-        # proximity preference adds the nearest alternatives to required locations.
+        # 필수 장소와 가까운 후보를 반영하되 검색 관련성과 지역 다양성도 유지한다.
         if required and request.preference.distance_preference is not None:
             nearest = sorted(
                 candidates, key=lambda p: min(distance_km(p, r) for r in required)
@@ -178,10 +169,9 @@ def complete_selection(
     *,
     places_only: bool = False,
 ) -> ModelSelection:
-    """Complete required categories using real candidates before time validation.
+    """실제 후보로 빠진 카테고리를 채우고 장소 수를 조정한다.
 
-    Keep the model's title and relative visit order. Only optional places may be
-    removed to make room; missing required IDs still require model correction.
+    모델이 정한 방문 순서와 필수 장소는 유지한다.
     """
     windows = day_windows(request)
     if [day.date for day in selection.days] != [w["date"] for w in windows]:
@@ -298,7 +288,7 @@ def complete_selection(
                     f"{day.date}: required visits and categories exceed daily capacity"
                 )
 
-            # Remove an optional detour, preserving all required visits/categories.
+            # 필수 방문과 카테고리를 지키며 불필요한 우회 장소를 제거한다.
             def detour(entry):
                 index, place = entry
                 before = chosen[index - 1] if index else previous
@@ -309,8 +299,7 @@ def complete_selection(
 
             index, _ = max(removable, key=detour)
             chosen.pop(index)
-        # A second optional meal is not a substitute for a missing attraction.
-        # Required meals are never silently dropped; the planner must separate them.
+        # 선택 식당을 늘려 관광 장소 부족을 메우지 않으며 필수 식당은 제거하지 않는다.
         index = 1
         while index < len(chosen):
             before, current = chosen[index - 1], chosen[index]
@@ -333,6 +322,7 @@ def complete_selection(
 
 
 def build_context(request: ItineraryRequest, places: list[Place]) -> dict:
+    """모델에 전달할 날짜별 시간 창·후보 장소·이동시간 행렬을 만든다."""
     policy = PACE_POLICIES[PACE_ALIASES[request.preference.pace_type]]
     windows = day_windows(request)
     matrices = {
@@ -362,7 +352,7 @@ def build_context(request: ItineraryRequest, places: list[Place]) -> dict:
 def schedule_selection(
     request: ItineraryRequest, selection: ModelSelection, places: list[Place]
 ) -> ModelItinerary:
-    """Turn the model's ordered places into a feasible minute-precision schedule."""
+    """모델이 정한 장소 순서를 분 단위의 실행 가능한 일정으로 바꾼다."""
     windows = day_windows(request, schedule=True)
     if [d.date for d in selection.days] != [w["date"] for w in windows]:
         raise InvalidModelOutput(
@@ -392,7 +382,7 @@ def schedule_selection(
             raise InvalidModelOutput(
                 f"{selected.date}: travel + minimum visits exceed available time by {-spare} minutes; choose fewer or closer places"
             )
-        # Prefer the midpoint of each pace range; shorten only within that range.
+        # 체류시간은 속도별 범위의 중간값을 우선하고 여유가 없으면 최소값을 쓴다.
         for index, place in enumerate(chosen):
             target = sum(policy[place.category]) // 2
             extra = min(target - stays[index], spare)
@@ -407,7 +397,7 @@ def schedule_selection(
                 if index != len(chosen) - 1:
                     raise InvalidModelOutput("accommodation must be the last item of the day")
                 cursor, stays[index] = accommodation_period(cursor, end, policy["숙소"][0])
-            # Move meals toward a natural lunch/dinner window when the day has slack.
+            # 남는 시간이 있으면 식사를 점심·저녁 시간대로 늦춘다.
             if place.category == "식당":
                 meal_hour = (
                     11 if cursor.hour < 11 else 17 if 14 <= cursor.hour < 17 else None
@@ -437,6 +427,7 @@ def validate_itinerary(
     *,
     routes: dict[tuple[int, int], RouteSummary] | None = None,
 ) -> list[ItineraryDay]:
+    """일정의 날짜·필수 장소·방문 순서·체류시간·경로를 검증한다."""
     windows = day_windows(request, schedule=True)
     if [day.date for day in generated.days] != [w["date"] for w in windows]:
         raise InvalidModelOutput(
@@ -559,6 +550,7 @@ def validate_itinerary(
 
 
 def validate_generation_window(request: ItineraryRequest) -> list[dict]:
+    """외부 API 호출 전 여행 기간과 필수 장소 수의 기본 가능성을 확인한다."""
     windows = day_windows(request)
     if not any(w["max_items"] for w in windows):
         raise GenerationFailed("여행 시간 안에 장소를 방문할 여유가 없습니다.", reason="insufficient_trip_time")
@@ -575,6 +567,7 @@ async def generate_itinerary(
     planner: OpenAIPlanner,
     router=None,
 ) -> ItineraryResponse:
+    """JSON 응답용 생성 흐름을 실행하고 검증 실패 시 한 번 수정 요청한다."""
     windows = validate_generation_window(request)
     places = select_candidates(request, await places_client.collect(request))
     categories = {p.category for p in places}
