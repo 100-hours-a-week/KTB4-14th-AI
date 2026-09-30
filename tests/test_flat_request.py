@@ -76,7 +76,7 @@ class FlatRequestTests(unittest.TestCase):
         body = copy.deepcopy(ITINERARY_REQUEST_EXAMPLE)
         body["required_places"][0].update(place_name=None, address=None, latitude=None, longitude=None)
         with TestClient(create_app(settings=Settings(api_token="test-only"))) as client:
-            for endpoint in ("/internal/ai/itineraries/generate", "/api/ai/v1/itinerary-jobs/stream"):
+            for endpoint in ("/internal/ai/itineraries/generate",):
                 response = client.post(endpoint, json=body, headers={"Authorization": "Bearer test-only"})
                 self.assertEqual(response.status_code, 422)
                 self.assertIn("재생성 장소 상세", response.json()["data"]["error_message"])

@@ -186,9 +186,9 @@ class LegacyGenerationRequest(StrictModel):
             raise ValueError("required_places IDs and orders must be unique")
         return self
 
-    def generation_context(self) -> ItineraryStreamRequest:
+    def generation_context(self) -> ItineraryRequest:
         # 작업 ID를 여행 ID로 바꾸지 않고 원래 요청 식별자를 유지한다.
-        return ItineraryStreamRequest.model_validate(self.model_dump(by_alias=False))
+        return ItineraryRequest.model_validate(self.model_dump(by_alias=False))
 
 
 class TravelGenerationPreference(Preference):
@@ -227,7 +227,7 @@ class TravelGenerationRequest(Duration):
             raise ValueError("required_places IDs and orders must be unique")
         return self
 
-    def generation_context(self) -> ItineraryStreamRequest:
+    def generation_context(self) -> ItineraryRequest:
         """필수 장소의 상세값을 확인한 뒤 내부 공통 요청으로 변환한다."""
         from ai_service.errors import GenerationFailed
 
@@ -242,7 +242,7 @@ class TravelGenerationRequest(Duration):
                 category={"TOURISM": "관광", "RESTAURANT": "식당", "ACCOMMODATION": "숙소"}[place.place_type],
                 order=place.order if place.order is not None else index,
             ))
-        return ItineraryStreamRequest(
+        return ItineraryRequest(
             travel_plan_id=self.travel_plan_id,
             region=Region(region_id=self.region_id, full_name=self.region_name),
             duration=Duration(arrival_datetime=self.arrival_datetime, departure_datetime=self.departure_datetime),
@@ -492,40 +492,10 @@ class MusicResponse(StrictModel):
     data: SelectedMusic
 
 
-class ItineraryStreamRequest(ItineraryRequest):
-    def itinerary_request(self) -> ItineraryRequest:
-        return ItineraryRequest.model_validate(self.model_dump())
-
-
 class MusicSuggestion(StrictModel):
     """모델은 곡명·가수만 제안하고 영상 URL은 YouTube 조회로 결정한다."""
     title: NonEmpty
     artist: NonEmpty
-
-
-class RecommendedItem(PlaceResponse):
-    sequence: int
-
-
-class RecommendedDay(StrictModel):
-    day_number: int
-    travel_date: date
-    items: list[RecommendedItem]
-
-
-class PlacesResult(StrictModel):
-    title: str
-    days: list[RecommendedDay]
-
-
-class Accommodation(StrictModel):
-    day_number: int
-    travel_date: date
-    place: PlaceResponse
-
-
-class AccommodationsResult(StrictModel):
-    accommodations: list[Accommodation]
 
 
 class RoutesResult(StrictModel):

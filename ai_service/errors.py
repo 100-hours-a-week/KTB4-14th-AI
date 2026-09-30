@@ -1,4 +1,4 @@
-"""HTTP와 SSE 생성 흐름이 공유하는 API 오류 형식.
+"""HTTP 생성 흐름에서 사용하는 API 오류 형식.
 
 code/message는 외부 응답, reason/detail은 운영 로그에 사용한다.
 운영 정보에는 API 키·외부 응답 본문·사용자 자유 입력을 넣지 않는다.

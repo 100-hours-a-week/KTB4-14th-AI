@@ -19,10 +19,8 @@ class Settings:
     openai_model: str = "gpt-4o-mini"
     model_timeout_seconds: float = 60.0
     kakao_timeout_seconds: float = 10.0
-    # 모든 SSE 단계를 포함해 생성이 5분을 넘으면 실패 처리한다.
+    # 네 단계 전체 생성이 5분을 넘으면 실패 처리한다.
     generation_timeout_seconds: float = 300.0
-    stream_timeout_seconds: float = 300.0
-    stream_heartbeat_seconds: float = 10.0
     routing_timeout_seconds: float = 10.0
 
     @classmethod

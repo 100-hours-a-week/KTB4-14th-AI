@@ -2,12 +2,12 @@
 
 아래 블록 전체를 **터미널에 한 번에 복사해서 붙여넣으면 설치부터 로컬 서버 실행까지 진행됩니다.** 처음 실행할 때만 가상환경을 만들고, 이후에는 재사용합니다. 기존 `.env`와 API 키는 그대로 유지합니다.
 
-현재 Mac의 Python 3.13(`/opt/homebrew/bin/python3.13`)과 프로젝트 경로를 기준으로 작성했습니다.
+현재 Mac의 Python 3.13(`/opt/homebrew/bin/python3.13`)과 이 저장소의 경로를 기준으로 작성했습니다.
 
 ```bash
 (
   set -e
-  cd /Users/samrobert/Documents/GitHub/AI-parking-assignment/development
+  cd /Users/samrobert/Documents/GitHub/KTB4-14th-AI
   unset PYTHONHOME PYTHONPATH
 
   if [ ! -x .venv/bin/python ]; then
@@ -45,7 +45,7 @@ INFO:     Uvicorn running on http://127.0.0.1:8000
 ```bash
 (
   set -e
-  cd /Users/samrobert/Documents/GitHub/AI-parking-assignment/development
+  cd /Users/samrobert/Documents/GitHub/KTB4-14th-AI
   unset PYTHONHOME PYTHONPATH
   ./.venv/bin/python -m uvicorn ai_service.main:app --host 127.0.0.1 --port 8000 --reload
 )
@@ -68,19 +68,17 @@ INFO:     Uvicorn running on http://127.0.0.1:8000
 
 | 용도 | POST 경로 |
 | --- | --- |
-| 백엔드 여행 생성 연동(SSE) | `/api/ai/v1/itinerary-jobs/stream` |
-| 기존 일정 JSON 생성 | `/internal/ai/itineraries/generate` |
+| 백엔드 여행 일정 생성(JSON) | `/internal/ai/itineraries/generate` |
 | 여행 정보 기반 음악 추천 | `/internal/ai/music/recommend` |
 
 - 백엔드 DTO 형식 요청: `travel_plan_id`, `region_id`, `region_name`, `arrival_datetime`, `departure_datetime`, `headcount`, `companion_type`, `preference`, `required_places`.
 - 백엔드 DTO 형식은 `budget_type`, `place_type`을 사용합니다. 사용자 중첩 형식은 `budget_type`, `category`, `road_address`를 받습니다. `client_draft_id`는 받지 않습니다. 작업 ID를 여행 ID로 바꾸지 않습니다.
 - 지역명은 백엔드 형식의 `region_name` 또는 중첩 형식의 `region.full_name`을 사용합니다. 별도 지역 목록 파일이 필요하지 않습니다.
 - 날짜는 한국시간 `2026-09-19T10:00:00` 형식으로 보낼 수 있습니다.
-- SSE 경로를 백엔드 기본 주소로 변경했습니다. 이전 `/internal/ai/itineraries/generate/stream` 주소는 사용하지 않습니다.
-- 중간에는 상태만, 마지막 `ROUTE_OPTIMIZE_DONE.result`에 일정·음악을 한 번만 전송합니다. 뒤의 `complete`는 완료 상태만 전달합니다. 백엔드가 ROUTE 완료에서 즉시 저장하므로 음악 생성 성공까지 ROUTE 완료를 지연합니다.
-- 같은 날 경로는 `days[].routes`에 출발·도착 순서, 이동수단·시간·거리와 대중교통 `legs` 탑승 안내를 전달합니다. 구간별 `boarding_stop/alighting_stop`에 이름·정류장 번호·버스 번호 배열을 담습니다. 도보·환승 순서, 구간별 시간·거리와 카카오 전체 요금 `total_fare_amount`를 포함하고 상세 `path` 좌표는 보내지 않습니다. [변경 내용과 백엔드 보완 사항](../문서/대중교통_승하차_요금_변경.md)을 참고하세요.
-- 모든 기능 호출에는 `Authorization: Bearer <기존 서비스 토큰>`이 필요합니다. 첨부 백엔드의 `AiSseGenerationClient`에는 이 헤더 추가가 필요합니다.
-- 별도 음악 API도 후보 없이 지역·기간·테마로 한 곡을 추천합니다. 요청은 `travel_plan_id`, `region`, `duration`, `preference`만 받습니다. 여행 스트림과 별도 음악 API 모두 OpenAI가 곡명·가수를 추천한 뒤 YouTube 공개 검색과 메타데이터 조회로 실제 영상 한 개를 찾아 `youtube_url`에 `https://www.youtube.com/watch?v=...`를 반환합니다. iTunes는 사용하지 않으며 YouTube API 키도 필요 없습니다.
+- 일정 생성은 장소 추천 → 숙소 추천 → 경로 최적화 → 음악 추천을 모두 마친 뒤 기존 `ItineraryResponse` JSON을 반환합니다. 음악 추천 결과는 내부 파이프라인 결과에 포함되지만 기존 응답 스키마에는 음악 필드가 없습니다. 음악을 클라이언트에 전달하려면 별도 `/internal/ai/music/recommend` API를 사용합니다.
+- 이동 안내는 기존 응답의 `days[].items[].route_from_previous`에 포함됩니다. 대중교통 구간의 승하차 정류장, 버스 번호, 시간·거리와 카카오 전체 요금을 제공하고 상세 `path` 좌표는 보내지 않습니다.
+- 모든 기능 호출에는 `Authorization: Bearer <기존 서비스 토큰>`이 필요합니다.
+- 별도 음악 API도 후보 없이 지역·기간·테마로 한 곡을 추천합니다. 요청은 `travel_plan_id`, `region`, `duration`, `preference`만 받습니다. 두 음악 추천 흐름 모두 OpenAI가 곡명·가수를 추천한 뒤 YouTube 공개 검색과 메타데이터 조회로 실제 영상 한 개를 찾습니다.
 - 공개 검색에는 `yt-dlp`를 사용합니다(`requirements.txt`에 포함). 영상·음원 파일은 다운로드하지 않습니다. 검색 차단·페이지 변경 시 실패할 수 있으며, 실패를 검색 페이지 링크로 대체하지 않습니다. [음악 링크 변경 내용](../문서/YouTube_음악영상_링크_변경.md)을 참고하세요.
 
 ### 확인할 Python 파일
@@ -88,8 +86,8 @@ INFO:     Uvicorn running on http://127.0.0.1:8000
 | 파일 | 역할 |
 | --- | --- |
 | `ai_service/schemas.py` | 백엔드 요청 필드 검증·내부 변환 |
-| `ai_service/main.py` | API 경로·인증·Swagger SSE 예시 |
-| `ai_service/backend_contract.py` | 백엔드 SSE 단계 이름·결과 저장 형식 변환 |
+| `ai_service/main.py` | API 경로·인증·기존 JSON 응답 |
+| `ai_service/pipeline.py` | 장소·숙소·경로·음악 공통 생성 흐름 |
 | `ai_service/api_examples.py` | Swagger 요청 예시 |
 
 [복사용 여행 요청](../문서/참고자료/여행일정생성요청.json) · [백엔드 DTO 요청](../문서/참고자료/백엔드_여행일정생성요청.json) · [현재 API 규격](../문서/API_TERMS.md) · [백엔드에 전달할 사항](../문서/백엔드_AI_연동_반영사항.md)
@@ -97,9 +95,15 @@ INFO:     Uvicorn running on http://127.0.0.1:8000
 실행 가능한 회귀 테스트는 `tests/`에 유지합니다. 다음 명령은 별도 터미널에서 실행하며 실제 외부 모델·카카오 API를 호출하지 않습니다.
 
 ```bash
-cd /Users/samrobert/Documents/GitHub/AI-parking-assignment/development
+cd /Users/samrobert/Documents/GitHub/KTB4-14th-AI
 ./.venv/bin/python -m unittest discover -s tests -v
 ```
+
+### 4단계 적용 확인
+
+`./.venv/bin/python -m unittest discover -s tests -p test_backend_contract.py -v`는 외부 API 없이 생성 단계의 시작·완료 로그가 `PLACE_RECOMMEND → STAY_RECOMMEND → ROUTE_OPTIMIZE → MUSIC_RECOMMEND` 순서인지 확인합니다. 응답이 기존 JSON 형식인지와 SSE 경로가 404인지도 검사합니다.
+
+실제 API로 확인할 때는 **이 저장소 경로에서** 서버를 실행한 뒤 `/docs`의 `POST /internal/ai/itineraries/generate`에 유효한 요청과 Bearer 토큰을 넣습니다. 예시의 여행 날짜는 테스트할 날짜로 바꿉니다. 응답 헤더 `X-Request-Id`와 같은 `request_id`로 서버 로그의 `generation_stage` 8건(각 단계 `STARTED`, `COMPLETED`)을 확인합니다. 네 단계가 끝나면 `application/json` 응답이 반환됩니다. `/openapi.json`에는 삭제한 SSE 경로가 없어야 합니다.
 
 ## 요청에서 400이 발생할 때
 
@@ -110,10 +114,10 @@ cd /Users/samrobert/Documents/GitHub/AI-parking-assignment/development
 `tests/`는 외부 API를 모의 응답으로 대체하는 회귀 테스트입니다. 실제 생성 검증은 서버를 실행한 뒤 별도 터미널에서 아래 명령으로 진행합니다. **실제 외부 API 호출 비용이 발생합니다.** 키는 기존 `.env`에서 읽으며 출력하지 않습니다. 실행 중인 서버와 같은 인증 설정을 사용해야 합니다.
 
 ```bash
-cd /Users/samrobert/Documents/GitHub/AI-parking-assignment/development
+cd /Users/samrobert/Documents/GitHub/KTB4-14th-AI
 ./.venv/bin/python scripts/check_generation_live.py --live --base-url http://127.0.0.1:8000
 ```
 
-서울·부산 반복 요청, 강릉·제주, 일반 JSON, 시간 부족·잘못된 요청·장소 상세 누락을 검사합니다. HTTP 200만 확인하지 않고 SSE의 최종 결과와 오류까지 확인하며, 실패하면 종료 코드 1을 반환합니다. 결과는 기본 `/tmp/audigo-generation-e2e.json`에 저장됩니다. 프론트·백엔드 저장까지의 전체 앱 테스트는 별도로 필요합니다.
+서울·부산 반복 요청, 강릉·제주, 일반 JSON, 시간 부족·잘못된 요청·장소 상세 누락을 검사합니다. 실패하면 종료 코드 1을 반환합니다. 결과는 기본 `/tmp/audigo-generation-e2e.json`에 저장됩니다. 프론트·백엔드 저장까지의 전체 앱 테스트는 별도로 필요합니다.
 
 [실패 원인·수정 내용·실검증 기록](../문서/여행생성_실패_수정_검증.md)

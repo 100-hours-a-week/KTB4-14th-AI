@@ -419,7 +419,7 @@ async def schedule_with_routes(
                             )
                         details = cache[key]
                         routed |= details.provider == "KAKAO"
-                        # 공개 필드만 추려 상세 경로 좌표가 JSON·SSE로 새지 않게 한다.
+                        # 공개 필드만 추려 상세 경로 좌표가 JSON으로 새지 않게 한다.
                         route = summarize_route(details)
                         transfers[(day_number, sequence)] = route
                         cursor += timedelta(minutes=route.duration_minutes)

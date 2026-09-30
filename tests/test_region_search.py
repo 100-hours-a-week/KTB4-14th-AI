@@ -8,11 +8,11 @@ from pydantic import ValidationError
 from ai_service.config import Settings
 from ai_service.errors import GenerationFailed, ServiceUnavailable
 from ai_service.places import KakaoPlaces, in_region
-from ai_service.schemas import ItineraryStreamRequest, Region
+from ai_service.schemas import ItineraryRequest, Region
 
 
 def busan_request():
-    return ItineraryStreamRequest.model_validate({
+    return ItineraryRequest.model_validate({
         "generation_job_id": 101,
         "region": {"region_id": 2, "full_name": "부산광역시"},
         "duration": {"arrival_datetime": "2026-10-01T10:00:00", "departure_datetime": "2026-10-03T18:00:00"},

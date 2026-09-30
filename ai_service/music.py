@@ -56,7 +56,7 @@ class YouTubeMusic:
         self.search_slots = asyncio.Semaphore(2)
 
     async def _search(self, query: str) -> list[dict]:
-        # 별도 프로세스로 실행해 SSE 중단·시간 초과 때 검색도 즉시 종료한다.
+        # 별도 프로세스로 실행해 요청 취소·시간 초과 때 검색도 즉시 종료한다.
         # 영상·음원은 받지 않고 로그인·쿠키·사용자 설정도 사용하지 않는다.
         async with self.search_slots:
             try:

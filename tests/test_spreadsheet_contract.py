@@ -10,7 +10,7 @@ from pydantic import ValidationError
 from ai_service.api_examples import ITINERARY_REQUEST_EXAMPLE, MUSIC_REQUEST_EXAMPLE, LEGACY_ITINERARY_REQUEST_EXAMPLE
 from ai_service.config import Settings
 from ai_service.main import create_app
-from ai_service.schemas import GenerationResult, ItineraryRequest, ItineraryResponse, ItineraryStreamRequest, MusicRequest, TravelGenerationRequest, LegacyGenerationRequest
+from ai_service.schemas import GenerationResult, ItineraryRequest, ItineraryResponse, MusicRequest, TravelGenerationRequest, LegacyGenerationRequest
 
 
 HEADERS = {"Authorization": "Bearer test-only"}
@@ -21,8 +21,10 @@ class SpreadsheetContractTests(unittest.TestCase):
         settings = Settings(api_token="test-only", openai_api_key="test", kakao_rest_api_key="test")
         body = TravelGenerationRequest.model_validate(ITINERARY_REQUEST_EXAMPLE).generation_context()
         result = ItineraryResponse(**body.model_dump(), title="테스트 일정", days=[])
-        generate = AsyncMock(return_value=result)
-        with patch("ai_service.main.generate_itinerary", generate), TestClient(create_app(settings=settings)) as client:
+        generate = AsyncMock(return_value=GenerationResult(
+            itinerary=result, music={"title": "테스트", "artist": "테스트", "youtube_url": "https://www.youtube.com/watch?v=abcdefghijk"},
+        ))
+        with patch("ai_service.main.generate_plan", generate), TestClient(create_app(settings=settings)) as client:
             response = client.post("/internal/ai/itineraries/generate", json=ITINERARY_REQUEST_EXAMPLE, headers=HEADERS)
         self.assertEqual(response.status_code, 200, response.text)
         received = generate.call_args.args[0]
@@ -35,33 +37,10 @@ class SpreadsheetContractTests(unittest.TestCase):
         self.assertEqual(received.region.full_name, "제주특별자치도 서귀포시")
         self.assertNotIn("budget_currency", response.json()["preference"])
 
-    def test_exact_trip_request_also_accepted_by_stream(self):
-        settings = Settings(api_token="test-only", openai_api_key="test", kakao_rest_api_key="test")
-
-        async def pipeline(body, *args):
-            self.assertNotIn("client_draft_id", body.model_dump())
-            itinerary = ItineraryResponse(**body.itinerary_request().model_dump(), title="테스트 일정", days=[])
-            yield "PLACES", "STARTED", None
-            yield "COMPLETE", "COMPLETED", GenerationResult(itinerary=itinerary, music={
-                "title": "테스트", "artist": "테스트", "youtube_url": "https://www.youtube.com/watch?v=abcdefghijk",
-            })
-
-        with patch("ai_service.streaming.generation_stages", side_effect=pipeline), TestClient(create_app(settings=settings)) as client:
-            response = client.post("/api/ai/v1/itinerary-jobs/stream", json=ITINERARY_REQUEST_EXAMPLE, headers=HEADERS)
-        self.assertEqual(response.status_code, 200)
-        self.assertIn("event: complete\n", response.text)
-        events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
-        self.assertEqual(events[-2]["result"]["title"], "테스트 일정")
-        self.assertEqual(events[-2]["travel_plan_id"], ITINERARY_REQUEST_EXAMPLE["travel_plan_id"])
-        self.assertEqual(events[-1]["status"], "COMPLETED")
-        self.assertNotIn("data", events[-1])
-        self.assertNotIn("budget_currency", response.text)
-        self.assertNotIn("client_draft_id", response.text)
-
     def test_removed_draft_field_rejected_and_absent_from_openapi(self):
         body = {**ITINERARY_REQUEST_EXAMPLE, "client_draft_id": 1}
         with TestClient(create_app(settings=Settings(api_token="test-only"))) as client:
-            for endpoint in ("/internal/ai/itineraries/generate", "/api/ai/v1/itinerary-jobs/stream"):
+            for endpoint in ("/internal/ai/itineraries/generate",):
                 with self.subTest(endpoint=endpoint):
                     response = client.post(endpoint, json=body, headers=HEADERS)
                     self.assertEqual(response.status_code, 400, response.text)
@@ -125,7 +104,6 @@ class SpreadsheetContractTests(unittest.TestCase):
         spec = create_app(settings=Settings()).openapi()
         for endpoint, example, schema, example_key in (
             ("/internal/ai/itineraries/generate", LEGACY_ITINERARY_REQUEST_EXAMPLE, LegacyGenerationRequest, "nested"),
-            ("/api/ai/v1/itinerary-jobs/stream", LEGACY_ITINERARY_REQUEST_EXAMPLE, LegacyGenerationRequest, "nested"),
             ("/internal/ai/music/recommend", MUSIC_REQUEST_EXAMPLE, MusicRequest, "travel"),
         ):
             value = spec["paths"][endpoint]["post"]["requestBody"]["content"]["application/json"]["examples"][example_key]["value"]
@@ -136,12 +114,9 @@ class SpreadsheetContractTests(unittest.TestCase):
         from ai_service.api_examples import ITINERARY_RESPONSE_EXAMPLES
         with TestClient(create_app(settings=Settings())) as client:
             spec = client.get('/openapi.json').json()
-        for path in ('/internal/ai/itineraries/generate', '/api/ai/v1/itinerary-jobs/stream'):
+        for path in ('/internal/ai/itineraries/generate',):
             responses = spec['paths'][path]['post']['responses']
             for code, example in ITINERARY_RESPONSE_EXAMPLES.items():
-                if code == 200 and path.endswith('/stream'):
-                    self.assertIn('text/event-stream', responses['200']['content'])
-                    continue
                 shown = responses[str(code)]['content']['application/json']['examples']['default']['value']
                 self.assertEqual(shown, example['value'])
                 self.assertNotIn('additionalProp1', json.dumps(shown))

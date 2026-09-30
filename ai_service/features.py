@@ -6,8 +6,7 @@ import logging
 import math
 
 from ai_service.errors import GenerationFailed, InvalidModelOutput
-from ai_service.model import OpenAIPlanner
-from ai_service.places import KakaoPlaces, distance_km, travel_minutes
+from ai_service.places import distance_km, travel_minutes
 from ai_service.transport import base_transport, resolve_day_transports
 from ai_service.schemas import (
     ItineraryDay,
@@ -559,48 +558,6 @@ def validate_generation_window(request: ItineraryRequest) -> list[dict]:
             "여행 기간과 속도에 비해 필수 방문 장소가 너무 많습니다.", reason="too_many_required_places"
         )
     return windows
-
-
-async def generate_itinerary(
-    request: ItineraryRequest,
-    places_client: KakaoPlaces,
-    planner: OpenAIPlanner,
-    router=None,
-) -> ItineraryResponse:
-    """JSON 응답용 생성 흐름을 실행하고 검증 실패 시 한 번 수정 요청한다."""
-    windows = validate_generation_window(request)
-    places = select_candidates(request, await places_client.collect(request))
-    categories = {p.category for p in places}
-    if (
-        any(w["needs_tour_and_restaurant"] for w in windows)
-        and not {"관광", "식당"} <= categories
-    ):
-        raise GenerationFailed("관광 장소 또는 식당 후보가 부족합니다.", reason="no_place_candidates")
-    if any(w["needs_accommodation"] for w in windows) and "숙소" not in categories:
-        raise GenerationFailed("숙소 후보가 부족합니다.", reason="no_accommodation_candidates")
-    context = build_context(request, places)
-    feedback = None
-    for attempt in range(2):
-        try:
-            selection = await planner.generate(context, feedback)
-            selection = complete_selection(request, selection, places)
-            from ai_service.routing import KakaoRoutes, schedule_with_routes
-
-            router = router or KakaoRoutes(planner.client, planner.settings)
-            result = await schedule_with_routes(
-                request, selection, places, planner.settings.openai_model, router
-            )
-            return result.itinerary
-        except InvalidModelOutput as exc:
-            logger.warning(
-                "Itinerary validation failed on attempt %s: %s", attempt + 1, str(exc)
-            )
-            feedback = str(exc)
-    else:
-        raise GenerationFailed(
-            "필수 장소와 시간 조건을 만족하는 일정을 생성하지 못했습니다.",
-            reason="itinerary_validation_failed", detail={"last_feedback": feedback},
-        )
 
 
 def make_itinerary_response(
