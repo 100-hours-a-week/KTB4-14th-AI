@@ -14,12 +14,14 @@ STAGES = ("PLACES", "ACCOMMODATIONS", "ROUTES", "MUSIC")
 
 
 def encode_event(name: str, sequence: int, payload: dict) -> str:
+    """이벤트 이름·순번·JSON 데이터를 SSE 한 건으로 인코딩한다."""
     return f"id: {sequence}\nevent: {name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
 async def stream_generation(
     body, places, planner, settings, request_id: str, router=None
 ):
+    """생성 단계를 SSE로 흘리고 유휴 시간에는 하트비트를 보낸다."""
     token = log_request_id.set(request_id)
     started = time.monotonic()
     stage_started = started
@@ -41,7 +43,7 @@ async def stream_generation(
             done, _ = await asyncio.wait(
                 {pending}, timeout=min(settings.stream_heartbeat_seconds, remaining)
             )
-            # A result arriving after the deadline must not be emitted as success.
+            # 작업이 끝났더라도 전체 제한 시간이 지났으면 성공으로 보내지 않는다.
             if asyncio.get_running_loop().time() >= deadline:
                 raise ServiceUnavailable(reason="stream_timeout", detail={"timeout_seconds": settings.stream_timeout_seconds})
             if not done:
@@ -66,7 +68,7 @@ async def stream_generation(
                 if status == "COMPLETED"
                 else "stage_started"
             )
-            # Keep intermediate results inside the pipeline; serialize once at COMPLETE.
+            # 중간 산출물은 내부에 두고 최종 완료 때만 전체 결과를 직렬화한다.
             payload = {"stage": stage, "status": status}
             if stage == "COMPLETE":
                 payload.update(
@@ -79,7 +81,7 @@ async def stream_generation(
                 payload,
             )
     except asyncio.CancelledError:
-        raise  # Client disconnected; cancellation closes in-flight HTTP requests.
+        raise  # 연결이 끊기면 진행 중인 외부 요청도 취소되도록 전파한다.
     except Exception as exc:
         failure("pipeline_failed", exc, stage=stage,
                 elapsed_ms=round((time.monotonic() - started) * 1000))
@@ -90,7 +92,7 @@ async def stream_generation(
                 "internal_server_error",
                 "서버 내부 오류가 발생했습니다.",
             )
-        # HTTP headers have already been sent: failure is a terminal SSE event.
+        # 헤더 전송 후 발생한 오류는 마지막 SSE 오류 이벤트로 전달한다.
         yield encode_event(
             "error",
             sequence + 1,

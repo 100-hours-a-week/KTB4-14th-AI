@@ -42,6 +42,7 @@ GROUPS = {"AT4": "관광", "CT1": "관광", "FD6": "식당", "CE7": "식당", "A
 
 
 def category_of(value: str) -> str | None:
+    """카카오의 상세 카테고리를 일정에서 쓰는 장소 종류로 묶는다."""
     if not isinstance(value, str):
         return None
     if value in GROUPS:
@@ -76,6 +77,7 @@ def category_of(value: str) -> str | None:
 
 
 def region_tokens(value: str) -> set[str]:
+    """주소와 지역명 비교에 사용할 행정구역 토큰을 정규화한다."""
     aliases = {
         "제주특별자치도": "제주",
         "서울특별시": "서울",
@@ -105,12 +107,14 @@ def region_tokens(value: str) -> set[str]:
 
 
 def in_region(region: str, address: str) -> bool:
+    """검색 결과의 주소가 요청 지역에 속하는지 확인한다."""
     if not isinstance(address, str):
         return False
     return region_tokens(region).issubset(region_tokens(address))
 
 
 def distance_km(first: Place, second: Place) -> float:
+    """두 장소의 좌표 사이 직선거리를 km로 계산한다."""
     lat1, lat2 = math.radians(first.latitude), math.radians(second.latitude)
     dlat = lat2 - lat1
     dlon = math.radians(second.longitude - first.longitude)
@@ -122,7 +126,7 @@ def distance_km(first: Place, second: Place) -> float:
 
 
 def travel_minutes(first: Place, second: Place, transport: str) -> int:
-    # Conservative geographic estimate, never advertised as a directions API result.
+    # 후보 선택용 보수적 추정치이며 실제 길찾기 결과로 표시하지 않는다.
     mode = TRANSPORT_ALIASES[transport]
     speed, overhead = {"WALK": (4, 0), "PUBLIC_TRANSPORT": (18, 15), "CAR": (30, 10)}[
         mode
@@ -133,6 +137,7 @@ def travel_minutes(first: Place, second: Place, transport: str) -> int:
 
 
 class KakaoPlaces:
+    """카카오 장소 검색 결과를 지역·카테고리·중복 기준으로 정리한다."""
     def __init__(self, client: httpx.AsyncClient, settings: Settings):
         self.client = client
         self.settings = settings
@@ -140,6 +145,7 @@ class KakaoPlaces:
         self._canonical_regions: dict[str, str] = {}
 
     async def _get(self, endpoint: str, params: dict) -> list[dict]:
+        """카카오 장소 검색을 호출하고 응답 문서 목록을 검증한다."""
         started = time.monotonic()
         if not self.settings.kakao_rest_api_key:
             raise ServiceUnavailable(reason="kakao_api_key_missing")
@@ -169,6 +175,7 @@ class KakaoPlaces:
     async def collect(
         self, request: ItineraryRequest, *, include_accommodation: bool = True
     ) -> list[Place]:
+        """필수 장소와 선호도 검색 결과를 합쳐 일정 후보 목록을 만든다."""
         pool: dict[str, Place] = {}
         for required in sorted(request.required_places, key=lambda p: p.order):
             if not required.address or not required.category:
@@ -200,8 +207,7 @@ class KakaoPlaces:
             )
 
         documents = await self._get("address", {"query": request.region.full_name})
-        # Resolve aliases using the provider's administrative address, never by
-        # stripping city/district suffixes (which can silently broaden the area).
+        # 지역 별칭은 카카오의 행정 주소로 확인해 검색 범위가 넓어지지 않게 한다.
         regions = {d.get("address_name"): d for d in documents
                    if d.get("address_type") == "REGION" and d.get("address_name")}
         if len(regions) > 1:
@@ -214,7 +220,7 @@ class KakaoPlaces:
             self._canonical_regions.pop(next(iter(self._canonical_regions)))
         self._canonical_regions[request.region.full_name] = region
         if not documents:
-            # Region search is only used to establish a geographic center.
+            # 지역 검색 결과는 장소 후보가 아니라 검색 중심점에만 사용한다.
             documents = await self._get(
                 "keyword", {"query": request.region.full_name, "size": 1}
             )
@@ -231,8 +237,7 @@ class KakaoPlaces:
         except (KeyError, TypeError, ValueError) as exc:
             raise ServiceUnavailable(reason="region_center_invalid") from exc
 
-        # Cluster new places around required stops (or the regional center).
-        # A city-wide pool can otherwise produce several hours of zigzag transfers.
+        # 필수 장소 또는 지역 중심 주변에 모아 불필요한 장거리 왕복을 줄인다.
         modes = {base_transport(m) for m in resolve_day_transports(request).values()}
         mode = min(modes, key={"WALK": 0, "PUBLIC_TRANSPORT": 1, "CAR": 2}.get)
         distance = (
@@ -256,7 +261,7 @@ class KakaoPlaces:
             queries.append((query, group, 1))
         for food in request.preference.foods[:3]:
             queries.append((FOOD_QUERIES.get(food, food), "FD6", 1))
-        # Preference-specific results take priority when the bounded pool is trimmed.
+        # 후보 수를 제한할 때 취향에 맞는 검색 결과를 우선한다.
         queries += base_queries
         calls = []
         for query, group, pages in dict.fromkeys(queries):
@@ -312,8 +317,7 @@ class KakaoPlaces:
                         pool[place.provider_place_id] = place
                         counts[category] += 1
         add_results(results)
-        # Keyword search may be empty even when category search has real places.
-        # One bounded fallback, same radius/anchors and the same region checks.
+        # 키워드 결과가 비면 같은 반경·중심점에서 카테고리 검색을 한 번 시도한다.
         needed = [("관광", "AT4"), ("식당", "FD6")]
         if include_accommodation:
             needed.append(("숙소", "AD5"))
@@ -335,6 +339,7 @@ class KakaoPlaces:
     async def accommodations(
         self, request: ItineraryRequest, latitude: float, longitude: float
     ) -> list[Place]:
+        """선택 장소 근처의 숙소를 검색하고 가능한 한 요청 지역을 우선한다."""
         documents = await self._get(
             "category",
             {
@@ -367,8 +372,7 @@ class KakaoPlaces:
             target = result if in_region(region, place.address) else outside
             target[place.provider_place_id] = place
         if not result and outside:
-            # Anchors near a region border (or a required place outside it) only have
-            # lodging across the border; a nearby stay beats failing the whole trip.
+            # 경계 근처에 지역 내 숙소가 없으면 가까운 경계 밖 숙소를 사용한다.
             record("accommodation_region_fallback", canonical_region=region, candidates=len(outside))
             return list(outside.values())
         return list(result.values())

@@ -1,4 +1,4 @@
-"""Resolve an actual YouTube music video without an API key or media download."""
+"""API 키나 미디어 다운로드 없이 실제 YouTube 음악 영상을 확인한다."""
 from __future__ import annotations
 
 import asyncio
@@ -19,12 +19,13 @@ from ai_service.schemas import MusicRecommendation, MusicSuggestion
 
 
 def normalized(value: str) -> str:
+    """곡명·가수 비교를 위해 문자 모양과 대소문자 차이를 없앤다."""
     return "".join(c for c in unicodedata.normalize("NFKC", html.unescape(value)).casefold() if c.isalnum())
 
 
 def matches_song(title: str, author: str, suggestion: MusicSuggestion) -> bool:
-    """Conservative metadata matching, not proof of an official rights holder."""
-    # Word boundaries avoid treating Yellow/봄 as Yellowstone/봄날.
+    """영상 메타데이터의 곡명·가수를 비교한다. 공식 권리자 여부는 보장하지 않는다."""
+    # 단어 경계를 확인해 짧은 제목이 다른 긴 제목에 잘못 매칭되지 않게 한다.
     tokens = re.findall(r"[^\W_]+", unicodedata.normalize("NFKC", html.unescape(suggestion.title)).casefold())
     pattern = r"(?<!\w)" + r"[\W_]*".join(re.escape(token) for token in tokens) + r"(?!\w)"
     if not tokens or not re.search(pattern, unicodedata.normalize("NFKC", html.unescape(title)).casefold()):
@@ -38,7 +39,7 @@ def matches_song(title: str, author: str, suggestion: MusicSuggestion) -> bool:
 
 
 def fallback_music() -> MusicRecommendation:
-    # Music is an extra: an unverifiable pick must not fail an otherwise complete trip.
+    # 음악 검증 실패 때문에 이미 완성한 여행 일정을 실패 처리하지 않는다.
     return MusicRecommendation(
         title="여행을 떠나요",
         artist="조용필",
@@ -48,14 +49,15 @@ def fallback_music() -> MusicRecommendation:
 
 
 class YouTubeMusic:
+    """YouTube 검색·공개 메타데이터로 단일 영상 링크를 확인한다."""
     def __init__(self, client: httpx.AsyncClient):
         self.client = client
         self.cache: OrderedDict[tuple[str, str], tuple[float, MusicRecommendation]] = OrderedDict()
         self.search_slots = asyncio.Semaphore(2)
 
     async def _search(self, query: str) -> list[dict]:
-        # A subprocess allows SSE disconnect/timeout to stop extraction immediately.
-        # Flat metadata only: no video/audio downloads, login, cookies or user config.
+        # 별도 프로세스로 실행해 SSE 중단·시간 초과 때 검색도 즉시 종료한다.
+        # 영상·음원은 받지 않고 로그인·쿠키·사용자 설정도 사용하지 않는다.
         async with self.search_slots:
             try:
                 process = await asyncio.create_subprocess_exec(
@@ -85,6 +87,7 @@ class YouTubeMusic:
                     await process.wait()
 
     async def find_video(self, suggestion: MusicSuggestion) -> MusicRecommendation | None:
+        """검색 결과와 공개 메타데이터가 모두 일치하는 영상만 반환한다."""
         key = (normalized(suggestion.title), normalized(suggestion.artist))
         if not all(key):
             return None
@@ -103,14 +106,14 @@ class YouTubeMusic:
                     or entry.get("live_status") in ("is_live", "is_upcoming")
                     or not matches_song(title, author, suggestion)):
                 continue
-            # Construct only from a real search result ID, never from model output/URL.
+            # 영상 URL은 모델 출력이 아니라 실제 검색 결과의 ID로 만든다.
             url = "https://www.youtube.com/watch?v=" + video_id
             try:
                 response = await self.client.get(
                     "https://www.youtube.com/oembed", params={"url": url, "format": "json"}, timeout=8.0,
                 )
                 if response.status_code in {401, 403, 404, 410}:
-                    continue  # Try another result, without bypassing restrictions.
+                    continue  # 접근 제한을 우회하지 않고 다른 결과를 확인한다.
                 response.raise_for_status()
                 metadata = response.json()
                 if not isinstance(metadata, dict):

@@ -30,7 +30,8 @@ NO_TRANSIT_MESSAGE = "이용할 수 있는 대중교통이 없습니다"
 
 
 def summarize_route(details: RouteDetails) -> RouteSummary:
-    # Whitelist public guidance; provider geometry and full stop lists stay internal.
+    """경로 내부 정보에서 공개 가능한 탑승 안내와 총 요금만 추린다."""
+    # 상세 좌표와 전체 정류장 목록은 응답에 포함하지 않는다.
     legs = []
     if details.transport_type in {"PUBLIC_TRANSPORT", "WALK"}:
         for leg in details.legs:
@@ -67,7 +68,7 @@ def summarize_route(details: RouteDetails) -> RouteSummary:
 
 
 def route_fare(properties: dict) -> int | None:
-    """Accept only the provider's explicit integer whole-route fare, never a range."""
+    """카카오가 명시한 정수형 전체 요금만 사용하고 범위값은 제외한다."""
     fare = properties.get("fare")
     value = fare.get("value") if isinstance(fare, dict) else None
     return value if type(value) is int and value >= 0 else None
@@ -95,6 +96,7 @@ def named_point(place) -> RouteStop:
 
 
 def map_url(value):
+    """외부 링크로 노출할 URL이 카카오 지도 HTTPS 주소인지 확인한다."""
     if value is None:
         return None
     parsed = urlparse(value)
@@ -104,11 +106,7 @@ def map_url(value):
 
 
 class KakaoRoutes:
-    """Official Kakao REST routes; planned-date service is not verified.
-
-    https://developers.kakao.com/docs/ko/kakaomap/rest-api#routing
-    The API has no departure-date parameter; never invent service flags.
-    """
+    """카카오 REST 길찾기를 호출한다. 출발 날짜별 운행 여부는 확인하지 않는다."""
 
     def __init__(self, client: httpx.AsyncClient, settings: Settings):
         self.client, self.settings = client, settings
@@ -121,6 +119,7 @@ class KakaoRoutes:
             raise RoutingUnavailable(reason="kakao_api_key_missing")
 
     async def _get(self, mode, origin, destination):
+        """도보 또는 대중교통 길찾기 원본 응답을 가져온다."""
         if not self.settings.kakao_rest_api_key:
             raise RoutingUnavailable(reason="kakao_api_key_missing")
         try:
@@ -150,6 +149,7 @@ class KakaoRoutes:
             raise RoutingUnavailable(reason="kakao_route_request_failed", detail={"mode": mode, "error": type(exc).__name__, "http_status": getattr(getattr(exc, "response", None), "status_code", None)}) from exc
 
     async def _walk(self, origin, destination, departure, *, fallback=False):
+        """도보 경로를 조회하고 대중교통 부재 시 대체 경로를 만든다."""
         payload = await self._get("walk", origin, destination)
         if (
             payload["status"] == "SAME_POINT"
@@ -218,6 +218,7 @@ class KakaoRoutes:
         )
 
     async def _transit(self, payload, origin, destination, departure, restriction=None):
+        """대중교통 경로의 탑승·하차·환승·도보 구간을 해석한다."""
         options = payload["routes"]
         if not isinstance(options, list) or not options:
             raise ValueError("missing successful transit route")
@@ -249,8 +250,7 @@ class KakaoRoutes:
                 name=stops[-1].name if stops else "도보 도착 지점",
                 **path[-1].model_dump(),
             )
-            # Kakao may omit WALKING steps. Resolve access/transfer/egress walking
-            # explicitly instead of connecting bus stops with invented straight lines.
+            # 누락된 접근·환승·도착 도보 구간은 실제 도보 경로로 따로 조회한다.
             if distance_km(previous, start) > 0.01:
                 access = await self._walk(previous, start, cursor)
                 legs.extend(access.legs)
@@ -294,8 +294,7 @@ class KakaoRoutes:
         if distance_km(previous, destination) > 0.01:
             egress = await self._walk(previous, destination, cursor)
             legs.extend(egress.legs)
-        # Keep the provider total if it includes additional waiting time; never
-        # discard independently resolved walking time from the final schedule.
+        # 카카오의 총 시간과 별도 조회한 도보 시간을 모두 고려한다.
         total = max(
             number(option["properties"]["totalTime"]),
             sum(l.duration_seconds for l in legs),
@@ -319,6 +318,7 @@ class KakaoRoutes:
         )
 
     async def route(self, origin, destination, departure, transport):
+        """이동수단에 맞는 경로를 조회하고 응답을 공통 상세 형식으로 바꾼다."""
         self.require_configured(transport)
         departure = (
             departure.replace(tzinfo=KST)
@@ -351,8 +351,7 @@ class KakaoRoutes:
                 "ENDNODES_NULL",
                 "EQUAL_POINTS",
             }:
-                # No transit at all (e.g. a short hop) walks even under a BUS/SUBWAY day;
-                # only a route that exists solely via another vehicle is rejected below.
+                # 대중교통 경로가 전혀 없으면 버스·지하철 지정일에도 도보로 이동한다.
                 return await self._walk(origin, destination, departure, fallback=True)
             if payload["status"] != "OK":
                 raise RoutingUnavailable(reason="kakao_transit_route_failed", detail={"status": payload["status"]})
@@ -367,6 +366,7 @@ class KakaoRoutes:
 async def schedule_with_routes(
     request, selection, places, model: str, router: KakaoRoutes
 ) -> RoutesResult:
+    """실제 이동시간을 반영해 재배치하고 검증한 최종 일정을 만든다."""
     from ai_service.features import (
         PACE_POLICIES,
         day_windows,
@@ -386,7 +386,7 @@ async def schedule_with_routes(
         for item in day.items
     ):
         raise InvalidModelOutput("use only provided candidate IDs")
-    # Cache only inside this generation, with exact departure time in the key.
+    # 출발 시각까지 키에 넣어 이번 생성 안에서만 경로를 재사용한다.
     cache = {}
     for minimum_stays in (False, True):
         generated_days, transfers = [], {}
@@ -419,8 +419,7 @@ async def schedule_with_routes(
                             )
                         details = cache[key]
                         routed |= details.provider == "KAKAO"
-                        # Explicit allowlist protects both JSON and every SSE payload
-                        # from provider path arrays and future internal-only fields.
+                        # 공개 필드만 추려 상세 경로 좌표가 JSON·SSE로 새지 않게 한다.
                         route = summarize_route(details)
                         transfers[(day_number, sequence)] = route
                         cursor += timedelta(minutes=route.duration_minutes)
@@ -429,7 +428,7 @@ async def schedule_with_routes(
                         if minimum_stays
                         else sum(policy[place.category]) // 2
                     )
-                    # Optional meal slack is skipped on the bounded shorter-stay retry.
+                    # 최소 체류시간 재시도에서는 식사 시간 조정도 생략한다.
                     if not minimum_stays and place.category == "식당":
                         hour = (
                             11
