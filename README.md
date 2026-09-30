@@ -1,6 +1,6 @@
 # AUDIGO AI 로컬 실행 — 한 번에 붙여넣기
 
-아래 블록 전체를 **터미널에 한 번에 복사해서 붙여넣으면 설치부터 로컬 서버 실행까지 진행됩니다.** 처음 실행할 때만 가상환경을 만들고, 이후에는 재사용합니다. 기존 `.env`와 API 키는 그대로 유지합니다.
+아래 블록 전체를 **터미널에 한 번에 복사해서 붙여넣으면 설치부터 로컬 서버 실행까지 진행됩니다.** `uv`가 잠금 파일에 맞춰 가상환경을 만들거나 갱신합니다. 기존 `.env`와 API 키는 그대로 유지합니다.
 
 현재 Mac의 Python 3.13(`/opt/homebrew/bin/python3.13`)과 이 저장소의 경로를 기준으로 작성했습니다.
 
@@ -10,11 +10,8 @@
   cd /Users/samrobert/Documents/GitHub/KTB4-14th-AI
   unset PYTHONHOME PYTHONPATH
 
-  if [ ! -x .venv/bin/python ]; then
-    /opt/homebrew/bin/python3.13 -m venv .venv
-  fi
-
-  ./.venv/bin/python -I -m pip install -r requirements.txt
+  uv sync --frozen --no-dev --python /opt/homebrew/bin/python3.13
+  ./.venv/bin/python scripts/download_e5_model.py model
 
   if [ ! -f .env ]; then
     cp .env.example .env
@@ -78,8 +75,10 @@ INFO:     Uvicorn running on http://127.0.0.1:8000
 - 일정 생성은 장소 추천 → 숙소 추천 → 경로 최적화 → 음악 추천을 모두 마친 뒤 기존 `ItineraryResponse` JSON을 반환합니다. 음악 추천 결과는 내부 파이프라인 결과에 포함되지만 기존 응답 스키마에는 음악 필드가 없습니다. 음악을 클라이언트에 전달하려면 별도 `/internal/ai/music/recommend` API를 사용합니다.
 - 이동 안내는 기존 응답의 `days[].items[].route_from_previous`에 포함됩니다. 대중교통 구간의 승하차 정류장, 버스 번호, 시간·거리와 카카오 전체 요금을 제공하고 상세 `path` 좌표는 보내지 않습니다.
 - 모든 기능 호출에는 `Authorization: Bearer <기존 서비스 토큰>`이 필요합니다.
-- 별도 음악 API도 후보 없이 지역·기간·테마로 한 곡을 추천합니다. 요청은 `travel_plan_id`, `region`, `duration`, `preference`만 받습니다. 두 음악 추천 흐름 모두 OpenAI가 곡명·가수를 추천한 뒤 YouTube 공개 검색과 메타데이터 조회로 실제 영상 한 개를 찾습니다.
+- 별도 음악 API는 `travel_plan_id`, `region`, `duration`, `preference`를 받습니다. 여행 시작일의 한국 시간 월에 따라 봄(3~5월)·여름(6~8월)·가을(9~11월)·겨울(12~2월)을 정합니다. YouTube 실시간 검색에 계절을 넣고, 제목에 다른 계절이 명시된 곡은 제외합니다. 남은 곡명·가수 후보를 로컬 `multilingual-e5-small` 모델로 정렬하며 계절이 명시적으로 맞는 곡을 우대하고, 공개 메타데이터로 영상을 검증합니다. 이 API는 OpenAI 키가 필요하지 않습니다. 후보가 없거나 검증에 모두 실패하면 422, 검색·모델 장애는 503을 반환합니다.
+- 일정 생성의 내부 음악 단계는 기존 OpenAI 기반 추천을 사용합니다. 일정 생성 응답에 음악 필드를 추가하지 않습니다.
 - 공개 검색에는 `yt-dlp`를 사용합니다(`requirements.txt`에 포함). 영상·음원 파일은 다운로드하지 않습니다. 검색 차단·페이지 변경 시 실패할 수 있으며, 실패를 검색 페이지 링크로 대체하지 않습니다. [음악 링크 변경 내용](../문서/YouTube_음악영상_링크_변경.md)을 참고하세요.
+- E5 ONNX 모델과 토크나이저는 고정 리비전과 SHA-256 검증으로 배포 이미지에 포함됩니다. 위 로컬 실행 명령도 모델을 내려받고 검증합니다. 모델은 요청 중 다운로드하지 않으며 기본 경로는 `model/`입니다. 필요하면 `E5_MODEL_DIR`로 경로를 지정할 수 있습니다. YouTube 제목·채널만으로는 곡 분위기를 충분히 알기 어려우므로 추천 품질은 실제 결과로 점검해야 합니다.
 
 ### 확인할 Python 파일
 
@@ -88,6 +87,7 @@ INFO:     Uvicorn running on http://127.0.0.1:8000
 | `ai_service/schemas.py` | 백엔드 요청 필드 검증·내부 변환 |
 | `ai_service/main.py` | API 경로·인증·기존 JSON 응답 |
 | `ai_service/pipeline.py` | 장소·숙소·경로·음악 공통 생성 흐름 |
+| `ai_service/e5_music.py` | 별도 음악 API의 YouTube 후보 선택·E5 정렬 |
 | `ai_service/api_examples.py` | Swagger 요청 예시 |
 
 [복사용 여행 요청](../문서/참고자료/여행일정생성요청.json) · [백엔드 DTO 요청](../문서/참고자료/백엔드_여행일정생성요청.json) · [현재 API 규격](../문서/API_TERMS.md) · [백엔드에 전달할 사항](../문서/백엔드_AI_연동_반영사항.md)

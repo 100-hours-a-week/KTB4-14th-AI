@@ -16,6 +16,7 @@ from ai_service.features import (
     build_context,
     complete_selection,
     day_windows,
+    optimize_group_order,
     validate_generation_window,
     schedule_selection,
     select_candidates,
@@ -100,11 +101,13 @@ def places_day_minutes(
     자동 축소와 검증 단계에서 같은 계산을 사용한다.
     """
     minutes = reserve * (policy["숙소"][0] + 20)
+    minutes += reserve * window.get("group_transfer_buffer_minutes", 0)
     previous = arriving_from
     for place in day_places:
         minutes += policy[place.category][0]
         if previous is not None:
             minutes += travel_minutes(previous, place, window["transport_type"])
+            minutes += window.get("group_transfer_buffer_minutes", 0)
         previous = place
     return minutes
 
@@ -237,7 +240,8 @@ def validate_places_selection(
                 f"{day.date}: select {minimum}..{maximum} tourist/restaurant places, leaving room for lodging"
             )
         # 시간 부족으로 자동 축소했다면 최소 장소 수보다 적어도 허용한다.
-        cheapest_extra = min(policy["관광"][0], policy["식당"][0]) + 5
+        cheapest_extra = (min(policy["관광"][0], policy["식당"][0]) + 5
+                          + window.get("group_transfer_buffer_minutes", 0))
         if len(day.items) < minimum and needed_minutes + cheapest_extra <= window["available_minutes"]:
             raise InvalidModelOutput(
                 f"{day.date}: select {minimum}..{maximum} tourist/restaurant places, leaving room for lodging"
@@ -302,6 +306,7 @@ async def recommend_places(
         try:
             selection = await planner.generate(context, feedback, places_only=True)
             selection = complete_selection(request, selection, places, places_only=True)
+            selection = optimize_group_order(request, selection, places)
             selection = trim_places_to_time(request, selection, places)
             validate_places_selection(request, selection, places)
             return selection

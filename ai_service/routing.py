@@ -8,6 +8,7 @@ import httpx
 
 from ai_service.config import Settings
 from ai_service.errors import GenerationFailed, InvalidModelOutput, RoutingUnavailable
+from ai_service.group_policy import movement_buffer_minutes, transfer_penalty_seconds
 from ai_service.places import distance_km, travel_minutes
 from ai_service.transport import base_transport
 from ai_service.schemas import (
@@ -217,7 +218,7 @@ class KakaoRoutes:
             ],
         )
 
-    async def _transit(self, payload, origin, destination, departure, restriction=None):
+    async def _transit(self, payload, origin, destination, departure, restriction=None, headcount=2):
         """대중교통 경로의 탑승·하차·환승·도보 구간을 해석한다."""
         options = payload["routes"]
         if not isinstance(options, list) or not options:
@@ -230,7 +231,18 @@ class KakaoRoutes:
             ]
             if not options:
                 raise GenerationFailed("요청한 이동수단만 이용하는 경로를 찾지 못했습니다. 이동수단 조건을 변경해주세요.", reason="restricted_transport_route_missing", detail={"restriction": restriction})
-        option = min(options, key=lambda r: number(r["properties"]["totalTime"]))
+        def option_score(option):
+            seconds = number(option["properties"]["totalTime"])
+            if headcount < 5:
+                return seconds
+            vehicles = sum(step["properties"]["type"] != "WALKING" for step in option["steps"])
+            transfers = max(0, vehicles - 1)
+            distance = number(option["properties"]["totalDistance"])
+            return (seconds + transfers * transfer_penalty_seconds(headcount)
+                    + distance * (0.01 if headcount >= 20 else 0.005), seconds, distance)
+
+        # 실제 API가 제시한 경로들 중에서만 단체 환승 부담을 반영해 고른다.
+        option = min(options, key=option_score)
         if not option["steps"]:
             raise ValueError("missing transit steps")
         legs, cursor, previous = [], departure, named_point(origin)
@@ -317,7 +329,7 @@ class KakaoRoutes:
             legs=legs,
         )
 
-    async def route(self, origin, destination, departure, transport):
+    async def route(self, origin, destination, departure, transport, *, headcount=2):
         """이동수단에 맞는 경로를 조회하고 응답을 공통 상세 형식으로 바꾼다."""
         self.require_configured(transport)
         departure = (
@@ -358,6 +370,7 @@ class KakaoRoutes:
             return await self._transit(
                 payload, origin, destination, departure,
                 restriction=transport if transport in {"BUS", "SUBWAY"} else None,
+                headcount=headcount,
             )
         except (KeyError, ValueError, TypeError, IndexError, AttributeError) as exc:
             raise RoutingUnavailable(reason="kakao_route_response_invalid", detail={"transport": transport, "error": type(exc).__name__}) from exc
@@ -414,15 +427,24 @@ async def schedule_with_routes(
                             window["route_mode"],
                         )
                         if key not in cache:
-                            cache[key] = await router.route(
-                                origin, place, cursor, window["route_mode"]
-                            )
+                            if request.headcount >= 5:
+                                cache[key] = await router.route(
+                                    origin, place, cursor, window["route_mode"],
+                                    headcount=request.headcount,
+                                )
+                            else:
+                                cache[key] = await router.route(
+                                    origin, place, cursor, window["route_mode"]
+                                )
                         details = cache[key]
                         routed |= details.provider == "KAKAO"
                         # 공개 필드만 추려 상세 경로 좌표가 JSON으로 새지 않게 한다.
                         route = summarize_route(details)
                         transfers[(day_number, sequence)] = route
-                        cursor += timedelta(minutes=route.duration_minutes)
+                        # 경로 응답의 이동시간은 유지하고 다음 시작 시각에만 여유를 더한다.
+                        cursor += timedelta(
+                            minutes=route.duration_minutes + movement_buffer_minutes(request.headcount)
+                        )
                     stay = (
                         policy[place.category][0]
                         if minimum_stays

@@ -17,8 +17,10 @@ from ai_service.api_examples import GENERATION_REQUEST_EXAMPLES, MUSIC_REQUEST_E
 from ai_service.config import Settings
 from ai_service.diagnostics import request_id as log_request_id, record, failure
 from ai_service.errors import ApiError, ServiceUnavailable
+from ai_service.e5_music import E5MusicRecommender
 from ai_service.pipeline import generate_plan
 from ai_service.model import OpenAIPlanner
+from ai_service.music import YouTubeMusic
 from ai_service.places import KakaoPlaces
 from ai_service.routing import KakaoRoutes
 from ai_service.schemas import (
@@ -59,6 +61,9 @@ def create_app(
             app.state.places = KakaoPlaces(client, settings)
             app.state.planner = OpenAIPlanner(client, settings)
             app.state.routes = KakaoRoutes(client, settings)
+            app.state.music_recommender = E5MusicRecommender(
+                YouTubeMusic(client), settings.e5_model_dir
+            )
             yield
 
     app = FastAPI(title="Audigo AI API", version="1.0.0", lifespan=lifespan)
@@ -196,7 +201,7 @@ def create_app(
             for code, example in MUSIC_RESPONSE_EXAMPLES.items()
         },
         tags=["V1"],
-        description="여행 지역·기간·테마에 맞는 곡 한 개를 추천하고 실제 YouTube 영상 링크를 반환합니다. 후보 목록은 받지 않습니다.",
+        description="여행 시작일의 한국 시간 월에 맞는 계절을 반영해 YouTube 실시간 후보를 multilingual-e5-small로 정렬하고, 검증된 음악 영상 한 개를 반환합니다. 후보 목록은 받지 않습니다.",
     )
     async def recommend_music(
         body: Annotated[MusicRequest, Body(openapi_examples={"travel": {"summary": "여행 정보 기반 음악 추천", "value": MUSIC_REQUEST_EXAMPLE}})],
@@ -205,7 +210,7 @@ def create_app(
         request.state.travel_plan_id = body.travel_plan_id
         try:
             async with asyncio.timeout(settings.generation_timeout_seconds):
-                selected = await app.state.planner.recommend_music(body)
+                selected = await app.state.music_recommender.recommend(body)
                 return MusicResponse(data=SelectedMusic(
                     **selected.model_dump(), travel_plan_id=body.travel_plan_id,
                 ))

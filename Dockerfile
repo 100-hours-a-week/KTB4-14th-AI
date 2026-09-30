@@ -17,6 +17,9 @@ COPY ai_service ./ai_service
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev
 
+COPY scripts/download_e5_model.py ./scripts/download_e5_model.py
+RUN python scripts/download_e5_model.py /app/model
+
 
 FROM python:3.12-slim AS runtime
 WORKDIR /app
@@ -30,6 +33,7 @@ RUN groupadd --system fastapi \
 
 COPY --from=builder --chown=fastapi:fastapi /app/.venv ./.venv
 COPY --from=builder --chown=fastapi:fastapi /app/ai_service ./ai_service
+COPY --from=builder --chown=fastapi:fastapi /app/model ./model
 
 USER fastapi
 EXPOSE 8000
