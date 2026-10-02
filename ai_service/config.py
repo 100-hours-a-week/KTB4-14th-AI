@@ -21,6 +21,8 @@ class Settings:
     kakao_timeout_seconds: float = 10.0
     # 네 단계 전체 생성이 5분을 넘으면 실패 처리한다.
     generation_timeout_seconds: float = 300.0
+    stream_timeout_seconds: float = 300.0
+    stream_heartbeat_seconds: float = 15.0
     routing_timeout_seconds: float = 10.0
     e5_model_dir: Path = Path(__file__).resolve().parents[1] / "model"
     restaurant_hours_file: Path | None = None

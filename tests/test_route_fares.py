@@ -135,5 +135,5 @@ class RouteOpenApiTests(unittest.TestCase):
         example = spec['components']['schemas']['RouteSummary']['examples'][0]
         self.assertEqual(example, ROUTE_RESPONSE_EXAMPLE)
         self.assertEqual(RouteSummary.model_validate(example).model_dump(mode='json'), example)
-        self.assertNotIn('/api/ai/v1/itinerary-jobs/stream', spec['paths'])
+        self.assertIn('/api/ai/v1/itinerary-jobs/stream', spec['paths'])
         self.assertIsNone(example['legs'][0]['start']['station_number'])

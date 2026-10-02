@@ -91,6 +91,7 @@ INFO:     Uvicorn running on http://127.0.0.1:8000
 
 | 용도 | POST 경로 |
 | --- | --- |
+| 백엔드 여행 일정 생성(SSE) | `/api/ai/v1/itinerary-jobs/stream` |
 | 백엔드 여행 일정 생성(JSON) | `/internal/ai/itineraries/generate` |
 | 여행 정보 기반 음악 추천 | `/internal/ai/music/recommend` |
 
@@ -98,20 +99,58 @@ INFO:     Uvicorn running on http://127.0.0.1:8000
 - 백엔드 DTO 형식은 `budget_type`, `place_type`을 사용합니다. 사용자 중첩 형식은 `budget_type`, `category`, `road_address`를 받습니다. `client_draft_id`는 받지 않습니다. 작업 ID를 여행 ID로 바꾸지 않습니다.
 - 지역명은 백엔드 형식의 `region_name` 또는 중첩 형식의 `region.full_name`을 사용합니다. 별도 지역 목록 파일이 필요하지 않습니다.
 - 날짜는 한국시간 `2026-09-19T10:00:00` 형식으로 보낼 수 있습니다.
-- 일정 생성은 장소 추천 → 숙소 추천 → 경로 최적화 → 음악 추천을 모두 마친 뒤 기존 `ItineraryResponse` JSON을 반환합니다. 음악 추천 결과는 내부 파이프라인 결과에 포함되지만 기존 응답 스키마에는 음악 필드가 없습니다. 음악을 클라이언트에 전달하려면 별도 `/internal/ai/music/recommend` API를 사용합니다.
+- JSON 일정 생성은 장소 추천 → 숙소 추천 → 경로 최적화 → 음악 추천을 모두 마친 뒤 기존 `ItineraryResponse` JSON을 반환합니다. 음악 추천 결과는 내부 파이프라인 결과에 포함되지만 기존 응답 스키마에는 음악 필드가 없습니다. 음악을 클라이언트에 전달하려면 별도 `/internal/ai/music/recommend` API를 사용합니다.
 - 이동 안내는 기존 응답의 `days[].items[].route_from_previous`에 포함됩니다. `transport_type`, `duration_minutes`, `distance_meter`, 문자열 `line_name`·`vehicle_number`, 전체 경로 요금 `total_fare_amount`, `legs`를 반환합니다. 각 구간은 `mode`, 문자열 `line_name`·`vehicle_number`, `start`·`end`(이름·정류장 번호)만 포함합니다. 없는 문자열은 null, 자동차 구간은 빈 배열입니다. 요금이 확인되지 않으면 null, 도보는 0, 자동차는 null입니다. 구간별 시간/거리·상세 좌표는 내부에서만 사용합니다.
 - 모든 기능 호출에는 `Authorization: Bearer <기존 서비스 토큰>`이 필요합니다.
 - 별도 음악 API는 `travel_plan_id`, `region`, `duration`, `preference`를 받습니다. 여행 시작일의 한국 시간 월에 따라 봄(3~5월)·여름(6~8월)·가을(9~11월)·겨울(12~2월)을 정합니다. YouTube 실시간 검색에 계절을 넣고, 제목에 다른 계절이 명시된 곡은 제외합니다. 남은 곡명·가수 후보를 로컬 `multilingual-e5-small` 모델로 정렬하며 계절이 명시적으로 맞는 곡을 우대하고, 공개 메타데이터로 영상을 검증합니다. 이 API는 OpenAI 키가 필요하지 않습니다. 후보가 없거나 검증에 모두 실패하면 422, 검색·모델 장애는 503을 반환합니다.
-- 일정 생성의 내부 음악 단계는 기존 OpenAI 기반 추천을 사용합니다. 일정 생성 응답에 음악 필드를 추가하지 않습니다.
+- 일정 생성의 내부 음악 단계는 기존 OpenAI 기반 추천을 사용합니다. JSON 일정 응답에는 음악 필드가 없으며 SSE 최종 `result.music`에는 음악이 포함됩니다.
 - 공개 검색에는 `yt-dlp`를 사용합니다(`requirements.txt`에 포함). 영상·음원 파일은 다운로드하지 않습니다. 검색 차단·페이지 변경 시 실패할 수 있으며, 실패를 검색 페이지 링크로 대체하지 않습니다. [음악 링크 변경 내용](../문서/YouTube_음악영상_링크_변경.md)을 참고하세요.
 - E5 ONNX 모델과 토크나이저는 고정 리비전과 SHA-256 검증으로 배포 이미지에 포함됩니다. 위 로컬 실행 명령도 모델을 내려받고 검증합니다. 모델은 요청 중 다운로드하지 않으며 기본 경로는 `model/`입니다. 필요하면 `E5_MODEL_DIR`로 경로를 지정할 수 있습니다. YouTube 제목·채널만으로는 곡 분위기를 충분히 알기 어려우므로 추천 품질은 실제 결과로 점검해야 합니다.
+
+### 백엔드 SSE 연결
+
+백엔드 환경변수는 AI 서버 주소와 복구된 경로로 설정합니다. 아래 포트는 AI를 8000으로 실행하는 경우입니다.
+
+```ini
+AUDIGO_AI_BASE_URL=http://127.0.0.1:8000
+AUDIGO_AI_SSE_PATH=/api/ai/v1/itinerary-jobs/stream
+```
+
+AI와 백엔드의 `AUDIGO_API_TOKEN`은 같은 값을 사용합니다. 요청 JSON은 위의 두 형식을 모두 지원합니다. `/docs`의 요청 예시를 `request.json`으로 저장하고 여행 날짜를 수정한 뒤, 토큰이 설정된 터미널에서 실행합니다.
+
+```bash
+curl --no-buffer --fail-with-body \
+  http://127.0.0.1:8000/api/ai/v1/itinerary-jobs/stream \
+  -H "Authorization: Bearer ${AUDIGO_API_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: text/event-stream' \
+  --data-binary @request.json
+```
+
+성공 시 이벤트 순서는 다음과 같습니다.
+
+```text
+PLACE_RECOMMEND_STARTED → PLACE_RECOMMEND_DONE
+STAY_RECOMMEND_STARTED → STAY_RECOMMEND_DONE
+ROUTE_OPTIMIZE_STARTED
+MUSIC_RECOMMEND_STARTED → MUSIC_RECOMMEND_DONE
+ROUTE_OPTIMIZE_DONE → complete
+```
+
+- `ROUTE_OPTIMIZE_DONE.result`에 `title`, `days`, `music`을 한 번만 보냅니다. 백엔드가 이 이벤트를 받으면 저장하므로 음악 처리까지 끝난 뒤 보냅니다. 음악 API 오류에는 기존 대체곡 정책을 적용합니다.
+- `days[].items`는 `place_type`을 사용하며 관광은 `TOURISM`입니다. 같은 날짜의 이동은 `days[].routes`에 `from_sequence`, `to_sequence`, `order`와 최신 간결한 경로 필드를 보냅니다. 전날 마지막 장소에서의 이동은 다음날 첫 장소의 `route_from_previous`에 보존합니다.
+- 최종 결과와 `complete`, `error`에는 요청에 맞는 `travel_plan_id` 또는 `generation_job_id`를 유지합니다. `complete`에는 결과를 중복하지 않습니다.
+- 인증·요청 검증·키 설정 오류는 스트림 시작 전에 HTTP JSON 오류를 반환합니다. HTTP 200 이후 실패는 `event: error`로 끝나며 `ROUTE_OPTIMIZE_DONE`과 `complete`를 보내지 않습니다. 클라이언트는 HTTP 상태만으로 성공을 판단하면 안 됩니다.
+- 기본 전체 제한 시간은 300초, 유휴 하트비트는 15초(`: keep-alive`)입니다. 연결이 종료되면 진행 중인 생성 작업도 취소합니다. SSE 재연결 시 작업 재개나 `Last-Event-ID` 재생은 지원하지 않습니다.
 
 ### 확인할 Python 파일
 
 | 파일 | 역할 |
 | --- | --- |
 | `ai_service/schemas.py` | 백엔드 요청 필드 검증·내부 변환 |
-| `ai_service/main.py` | API 경로·인증·기존 JSON 응답 |
+| `ai_service/main.py` | API 경로·인증·JSON/SSE 응답 |
+| `ai_service/streaming.py` | SSE 하트비트·제한 시간·오류·연결 종료 처리 |
+| `ai_service/backend_contract.py` | 백엔드 단계 이벤트·저장용 결과 변환 |
 | `ai_service/pipeline.py` | 장소·숙소·경로·음악 공통 생성 흐름 |
 | `ai_service/e5_music.py` | 별도 음악 API의 YouTube 후보 선택·E5 정렬 |
 | `ai_service/api_examples.py` | Swagger 요청 예시 |
@@ -127,9 +166,9 @@ cd /Users/samrobert/Documents/GitHub/KTB4-14th-AI
 
 ### 4단계 적용 확인
 
-`./.venv/bin/python -m unittest discover -s tests -p test_backend_contract.py -v`는 외부 API 없이 생성 단계의 시작·완료 로그가 `PLACE_RECOMMEND → STAY_RECOMMEND → ROUTE_OPTIMIZE → MUSIC_RECOMMEND` 순서인지 확인합니다. 응답이 기존 JSON 형식인지와 SSE 경로가 404인지도 검사합니다.
+`./.venv/bin/python -m unittest discover -s tests -p test_backend_contract.py -v`는 외부 API 없이 생성 단계의 시작·완료 로그가 `PLACE_RECOMMEND → STAY_RECOMMEND → ROUTE_OPTIMIZE → MUSIC_RECOMMEND` 순서인지 확인합니다. 기존 JSON 응답과 두 요청 형식의 SSE 이벤트 순서·최종 결과·인증·실패 처리를 검사합니다. `test_streaming.py`는 실제 생성 완료 전 이벤트 전송, 하트비트, 시간 초과, 연결 종료 시 작업 취소를 검사합니다.
 
-실제 API로 확인할 때는 **이 저장소 경로에서** 서버를 실행한 뒤 `/docs`의 `POST /internal/ai/itineraries/generate`에 유효한 요청과 Bearer 토큰을 넣습니다. 예시의 여행 날짜는 테스트할 날짜로 바꿉니다. 응답 헤더 `X-Request-Id`와 같은 `request_id`로 서버 로그의 `generation_stage` 8건(각 단계 `STARTED`, `COMPLETED`)을 확인합니다. 네 단계가 끝나면 `application/json` 응답이 반환됩니다. `/openapi.json`에는 삭제한 SSE 경로가 없어야 합니다.
+실제 API로 확인할 때는 **이 저장소 경로에서** 서버를 실행한 뒤 `/docs`의 `POST /internal/ai/itineraries/generate`에 유효한 요청과 Bearer 토큰을 넣습니다. 예시의 여행 날짜는 테스트할 날짜로 바꿉니다. 응답 헤더 `X-Request-Id`와 같은 `request_id`로 서버 로그의 `generation_stage` 8건(각 단계 `STARTED`, `COMPLETED`)을 확인합니다. 네 단계가 끝나면 `application/json` 응답이 반환됩니다. `/openapi.json`에는 JSON과 SSE 경로가 함께 표시됩니다.
 
 ## 요청에서 400이 발생할 때
 
