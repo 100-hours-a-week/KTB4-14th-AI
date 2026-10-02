@@ -58,6 +58,7 @@ class CompactRoutesTests(unittest.IsolatedAsyncioTestCase):
             destination = type("Point", (), {"latitude": float(p["end_y"]), "longitude": float(p["end_x"])})()
             payload = transit_payload(origin, destination)
             for route in payload["routes"]:
+                route["properties"]["fare"] = {"value": 1650}
                 path = route["steps"][0]["path"]
                 start, end = path["points"]
                 path["points"] = [[start[0] + (end[0] - start[0]) * i / 999,
@@ -94,7 +95,7 @@ class CompactRoutesTests(unittest.IsolatedAsyncioTestCase):
         first_day = final["itinerary"]["days"][0]
         self.assertEqual(first_day["items"][-1]["item_type"], "ACCOMMODATION")
         summary = first_day["items"][1]["route_from_previous"]
-        self.assertEqual(set(summary), {"transport_type", "duration_minutes", "distance_meter", "total_fare_amount"})
+        self.assertEqual(set(summary), {"transport_type", "duration_minutes", "distance_meter", "line_name", "vehicle_number", "total_fare_amount", "legs"})
         self.assertEqual(final["itinerary"]["days"][1]["items"][0]["route_from_previous"]["duration_minutes"], 10)
 
     async def test_missing_hotel_raises_generation_failed(self):
@@ -125,7 +126,31 @@ class CompactRoutesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.headers["content-type"], "application/json")
         self.assertTrue(response.headers["x-request-id"].startswith("req_"))
         self.assertNotIn("music", response.json())
+        route = response.json()["days"][0]["items"][1]["route_from_previous"]
+        self.assertEqual(set(route), {"transport_type", "duration_minutes", "distance_meter",
+                                     "line_name", "vehicle_number", "total_fare_amount", "legs"})
+        self.assertEqual(route["legs"], [])
+        self.assertIsNone(route["line_name"])
+        self.assertIsNone(route["vehicle_number"])
         self.assertEqual(response.json()["days"][0]["items"][-1]["item_type"], "ACCOMMODATION")
+
+    def test_http_transit_returns_total_fare_and_compact_stops(self):
+        settings = Settings(api_token="test-only", openai_api_key="test", kakao_rest_api_key="test")
+        app = create_app(settings=settings)
+        with TestClient(app) as client:
+            app.state.places = self.places
+            app.state.planner = Planner()
+            app.state.routes = self.router
+            response = client.post("/internal/ai/itineraries/generate", json=http_request(self.body),
+                                   headers={"Authorization": "Bearer test-only"})
+        self.assertEqual(response.status_code, 200, response.text)
+        route = response.json()["days"][1]["items"][0]["route_from_previous"]
+        self.assertEqual(route["total_fare_amount"], 1650)
+        self.assertEqual(route["vehicle_number"], "141(심야)")
+        leg = route["legs"][0]
+        self.assertEqual(set(leg), {"mode", "line_name", "vehicle_number", "start", "end"})
+        self.assertEqual(set(leg["start"]), {"name", "station_number"})
+        self.assertFalse(all_keys(route) & {"path", "boarding_stop", "alighting_stop", "duration_minute"})
 
     def test_openapi_has_only_compact_route_properties(self):
         spec = create_app(settings=Settings()).openapi()
@@ -133,4 +158,9 @@ class CompactRoutesTests(unittest.IsolatedAsyncioTestCase):
         schemas = spec["components"]["schemas"]
         self.assertNotIn("RouteDetails", schemas)
         self.assertEqual(set(schemas["RouteSummary"]["properties"]),
-                         {"transport_type", "duration_minutes", "distance_meter", "total_fare_amount", "legs"})
+                         {"transport_type", "duration_minutes", "distance_meter", "line_name", "vehicle_number", "total_fare_amount", "legs"})
+
+        self.assertEqual(set(schemas["TransitLegSummary"]["properties"]),
+                         {"mode", "line_name", "vehicle_number", "start", "end"})
+        self.assertEqual(set(schemas["TransitStopSummary"]["properties"]),
+                         {"name", "station_number"})

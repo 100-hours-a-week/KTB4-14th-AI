@@ -220,13 +220,13 @@ class RoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result.days[0].items[0].route_from_previous)
         for item in result.days[0].items[1:]:
             self.assertEqual(item.route_from_previous.transport_type, "CAR")
-            self.assertNotIn("legs", item.route_from_previous.model_dump())
+            self.assertEqual(item.route_from_previous.model_dump()["legs"], [])
         for item in result.days[1].items:
             self.assertEqual(item.route_from_previous.transport_type, "PUBLIC_TRANSPORT")
             self.assertEqual(item.route_from_previous.duration_minutes, 10)  # BUS, not faster SUBWAY
-            self.assertEqual(item.route_from_previous.legs[0].vehicle_number, ["141(심야)"])
-            self.assertEqual(item.route_from_previous.legs[0].boarding_stop.name, "출발")
-            self.assertEqual(item.route_from_previous.legs[0].alighting_stop.name, "도착")
+            self.assertEqual(item.route_from_previous.legs[0].vehicle_number, "141(심야)")
+            self.assertEqual(item.route_from_previous.legs[0].start.name, "출발")
+            self.assertEqual(item.route_from_previous.legs[0].end.name, "도착")
         overnight = routed.itinerary.days[1].items[0].route_from_previous
         self.assertEqual(overnight.duration_minutes, 10)
         self.assertTrue(any(float(req.url.params["start_y"]) == pool[2].latitude
@@ -240,7 +240,7 @@ class RoutingTests(unittest.IsolatedAsyncioTestCase):
         result = await connect_routes(request(None, "CAR"), selection(), self.pool, "test", self.router)
         routes = [item.route_from_previous for day in result.itinerary.days for item in day.items if item.route_from_previous]
         self.assertTrue(routes)
-        self.assertTrue(all(r.transport_type == "CAR" and "legs" not in r.model_dump() for r in routes))
+        self.assertTrue(all(r.transport_type == "CAR" and r.legs == [] for r in routes))
         self.assertFalse(self.calls)
 
 

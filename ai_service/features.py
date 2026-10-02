@@ -5,6 +5,7 @@ from itertools import combinations, permutations
 import json
 import logging
 import math
+import re
 
 from ai_service.errors import GenerationFailed, InvalidModelOutput
 from ai_service.group_policy import daily_item_reduction, movement_buffer_minutes, proximity_floor
@@ -53,9 +54,13 @@ PACE_POLICIES = {
 
 # 장소 선택은 09~21시 안에서 계획해 숙소·실제 이동에 쓸 여유를 남긴다.
 # 숙소와 경로를 넣은 최종 일정은 같은 날짜의 23:59까지 허용한다.
-# 하루 장소 수 제한은 두 단계 모두 PLACE_DAY 기준으로 계산한다.
+# 밤 일정은 두 단계 모두 18:00~23:59를 사용한다.
+# 하루 장소 수 제한은 두 단계 모두 장소 선택 시간 창을 기준으로 계산한다.
 PLACE_DAY = (time(9), time(21))
 SCHEDULE_DAY = (time(9), time(23, 59))
+NIGHT_DAY = (time(18), time(23, 59))
+# 단순히 '밤에는 숙소'를 언급한 일반 여행과 밤 전용 요청을 구분한다.
+NIGHT_ONLY_REQUEST = re.compile(r"(?:밤|야간|저녁)\s*(?:시간대?\s*)?일정\s*만|(?:밤|야간|저녁)\s*(?:시간대?\s*)?(?:에만|만)\s*(?:여행|관광|일정)")
 
 
 def day_windows(request: ItineraryRequest, *, schedule: bool = False) -> list[dict]:
@@ -73,13 +78,16 @@ def day_windows(request: ItineraryRequest, *, schedule: bool = False) -> list[di
 
 def _day_windows(request: ItineraryRequest, bounds: tuple[time, time]) -> list[dict]:
     """도착·출발 시각과 날짜별 이동수단을 반영한 하루 시간 창을 만든다."""
-    day_start, day_end = bounds
     arrival, departure = request.duration.local_bounds()
+    night_only = bool(NIGHT_ONLY_REQUEST.search(request.preference.extra_request or ""))
     transports = resolve_day_transports(request)
     policy = PACE_POLICIES[PACE_ALIASES[request.preference.pace_type]]
     windows = []
     for index in range((departure.date() - arrival.date()).days + 1):
         day = arrival.date() + timedelta(days=index)
+        # 밤 전용 요청은 매일, 저녁 도착은 도착일만 18:00~23:59를 사용한다.
+        night = night_only or (index == 0 and arrival.time() >= NIGHT_DAY[0])
+        day_start, day_end = NIGHT_DAY if night else bounds
         earliest_arrival = arrival + timedelta(minutes=ARRIVAL_BUFFER_MINUTES[PACE_ALIASES[request.preference.pace_type]])
         start = max(datetime.combine(day, day_start), earliest_arrival if index == 0 else arrival)
         end = min(datetime.combine(day, day_end), departure)

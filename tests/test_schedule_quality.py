@@ -221,7 +221,7 @@ class ScheduleQualityTests(unittest.IsolatedAsyncioTestCase):
         body = request(None, "CAR")
         body.preference.pace_type = "BALANCED"
         body.headcount = 10
-        body.duration.arrival_datetime = datetime(2026, 9, 19, 18, 30, tzinfo=KST)
+        body.duration.arrival_datetime = datetime(2026, 9, 19, 22, tzinfo=KST)
         body.duration.departure_datetime = datetime(2026, 9, 20, 13, tzinfo=KST)
         pool = places()
         pool[1].is_required = True
