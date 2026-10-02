@@ -63,6 +63,8 @@ def summarize_route(details: RouteDetails) -> RouteSummary:
         distance_meter=details.distance_meter,
         line_name=", ".join(dict.fromkeys(all_lines)) or None,
         vehicle_number=", ".join(dict.fromkeys(all_buses)) or None,
+        total_fare_amount=(0 if details.transport_type == "WALK" else details.total_fare_amount
+                           if details.transport_type == "PUBLIC_TRANSPORT" else None),
         legs=legs,
     )
 

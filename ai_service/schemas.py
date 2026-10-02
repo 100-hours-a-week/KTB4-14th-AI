@@ -380,6 +380,7 @@ class TransitStopSummary(StrictModel):
         description="정류장·역 표시 번호. 앞자리 0을 유지하는 문자열. 별도 정류장 데이터로 확인한 경우만 제공하며 현재 카카오 단독 조회는 null. 내부 station_id·장소 ID·버스 번호와 다름",
     )
 
+
 class TransitLegSummary(StrictModel):
     mode: Literal["WALK", "BUS", "SUBWAY", "TRAIN", "EXPRESSBUS", "AIRPLANE", "FERRY"]
     line_name: str | None = Field(default=None, description="노선명. 여러 개면 쉼표로 구분, 없으면 null")
@@ -396,6 +397,10 @@ class RouteSummary(StrictModel):
     distance_meter: int = Field(ge=0)
     line_name: str | None = Field(default=None, description="이동 순서의 중복 없는 노선명. 여러 개면 쉼표로 구분, 없으면 null")
     vehicle_number: str | None = Field(default=None, description="이동 순서의 중복 없는 버스 번호. 여러 개면 쉼표로 구분, 없으면 null")
+    total_fare_amount: int | None = Field(
+        default=None, ge=0, strict=True,
+        description="선택한 카카오 경로 전체 요금(원). 미확인·범위만 제공되면 null, 도보 0, 자동차 null. 구간 합산이나 별도 환승 할인 계산 없음",
+    )
     legs: list[TransitLegSummary] = Field(default_factory=list, description="도보·탑승·환승을 포함한 이동 순서의 구간 안내. 상세 좌표와 전체 정류장 목록 제외")
 
 

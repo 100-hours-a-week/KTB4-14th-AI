@@ -87,7 +87,8 @@ class ErdContractTests(unittest.TestCase):
             for key in ("path", "stops", "instructions", "vehicles"):
                 self.assertNotIn(f'"{key}":', response.text)
             route = response.json()["days"][0]["items"][1]["route_from_previous"]
-            self.assertEqual(set(route), {"transport_type", "duration_minutes", "distance_meter", "total_fare_amount"})
+            self.assertEqual(set(route), {"transport_type", "duration_minutes", "distance_meter",
+                                         "total_fare_amount", "line_name", "vehicle_number", "legs"})
             self.assertEqual(response.json()["days"][0]["travel_date"], "2026-09-19")
             spec = client.get("/openapi.json").json()["components"]["schemas"]
             self.assertIn("budget_type", spec["Preference"]["properties"])
