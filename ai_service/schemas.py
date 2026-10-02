@@ -10,6 +10,7 @@ from pydantic import (
     ConfigDict,
     Field,
     HttpUrl,
+    PrivateAttr,
     field_validator,
     model_validator,
     model_serializer,
@@ -268,6 +269,8 @@ class Place(PlaceResponse):
     # 제공자 메타데이터는 후보 선택에만 쓰고 공개 응답에는 넣지 않는다.
     source_category: str
     is_required: bool = False
+    # 영업시간은 일정 검증용 내부 데이터이며 Spring 응답에는 직렬화하지 않는다.
+    _restaurant_hours: object = PrivateAttr(default=None)
 
 
 # 모델은 후보 ID와 순서만 고르며 장소명·좌표·제공자 ID는 서버가 채운다.
