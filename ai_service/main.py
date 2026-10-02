@@ -9,7 +9,7 @@ from typing import Annotated
 import httpx
 from fastapi import APIRouter, Body, Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from ai_service.auth import require_api_token
@@ -32,6 +32,7 @@ from ai_service.schemas import (
     TravelGenerationRequest,
     LegacyGenerationRequest,
 )
+from ai_service.backend_contract import stream_backend_generation
 from ai_service.transport import resolve_day_transports
 
 
@@ -189,6 +190,48 @@ def create_app(
         except TimeoutError as exc:
             raise ServiceUnavailable(reason="generation_timeout", detail={"timeout_seconds": settings.generation_timeout_seconds}) from exc
 
+    backend_router = APIRouter(dependencies=[Depends(require_api_token(settings.api_token))])
+
+    @backend_router.post(
+        "/api/ai/v1/itinerary-jobs/stream",
+        response_class=StreamingResponse,
+        responses={
+            **{code: response for code, response in ITINERARY_RESPONSES.items() if code != 200},
+            200: {"description": "단계별 SSE. 최종 결과는 ROUTE_OPTIMIZE_DONE.result에 한 번 전송합니다. HTTP 200 이후 실패는 error 이벤트로 전달합니다.",
+                  "content": {"text/event-stream": {"schema": {"type": "string"}}}},
+        },
+        tags=["V1"],
+    )
+    async def stream_itinerary(
+        body: Annotated[LegacyGenerationRequest | TravelGenerationRequest, Body(openapi_examples=GENERATION_REQUEST_EXAMPLES)],
+        request: Request,
+    ):
+        # 백엔드가 소비하는 SSE 형식으로 단계별 생성 상태를 보낸다.
+        if isinstance(body, LegacyGenerationRequest):
+            request.state.generation_job_id = body.generation_job_id
+        else:
+            request.state.travel_plan_id = body.travel_plan_id
+        body = body.generation_context()
+        if not settings.openai_api_key or not settings.kakao_rest_api_key:
+            raise ServiceUnavailable(reason="provider_keys_missing")
+        for mode in set(resolve_day_transports(body).values()):
+            app.state.routes.require_configured(mode)
+        return StreamingResponse(
+            stream_backend_generation(
+                body,
+                app.state.places,
+                app.state.planner,
+                settings,
+                request.state.request_id,
+                app.state.routes,
+            ),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
     @protected.post(
         "/music/recommend",
         response_model=MusicResponse,
@@ -218,6 +261,7 @@ def create_app(
             raise ServiceUnavailable(reason="music_timeout", detail={"timeout_seconds": settings.generation_timeout_seconds}) from exc
 
     app.include_router(protected)
+    app.include_router(backend_router)
 
     default_openapi = app.openapi
 

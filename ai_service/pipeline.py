@@ -20,6 +20,7 @@
 """
 from __future__ import annotations
 
+from contextlib import aclosing
 from itertools import combinations, combinations_with_replacement, islice, permutations
 import time
 
@@ -916,13 +917,13 @@ async def connect_routes(
 
 
 
-async def generate_plan(
+async def generation_stages(
     body: ItineraryRequest,
     client: KakaoPlaces,
     planner: OpenAIPlanner,
     router: KakaoRoutes | None = None,
-) -> GenerationResult:
-    """장소·숙소·경로·음악을 순서대로 생성하고 내부 최종 결과를 반환한다."""
+):
+    """최신 생성 로직을 실행하며 SSE와 JSON이 공유하는 단계 이벤트를 내보낸다."""
     # monotonic은 시스템 시계가 바뀌어도 경과 시간 측정에 사용할 수 있는 시계다.
     started = time.monotonic()
     stage_started = started
@@ -946,30 +947,37 @@ async def generate_plan(
         validate_generation_window(body)  # 외부 API 호출 전에 불가능한 기간을 거른다.
         # 1. 실제 관광·식당 후보 수집 → 후보 정리 → 모델 선택 → 보완 및 검증.
         begin("PLACE_RECOMMEND")
+        yield "PLACES", "STARTED", None
         places = select_candidates(
             body, await client.collect(body, include_accommodation=False)
         )
         selection = await recommend_places(body, places, planner)
         done()
+        yield "PLACES", "COMPLETED", None
 
         # 2. 앞서 정한 동선 주변 숙소를 찾고, 숙소를 포함한 방문 목록으로 갱신한다.
         begin("STAY_RECOMMEND")
+        yield "ACCOMMODATIONS", "STARTED", None
         selection, places = await recommend_accommodations(
             body, selection, places, client
         )
         done()
+        yield "ACCOMMODATIONS", "COMPLETED", None
 
         # 3. 경로 API에서 이동시간을 조회해 시작·종료 시각이 있는 최종 일정을 만든다.
         begin("ROUTE_OPTIMIZE")
+        yield "ROUTES", "STARTED", None
         # 테스트나 호출자가 router를 전달하면 사용하고, 없으면 기본 클라이언트를 만든다.
         router = router or KakaoRoutes(planner.client, planner.settings)
         routes = await connect_routes(
             body, selection, places, planner.settings.openai_model, router
         )
         done()
+        yield "ROUTES", "COMPLETED", None
 
         # 4. 일정 생성에 성공한 뒤 여행용 음악을 추천한다.
         begin("MUSIC_RECOMMEND")
+        yield "MUSIC", "STARTED", None
         try:
             music = await planner.recommend_music(body)
         except ApiError as exc:
@@ -978,10 +986,25 @@ async def generate_plan(
             failure("music_fallback", exc)
             music = fallback_music()
         done()
-        return GenerationResult(itinerary=routes.itinerary, music=music)
+        yield "MUSIC", "COMPLETED", None
+        yield "COMPLETE", "COMPLETED", GenerationResult(itinerary=routes.itinerary, music=music)
     except Exception as exc:
         # 어느 단계에서 실패했는지 남긴 뒤 같은 예외를 다시 올린다.
         # 호출자가 작업 실패 상태와 API 응답을 처리할 수 있도록 오류를 삼키지 않는다.
         failure("pipeline_failed", exc, stage=stage,
                 elapsed_ms=round((time.monotonic() - started) * 1000))
         raise
+
+
+async def generate_plan(
+    body: ItineraryRequest,
+    client: KakaoPlaces,
+    planner: OpenAIPlanner,
+    router: KakaoRoutes | None = None,
+) -> GenerationResult:
+    """SSE와 같은 파이프라인을 끝까지 실행해 JSON용 최종 결과를 반환한다."""
+    async with aclosing(generation_stages(body, client, planner, router)) as stages:
+        async for stage, _, result in stages:
+            if stage == "COMPLETE":
+                return result
+    raise RuntimeError("Generation finished without a result")

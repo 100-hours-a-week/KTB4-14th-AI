@@ -154,7 +154,7 @@ class CompactRoutesTests(unittest.IsolatedAsyncioTestCase):
 
     def test_openapi_has_only_compact_route_properties(self):
         spec = create_app(settings=Settings()).openapi()
-        self.assertNotIn("/api/ai/v1/itinerary-jobs/stream", spec["paths"])
+        self.assertIn("/api/ai/v1/itinerary-jobs/stream", spec["paths"])
         schemas = spec["components"]["schemas"]
         self.assertNotIn("RouteDetails", schemas)
         self.assertEqual(set(schemas["RouteSummary"]["properties"]),
