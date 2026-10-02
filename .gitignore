@@ -1,4 +1,5 @@
 .env
+restaurant_hours.json
 .venv/
 /model/
 __pycache__/

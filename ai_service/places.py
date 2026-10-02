@@ -5,6 +5,7 @@ import math
 import re
 import unicodedata
 import time
+from pathlib import Path
 
 import httpx
 from pydantic import ValidationError
@@ -13,6 +14,7 @@ from ai_service.config import Settings
 from ai_service.diagnostics import record
 from ai_service.errors import GenerationFailed, ServiceUnavailable
 from ai_service.schemas import ItineraryRequest, Place, TRANSPORT_ALIASES
+from ai_service.restaurant_hours import attach_verified_hours, load_hours
 from ai_service.transport import base_transport, resolve_day_transports
 
 
@@ -237,6 +239,11 @@ class KakaoPlaces:
         except (KeyError, TypeError, ValueError) as exc:
             raise ServiceUnavailable(reason="region_center_invalid") from exc
 
+        hours_file = self.settings.restaurant_hours_file
+        if hours_file is None and "제주" in region_tokens(region):
+            hours_file = Path(__file__).resolve().parent / "data" / "restaurant_hours.jeju.json"
+        verified_hours = load_hours(hours_file) if hours_file is not None else None
+
         # 필수 장소 또는 지역 중심 주변에 모아 불필요한 장거리 왕복을 줄인다.
         modes = {base_transport(m) for m in resolve_day_transports(request).values()}
         mode = min(modes, key={"WALK": 0, "PUBLIC_TRANSPORT": 1, "CAR": 2}.get)
@@ -279,6 +286,26 @@ class KakaoPlaces:
                         params["category_group_code"] = group
                     calls.append(self._get("keyword", params))
         results = await asyncio.gather(*calls)
+        # 일반 검색 상위 결과에 없더라도 확인된 식당은 같은 지역의 후보로 확보한다.
+        if verified_hours:
+            existing_verified = {}
+            for batch in results:
+                for doc in batch:
+                    place_id = str(doc.get("id"))
+                    if place_id in verified_hours:
+                        existing_verified.setdefault(place_id, doc)
+            seen_ids = {str(doc.get("id")) for batch in results for doc in batch}
+            entries = [(place_id, hours) for place_id, hours in verified_hours.items()
+                       if hours.place_name and hours.address
+                       and in_region(region, hours.address)
+                       and place_id not in seen_ids][:20]
+            verified_results = await asyncio.gather(*(self._get("keyword", {
+                "query": hours.place_name, "size": 10,
+            }) for _, hours in entries))
+            results = [[doc] for doc in existing_verified.values()] + [
+                [doc for doc in docs if str(doc.get("id")) == place_id]
+                for (place_id, _), docs in zip(entries, verified_results)
+            ] + results
         limits = {"관광": 60, "식당": 45, "숙소": 15}
         counts = {category: 0 for category in limits}
         stats = {"received": 0, "outside_region": 0, "unsupported_category": 0, "invalid_document": 0}
@@ -334,7 +361,11 @@ class KakaoPlaces:
             raise GenerationFailed(
                 "해당 지역에서 새로 추천할 수 있는 카카오 장소가 없습니다.", reason="no_place_candidates"
             )
-        return list(pool.values())
+        result = list(pool.values())
+        if hours_file is not None:
+            result = attach_verified_hours(result, hours_file, verified_hours)
+            record("restaurant_hours_filtered", restaurants=sum(p.category == "식당" for p in result))
+        return result
 
     async def accommodations(
         self, request: ItineraryRequest, latitude: float, longitude: float

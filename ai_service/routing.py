@@ -387,6 +387,7 @@ async def schedule_with_routes(
         validate_itinerary,
         accommodation_period,
     )
+    from ai_service.restaurant_hours import fit_restaurant
 
     policy = PACE_POLICIES[PACE_ALIASES[request.preference.pace_type]]
     windows = day_windows(request, schedule=True)
@@ -416,6 +417,7 @@ async def schedule_with_routes(
                     f"{selected.date}T{window['end']}"
                 ).replace(tzinfo=KST)
                 items = []
+                waiting_restaurant_id = None
                 for sequence, item in enumerate(selected.items, 1):
                     place = by_id[item.provider_place_id]
                     if previous is not None:
@@ -468,11 +470,22 @@ async def schedule_with_routes(
                             if (
                                 proposed + timedelta(minutes=stay + remaining_stays)
                                 <= end
+                                and (place._restaurant_hours is None or
+                                     place._restaurant_hours.next_start(proposed, stay, end) == proposed)
                             ):
                                 cursor = proposed
+                    if place.category == "식당":
+                        try:
+                            fitted = fit_restaurant(place, cursor, stay, end)
+                        except ValueError as exc:
+                            raise InvalidModelOutput(str(exc)) from exc
+                        if fitted > cursor:
+                            waiting_restaurant_id = place.provider_place_id
+                        cursor = fitted
                     if cursor + timedelta(minutes=stay) > end:
                         raise InvalidModelOutput(
-                            "verified routes and visits exceed the available trip time"
+                            f"restaurant_closed:{waiting_restaurant_id}" if waiting_restaurant_id
+                            else "verified routes and visits exceed the available trip time"
                         )
                     if place.category == "숙소":
                         if sequence != len(selected.items):

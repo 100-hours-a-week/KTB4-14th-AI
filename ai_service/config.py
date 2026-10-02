@@ -23,6 +23,7 @@ class Settings:
     generation_timeout_seconds: float = 300.0
     routing_timeout_seconds: float = 10.0
     e5_model_dir: Path = Path(__file__).resolve().parents[1] / "model"
+    restaurant_hours_file: Path | None = None
 
     @classmethod
     def from_env(cls, env_file: Path = ENV_FILE) -> "Settings":
@@ -37,4 +38,6 @@ class Settings:
             kakao_rest_api_key=values.get("KAKAO_REST_API_KEY"),
             openai_model=values.get("OPENAI_MODEL") or "gpt-4o-mini",
             e5_model_dir=Path(values.get("E5_MODEL_DIR") or cls.e5_model_dir),
+            restaurant_hours_file=Path(values["RESTAURANT_HOURS_FILE"])
+            if values.get("RESTAURANT_HOURS_FILE") else None,
         )
