@@ -12,7 +12,7 @@ from test_day_transport import http_request, request
 
 
 PATH = "/internal/ai/itineraries/generate"
-REMOVED_PATH = "/api/ai/v1/itinerary-jobs/stream"
+REMOVED_PATH = "/internal/ai/itineraries/generate"
 HEADERS = {"Authorization": "Bearer test-only"}
 
 
