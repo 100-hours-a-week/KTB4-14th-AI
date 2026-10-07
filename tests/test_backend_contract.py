@@ -86,7 +86,7 @@ class BackendContractTests(unittest.TestCase):
             self.assertEqual(client.post(STREAM_PATH, json=http_request(), headers={"Authorization": "Bearer wrong"}).status_code, 401)
             paths = client.get("/openapi.json").json()["paths"]
             self.assertEqual({path for path, methods in paths.items() if "post" in methods}, {
-                PATH, STREAM_PATH, "/internal/ai/music/recommend",
+                PATH, STREAM_PATH, "/internal/ai/music/recommend", "/matching-requests",
             })
 
     def test_stream_result_and_order_for_both_request_formats(self):

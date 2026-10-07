@@ -20,6 +20,7 @@ from ai_service.errors import ApiError, ServiceUnavailable
 from ai_service.e5_music import E5MusicRecommender
 from ai_service.pipeline import generate_plan
 from ai_service.model import OpenAIPlanner
+from ai_service.matching_openapi import add_matching_openapi
 from ai_service.music import YouTubeMusic
 from ai_service.places import KakaoPlaces
 from ai_service.routing import KakaoRoutes
@@ -275,6 +276,7 @@ def create_app(
         for code, response in ITINERARY_RESPONSES.items():
             responses[str(code)]["content"]["application/json"] = deepcopy(response["content"]["application/json"])
         schema["components"]["schemas"]["RouteSummary"]["examples"] = [deepcopy(ROUTE_RESPONSE_EXAMPLE)]
+        add_matching_openapi(schema)
         return schema
 
     app.openapi = openapi_with_response_examples

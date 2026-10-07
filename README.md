@@ -87,6 +87,12 @@ INFO:     Uvicorn running on http://127.0.0.1:8000
 
 ## 현재 요청과 검증
 
+### V2 동행자 후보 추천 명세
+
+`/docs`의 **V2 → POST /matching-requests**에 매칭 요청 명세를 추가했습니다. 필수 필드는 `preferred_companion_gender` (String), `theme` (String[]), `pace` (String)이며, `budget_min`·`budget_max` (Integer)는 선택입니다. 예산 키는 `budget_max`로 통일합니다. 사용자 ID는 요청에 넣지 않고 로그인 사용자의 `Authorization: Bearer <사용자 인증 토큰>`으로 식별합니다.
+
+Swagger에는 201 성공, 400 필드별 필수 값 오류 3개, 401 인증 오류, 500 서버 오류의 스키마와 JSON 예시가 표시됩니다. **현재는 명세만 등록한 상태이며 실행 경로가 없어 Try it out은 404를 반환합니다.** 실제 로그인 사용자 토큰 검증과 `matching_requests` 저장은 백엔드 연동 후 구현해야 합니다.
+
 **여행 요청은 두 형식을 지원합니다.** Swagger에는 사용자가 확정한 요청 예시 하나만 표시합니다. 표시 형식은 `generation_job_id`, `region`, `duration`, `budget_type`, 장소 `category` 형식입니다. JSON을 그대로 붙여 넣을 수 있습니다. 백엔드 `AiTravelGenerationRequest.java`의 최상위 `travel_plan_id`, `region_id`, `region_name`, 날짜 형식도 계속 지원합니다. 두 형식을 섞지는 않습니다. 사용자 중첩 요청에는 `generation_job_id`만 보내면 되며 `travel_plan_id`는 필요하지 않습니다. 사용하지 않는 ID는 응답에서 생략합니다.
 
 | 용도 | POST 경로 |
