@@ -1,0 +1,110 @@
+{
+  "requester_id": 1,
+  "preferred_companion_gender": "Female",
+  "theme": [
+    "nature",
+    "food"
+  ],
+  "pace": "Balanced",
+  "budget_min": 100000,
+  "budget_max": 3000000,
+  "top_k": 3,
+  "candidates": [
+    {
+      "user_id": 1,
+      "gender": "Female",
+      "theme": [
+        "nature",
+        "food"
+      ],
+      "pace": "Balanced",
+      "budget_min": 100000,
+      "budget_max": 3000000,
+      "introduction": "요청자 본인으로 추천에서 제외"
+    },
+    {
+      "user_id": 2,
+      "gender": "Female",
+      "theme": [
+        "nature",
+        "food"
+      ],
+      "pace": "Balanced",
+      "budget_min": 200000,
+      "budget_max": 800000,
+      "introduction": "자연 풍경과 현지 맛집을 즐기며 관광과 휴식을 균형 있게 여행합니다."
+    },
+    {
+      "user_id": 3,
+      "gender": "Female",
+      "theme": [
+        "city",
+        "culture"
+      ],
+      "pace": "Packed",
+      "budget_min": 500000,
+      "budget_max": 1000000,
+      "introduction": "도심 전시관과 문화 공간을 빠르게 둘러보는 여행을 좋아합니다."
+    },
+    {
+      "user_id": 4,
+      "gender": "Male",
+      "theme": [
+        "nature",
+        "food"
+      ],
+      "pace": "Balanced",
+      "budget_min": 200000,
+      "budget_max": 800000,
+      "introduction": "취향이 비슷하지만 선택한 동행 성별과 다릅니다."
+    },
+    {
+      "user_id": 5,
+      "gender": "Female",
+      "theme": [
+        "nature",
+        "food"
+      ],
+      "pace": "Balanced",
+      "budget_min": 10000,
+      "budget_max": 90000,
+      "introduction": "최대 예산이 요청한 최소 예산보다 낮습니다."
+    },
+    {
+      "user_id": 6,
+      "gender": "Female",
+      "theme": [
+        "nature",
+        "food"
+      ],
+      "pace": "Balanced",
+      "budget_min": 4000000,
+      "budget_max": 5000000,
+      "introduction": "최소 예산이 요청한 최대 예산보다 높습니다."
+    },
+    {
+      "user_id": 7,
+      "gender": "Female",
+      "theme": [
+        "beach",
+        "relax"
+      ],
+      "pace": "Relaxed",
+      "budget_min": 300000,
+      "budget_max": 600000,
+      "introduction": "바다를 바라보며 여유롭게 쉬는 여행을 좋아합니다."
+    },
+    {
+      "user_id": 8,
+      "gender": "Female",
+      "theme": [
+        "nature",
+        "food"
+      ],
+      "pace": "Balanced",
+      "budget_min": null,
+      "budget_max": null,
+      "introduction": "예산 미확인 후보로 예산 조건이 있으면 제외됩니다."
+    }
+  ]
+}

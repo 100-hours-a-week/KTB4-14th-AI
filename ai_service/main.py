@@ -20,7 +20,9 @@ from ai_service.errors import ApiError, ServiceUnavailable
 from ai_service.e5_music import E5MusicRecommender
 from ai_service.pipeline import generate_plan
 from ai_service.model import OpenAIPlanner
-from ai_service.matching_openapi import add_matching_openapi
+from ai_service.matching import E5MatchingRecommender, MatchingRequestCreate, MatchingRecommendationResponse
+from ai_service.matching_examples import MATCHING_REQUEST_EXAMPLES, MATCHING_RESPONSE_EXAMPLES
+from ai_service.matching_source import MockMatchingCandidateSource
 from ai_service.music import YouTubeMusic
 from ai_service.places import KakaoPlaces
 from ai_service.routing import KakaoRoutes
@@ -35,9 +37,19 @@ from ai_service.schemas import (
 )
 from ai_service.backend_contract import stream_backend_generation
 from ai_service.transport import resolve_day_transports
+from ai_service.swagger_ui import korean_swagger_html
 
 
-ERROR_RESPONSES = {code: {"model": ErrorResponse} for code in (400, 401, 422, 500, 503)}
+ERROR_RESPONSES = {
+    code: {"model": ErrorResponse, "description": description}
+    for code, description in {
+        400: "필수 값 누락 또는 잘못된 요청 형식",
+        401: "인증 토큰이 없거나 유효하지 않음",
+        422: "요청 조건 처리 실패",
+        500: "서버 내부 오류",
+        503: "모델·서비스 장애 또는 처리 시간 초과",
+    }.items()
+}
 ITINERARY_RESPONSES = {
     code: {
         **ERROR_RESPONSES.get(code, {}),
@@ -66,9 +78,15 @@ def create_app(
             app.state.music_recommender = E5MusicRecommender(
                 YouTubeMusic(client), settings.e5_model_dir
             )
+            app.state.matching_recommender = E5MatchingRecommender(settings.e5_model_dir)
+            app.state.matching_candidate_source = MockMatchingCandidateSource()
             yield
 
-    app = FastAPI(title="Audigo AI API", version="1.0.0", lifespan=lifespan)
+    app = FastAPI(title="Audigo AI API", version="1.0.0", lifespan=lifespan, docs_url=None)
+
+    @app.get("/docs", include_in_schema=False)
+    async def swagger_docs():
+        return korean_swagger_html(openapi_url=app.openapi_url, title="Audigo AI API — API 문서")
 
     @app.middleware("http")
     async def attach_request_id(request: Request, call_next):
@@ -153,7 +171,7 @@ def create_app(
             headers={"X-Request-Id": getattr(request.state, "request_id", "unknown")},
         )
 
-    @app.get("/health", tags=["system"])
+    @app.get("/health", tags=["system"], summary="서버 상태 확인", response_description="서버 정상")
     async def health():
         return {"status": "ok", "mode": "live"}
 
@@ -167,6 +185,7 @@ def create_app(
         response_model=ItineraryResponse,
         responses=ITINERARY_RESPONSES,
         tags=["V1"],
+        summary="여행 일정 생성",
     )
     async def create_itinerary(
         body: Annotated[LegacyGenerationRequest | TravelGenerationRequest, Body(openapi_examples=GENERATION_REQUEST_EXAMPLES)],
@@ -202,6 +221,7 @@ def create_app(
                   "content": {"text/event-stream": {"schema": {"type": "string"}}}},
         },
         tags=["V1"],
+        summary="여행 일정 생성 (실시간 SSE)",
     )
     async def stream_itinerary(
         body: Annotated[LegacyGenerationRequest | TravelGenerationRequest, Body(openapi_examples=GENERATION_REQUEST_EXAMPLES)],
@@ -245,6 +265,7 @@ def create_app(
             for code, example in MUSIC_RESPONSE_EXAMPLES.items()
         },
         tags=["V1"],
+        summary="여행 음악 추천 (E5)",
         description="여행 시작일의 한국 시간 월에 맞는 계절을 반영해 YouTube 실시간 후보를 multilingual-e5-small로 정렬하고, 검증된 음악 영상 한 개를 반환합니다. 후보 목록은 받지 않습니다.",
     )
     async def recommend_music(
@@ -261,6 +282,32 @@ def create_app(
         except TimeoutError as exc:
             raise ServiceUnavailable(reason="music_timeout", detail={"timeout_seconds": settings.generation_timeout_seconds}) from exc
 
+    @backend_router.post(
+        "/matching-requests",
+        response_model=MatchingRecommendationResponse,
+        responses={
+            code: {
+                **ERROR_RESPONSES.get(code, {}),
+                "content": {"application/json": {"examples": examples}},
+            }
+            for code, examples in MATCHING_RESPONSE_EXAMPLES.items()
+        },
+        tags=["V2"],
+        summary="동행자 후보 추천 (E5)",
+        response_description="동행자 후보 추천 성공",
+        operation_id="create_matching_request_v2",
+    )
+    async def recommend_companions(
+        body: Annotated[MatchingRequestCreate, Body(openapi_examples=MATCHING_REQUEST_EXAMPLES)],
+        request: Request,
+    ):
+        try:
+            async with asyncio.timeout(settings.model_timeout_seconds):
+                recommendation = await request.app.state.matching_candidate_source.recommendation_request(body)
+                return await request.app.state.matching_recommender.recommend(recommendation)
+        except TimeoutError as exc:
+            raise ServiceUnavailable(reason="matching_timeout") from exc
+
     app.include_router(protected)
     app.include_router(backend_router)
 
@@ -276,7 +323,15 @@ def create_app(
         for code, response in ITINERARY_RESPONSES.items():
             responses[str(code)]["content"]["application/json"] = deepcopy(response["content"]["application/json"])
         schema["components"]["schemas"]["RouteSummary"]["examples"] = [deepcopy(ROUTE_RESPONSE_EXAMPLE)]
-        add_matching_openapi(schema)
+        # 실제 요청 검증 오류는 공통 핸들러가 400으로 반환한다.
+        matching_operation = schema["paths"]["/matching-requests"]["post"]
+        matching_operation["responses"].pop("422", None)
+        matching_operation["requestBody"]["content"]["application/json"]["examples"] = deepcopy(MATCHING_REQUEST_EXAMPLES)
+        for code, examples in MATCHING_RESPONSE_EXAMPLES.items():
+            matching_operation["responses"][str(code)]["content"]["application/json"]["examples"] = deepcopy(examples)
+        tags = schema.setdefault("tags", [])
+        if not any(tag["name"] == "V2" for tag in tags):
+            tags.append({"name": "V2"})
         return schema
 
     app.openapi = openapi_with_response_examples

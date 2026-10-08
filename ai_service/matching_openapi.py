@@ -1,4 +1,4 @@
-"""V2 동행자 매칭 요청의 Swagger 명세. 실행 API는 백엔드 연동 후 구현한다."""
+"""원래 백엔드 요청 생성 계약의 참고 자료. AI 실행 Swagger에는 주입하지 않는다."""
 
 from copy import deepcopy
 
