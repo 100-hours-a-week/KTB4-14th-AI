@@ -103,7 +103,7 @@ INFO:     Uvicorn running on http://127.0.0.1:8000
 }
 ```
 
-현재 DB 연동 전이므로 `MockMatchingCandidateSource`가 `ai_service/data/matching_request.mock.json`에서 가상 요청자 1번과 후보 8명을 서버 내부에서 공급합니다. 이 파일은 클라이언트 요청이 아닌 내부 목데이터입니다. 기존 서비스 토큰은 서비스 접근만 인증하며 실제 로그인 사용자를 식별하지 않습니다. 백엔드 연동 시 `matching_candidate_source.recommendation_request()` 공급자를 교체해 인증한 요청자와 실제 조회 후보를 채워야 합니다.
+동기 `/matching-requests` 데모는 `MockMatchingCandidateSource`가 `ai_service/data/matching_request.mock.json`에서 가상 요청자 1번과 후보 8명을 공급합니다. 실제 MySQL 조회는 아래 `POST /api/ai/v1/matches/candidates`에서 ID만 전달하는 방식으로 구현되어 있습니다. 기존 서비스 토큰은 서비스 접근만 인증하며 실제 로그인 사용자를 식별하지 않습니다.
 
 선호 성별은 `Female`·`Male`·`Other`·`Any`, 속도는 `Relaxed`·`Balanced`·`Packed`와 기존 대문자 별칭을 받습니다. 예산은 요청자·후보 모두 같은 기준의 원화 여행 예산이며 음수 또는 최소 예산보다 작은 최대 예산은 거절합니다. 내부 후보는 최대 200명, 내부 `top_k`는 기본 5명·최대 20명이며 현재 목데이터는 3명을 추천하도록 설정되어 있습니다.
 
@@ -218,3 +218,43 @@ cd /Users/samrobert/Documents/GitHub/KTB4-14th-AI
 [실패 원인·수정 내용·실검증 기록](../문서/여행생성_실패_수정_검증.md)
 
 밤 일정은 18:00~23:59(한국시간) 안에서 생성합니다. 18시 이후 도착하면 도착일 장소 선택에도 이 범위를 적용합니다. `preference.extra_request`에 “밤 일정만 만들어주세요” 또는 “야간 일정만 만들어주세요”를 넣으면 여행의 모든 날짜에 적용합니다. 실제 도착/출발 시각과 도착 후 준비시간을 함께 반영하며, 다음날 00:00~05:59로 방문을 넘기지 않습니다. 일반 주간 여행의 시간 규칙은 유지합니다.
+
+## 큐 기반 일정 생성·동행자 추천
+
+Redis + Celery 작업 접수 API를 추가했습니다. `POST /api/ai/v1/itinerary-jobs`와
+`POST /api/ai/v1/matches/candidates`는 작업을 접수하고 202/job_id/status_url을 반환하며,
+`GET /api/ai/v1/jobs/{job_id}`에서 진행 단계와 완료 결과를 조회합니다. 기존 JSON·SSE·동기 매칭 API는
+유지됩니다. 새 매칭 작업 API는 백엔드가 전달한 실제 후보를 사용하며 기존 동기 매칭의 목데이터를 사용하지 않습니다.
+
+[큐 API 계약·중복 방지·재시도·실행·테스트 방법](docs/queue-jobs.md)을 확인하세요.
+Docker 실행은 `docker compose -f compose.jobs.yml up --build -d`입니다.
+Redis/worker/beat가 모두 필요하며, 큐 설정이 없으면 새 작업 API는 503을 반환합니다.
+
+## MySQL 동행자 매칭
+
+백엔드 development 소스의 매칭 테이블과 enum에 맞춘 개발 DB입니다.
+임의 테마 대신 NATURE/FOOD/CULTURE/REST/SNS/ACTIVITY, 속도는 RELAXED/BALANCED/PACKED를 사용합니다.
+지역 목록은 backend data.sql의 245개 항목이며 현재 매칭에는 지역·여행 조건을 적용하지 않습니다.
+
+새 로컬 DB `audigo_matching_backend_dev`에 사용자·매칭 프로필·요청 각각 1,000건을 넣습니다.
+과거 `audigo_matching_dev`는 덮어쓰지 않습니다. AI는 조회 전용 계정을 사용합니다.
+
+```bash
+./.venv/bin/python scripts/setup_matching_dev_db.py
+./.venv/bin/python scripts/evaluate_matching_dev.py --apply
+```
+
+DB 조회 큐 방식은 API·worker를 재시작하고 `POST /api/ai/v1/traveler-match-jobs`로 보냅니다.
+
+```json
+{"matching_request_id":201,"requester_id":201,"limit":3}
+```
+
+202의 status_url을 조회해 완료 결과를 확인합니다. 후보 예산은 실제 프로필에 없으므로 비교하지 않으며,
+요청에 예산이 있으면 결과에 `unapplied_conditions: ["budget"]`를 표시합니다.
+백엔드의 기존 `POST /api/ai/v1/matches/candidates` `{request,candidates}` 호출은
+동기 200 `{candidates:[{user_id,match_rate}],count}`로 지원합니다. 해당 방식은 백엔드가 전달한
+후보만 사용하므로 Redis·AI MySQL 접속이 없어도 동작합니다.
+[기존 백엔드 호출·점수·검증 방법](docs/matching-backend-contract.md).
+
+[DB 구조·근거·SQL·연동 범위](docs/matching-mysql.md), [최신 합성 데이터 평가](artifacts/matching/evaluation-report.md).

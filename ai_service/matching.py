@@ -7,7 +7,8 @@ from typing import Literal
 import numpy as np
 from pydantic import Field, field_validator, model_validator
 
-from ai_service.e5_music import E5Encoder, THEME_LABELS
+from ai_service.e5_music import E5Encoder
+from ai_service.matching_catalog import LABELS as THEME_LABELS
 from ai_service.errors import ServiceUnavailable
 from ai_service.schemas import NonEmpty, PACE_ALIASES, StrictModel
 
@@ -78,7 +79,7 @@ class MatchingRecommendationRequest(MatchingRequestCreate):
 
 class RankedCompanion(StrictModel):
     user_id: int
-    score: float = Field(ge=-1, le=1, description="E5 코사인 유사도; 매칭 성공 확률이 아님")
+    score: float = Field(ge=-1, le=1, description="E5 유사도 또는 설정된 조합 추천 점수; 매칭 성공 확률이 아님")
     rank: int = Field(ge=1)
 
 
@@ -94,7 +95,8 @@ class MatchingRecommendationResponse(StrictModel):
 
 def eligible_candidates(body: MatchingRecommendationRequest) -> list[MatchingCandidate]:
     eligible = []
-    has_budget = body.budget_min is not None or body.budget_max is not None
+    has_budget = (getattr(body, 'candidate_budget_available', True)
+                  and (body.budget_min is not None or body.budget_max is not None))
     for candidate in body.candidates:
         if candidate.user_id == body.requester_id:
             continue
@@ -119,38 +121,60 @@ def profile_text(profile: MatchingTravelProfile) -> str:
 
 
 class E5MatchingRecommender:
-    def __init__(self, model_dir: Path, *, encoder=None):
+    def __init__(self, model_dir: Path, *, encoder=None, weights=(1.0, 0.0, 0.0)):
         self.model_dir = model_dir
         self.encoder = encoder
         self._load_lock = asyncio.Lock()
         self._inference_slots = asyncio.Semaphore(2)
+        if len(weights) != 3 or any(not np.isfinite(w) or w < 0 for w in weights) or not np.isclose(sum(weights), 1):
+            raise ValueError('Matching weights must be nonnegative and sum to one')
+        self.weights = weights
 
-    async def recommend(self, body: MatchingRecommendationRequest) -> MatchingRecommendationResponse:
+    @staticmethod
+    def combine_scores(body, candidates, cosine_scores, weights):
+        if weights == (1.0, 0.0, 0.0):
+            return cosine_scores  # Preserve the legacy cosine score contract.
+        query_themes = set(body.theme)
+        pace_order = {'Relaxed': 0, 'Balanced': 1, 'Packed': 2}
+        themes = np.asarray([len(query_themes & set(c.theme)) / len(query_themes | set(c.theme)) for c in candidates])
+        pace = np.asarray([1 - abs(pace_order[body.pace] - pace_order[c.pace]) / 2 for c in candidates])
+        return weights[0] * (cosine_scores + 1) / 2 + weights[1] * themes + weights[2] * pace
+
+    async def cosine_scores(self, body, candidates):
+        async with self._load_lock:
+            if self.encoder is None:
+                try:
+                    self.encoder = await asyncio.to_thread(E5Encoder, self.model_dir)
+                except Exception as exc:
+                    raise ServiceUnavailable(reason='matching_model_load_failed') from exc
+        query = f'query: {profile_text(body)} 취향에 맞는 여행 동행자를 찾습니다.'
+        parts = []
+        try:
+            async with self._inference_slots:
+                for offset in range(0, len(candidates), 200):
+                    batch = candidates[offset:offset + 200]
+                    texts = [query] + [f'passage: {profile_text(c)} 소개: {c.introduction}' for c in batch]
+                    vectors = np.asarray(await asyncio.to_thread(self.encoder.encode, texts))
+                    if vectors.ndim != 2 or vectors.shape[0] != len(texts) or not np.isfinite(vectors).all():
+                        raise ValueError('invalid embedding output')
+                    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+                    if np.any(norms <= 0):
+                        raise ValueError('zero embedding vector')
+                    vectors = vectors / norms
+                    parts.append(np.clip(vectors[1:] @ vectors[0], -1.0, 1.0))
+        except Exception as exc:
+            raise ServiceUnavailable(reason='matching_model_inference_failed') from exc
+        return np.concatenate(parts) if parts else np.asarray([])
+
+    async def recommend(self, body: MatchingRecommendationRequest, *, tie_breaker=None) -> MatchingRecommendationResponse:
         candidates = eligible_candidates(body)
         recommendations = []
         if candidates:
             # 빈 후보 목록은 모델이 없어도 정상적인 빈 추천으로 반환한다.
-            async with self._load_lock:
-                if self.encoder is None:
-                    try:
-                        self.encoder = await asyncio.to_thread(E5Encoder, self.model_dir)
-                    except Exception as exc:
-                        raise ServiceUnavailable(reason="matching_model_load_failed") from exc
-            texts = [f"query: {profile_text(body)} 취향에 맞는 여행 동행자를 찾습니다."]
-            texts.extend(f"passage: {profile_text(candidate)} 소개: {candidate.introduction}" for candidate in candidates)
-            try:
-                async with self._inference_slots:
-                    vectors = np.asarray(await asyncio.to_thread(self.encoder.encode, texts))
-                if vectors.ndim != 2 or vectors.shape[0] != len(texts) or not np.isfinite(vectors).all():
-                    raise ValueError("invalid embedding output")
-                norms = np.linalg.norm(vectors, axis=1, keepdims=True)
-                if np.any(norms <= 0):
-                    raise ValueError("zero embedding vector")
-                vectors = vectors / norms
-                scores = np.clip(vectors[1:] @ vectors[0], -1.0, 1.0)
-            except Exception as exc:
-                raise ServiceUnavailable(reason="matching_model_inference_failed") from exc
-            order = sorted(range(len(candidates)), key=lambda index: (-float(scores[index]), candidates[index].user_id))
+            cosine = await self.cosine_scores(body, candidates)
+            scores = self.combine_scores(body, candidates, cosine, self.weights)
+            tie_breaker = tie_breaker or (lambda candidate: candidate.user_id)
+            order = sorted(range(len(candidates)), key=lambda index: (-float(scores[index]), tie_breaker(candidates[index])))
             recommendations = [RankedCompanion(user_id=candidates[index].user_id, score=float(scores[index]), rank=rank)
                                for rank, index in enumerate(order[:body.top_k], 1)]
         return MatchingRecommendationResponse(data=MatchingRecommendationData(

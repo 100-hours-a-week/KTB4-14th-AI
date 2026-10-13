@@ -38,6 +38,8 @@ from ai_service.schemas import (
 from ai_service.backend_contract import stream_backend_generation
 from ai_service.transport import resolve_day_transports
 from ai_service.swagger_ui import korean_swagger_html
+from ai_service.jobs.api import make_job_service, router as job_router
+from ai_service.jobs.errors import is_job_request, error_response as job_error_response
 
 
 ERROR_RESPONSES = {
@@ -79,8 +81,15 @@ def create_app(
                 YouTubeMusic(client), settings.e5_model_dir
             )
             app.state.matching_recommender = E5MatchingRecommender(settings.e5_model_dir)
+            app.state.backend_matching_recommender = E5MatchingRecommender(settings.e5_model_dir,
+                weights=(settings.matching_e5_weight, settings.matching_theme_weight, settings.matching_pace_weight))
             app.state.matching_candidate_source = MockMatchingCandidateSource()
-            yield
+            app.state.jobs = make_job_service(settings)
+            try:
+                yield
+            finally:
+                if app.state.jobs is not None:
+                    await asyncio.to_thread(app.state.jobs.store.close)
 
     app = FastAPI(title="Audigo AI API", version="1.0.0", lifespan=lifespan, docs_url=None)
 
@@ -103,6 +112,12 @@ def create_app(
     @app.exception_handler(ApiError)
     async def handle_api_error(request: Request, exc: ApiError):
         failure("request_failed", exc, http_status=exc.status_code)
+        if is_job_request(request):
+            return JSONResponse(status_code=exc.status_code, content=job_error_response(
+                request, exc.code.upper(), exc.message,
+                retryable=getattr(exc, 'retryable', exc.status_code == 503),
+                details=getattr(exc, 'details', []),
+            ))
         data = None
         if exc.status_code == 503:
             data = {"error_message": exc.message}
@@ -118,6 +133,12 @@ def create_app(
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(request: Request, exc: RequestValidationError):
+        if is_job_request(request):
+            return JSONResponse(status_code=400, content=job_error_response(
+                request, 'INVALID_REQUEST', '입력값을 확인해 주세요.', details=[{
+                    'field': '.'.join(map(str, error['loc'])), 'type': error['type'],
+                } for error in exc.errors()[:10]],
+            ))
         # 두 요청 형식 중 실제 입력에 해당하는 형식의 오류만 사용자에게 보여준다.
         errors = exc.errors()
         record("request_invalid", http_status=400, errors=[{
@@ -145,6 +166,12 @@ def create_app(
 
     @app.exception_handler(StarletteHTTPException)
     async def handle_http_error(request: Request, exc: StarletteHTTPException):
+        if is_job_request(request):
+            return JSONResponse(status_code=exc.status_code, headers=exc.headers, content=job_error_response(
+                request, {401: 'UNAUTHORIZED', 404: 'JOB_NOT_FOUND', 503: 'QUEUE_UNAVAILABLE'}.get(exc.status_code, 'HTTP_ERROR'),
+                {401: '인증 정보를 확인해 주세요.', 404: '작업을 찾을 수 없습니다.'}.get(exc.status_code, '요청을 처리할 수 없습니다.'),
+                retryable=exc.status_code == 503,
+            ))
         code = {
             401: "unauthorized",
             404: "not_found",
@@ -165,6 +192,10 @@ def create_app(
     async def handle_unexpected_error(request: Request, exc: Exception):
         # 상위 서비스 예외에는 비밀값이 있을 수 있어 유형과 요청 ID만 기록한다.
         failure("unexpected_error", exc, request_id=getattr(request.state, "request_id", "unknown"))
+        if is_job_request(request):
+            return JSONResponse(status_code=500, content=job_error_response(
+                request, 'INTERNAL_SERVER_ERROR', '서버 내부 오류가 발생했습니다.',
+            ))
         return JSONResponse(
             status_code=500,
             content={"message": "internal_server_error", "data": None},
@@ -310,6 +341,7 @@ def create_app(
 
     app.include_router(protected)
     app.include_router(backend_router)
+    app.include_router(job_router(settings))
 
     default_openapi = app.openapi
 

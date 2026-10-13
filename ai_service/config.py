@@ -26,6 +26,36 @@ class Settings:
     routing_timeout_seconds: float = 10.0
     e5_model_dir: Path = Path(__file__).resolve().parents[1] / "model"
     restaurant_hours_file: Path | None = None
+    jobs_redis_url: str | None = field(default=None, repr=False)
+    celery_broker_url: str | None = field(default=None, repr=False)
+    job_ttl_seconds: int = 86400
+    job_max_retries: int = 2
+    job_retry_delay_seconds: int = 5
+    matching_mysql_host: str = "127.0.0.1"
+    matching_mysql_port: int = 3306
+    matching_mysql_database: str | None = field(default=None, repr=False)
+    matching_mysql_user: str | None = field(default=None, repr=False)
+    matching_mysql_password: str | None = field(default=None, repr=False)
+    matching_mysql_socket: str | None = field(default=None, repr=False)
+    matching_mysql_ssl_ca: str | None = None
+    matching_mysql_query_file: Path | None = None
+    matching_e5_weight: float = 1.0
+    matching_theme_weight: float = 0.0
+    matching_pace_weight: float = 0.0
+    matching_candidate_limit: int = 3
+
+    def __post_init__(self):
+        if not 1 <= self.matching_candidate_limit <= 20:
+            raise ValueError('Invalid matching candidate limit')
+        if self.job_ttl_seconds < 3600 or not 0 <= self.job_max_retries <= 10 or self.job_retry_delay_seconds < 1:
+            raise ValueError("Invalid job retention or retry settings")
+        if self.job_ttl_seconds <= (self.generation_timeout_seconds + 120) * (self.job_max_retries + 1):
+            raise ValueError("Job retention must exceed the bounded retry lifecycle")
+        if not 1 <= self.matching_mysql_port <= 65535:
+            raise ValueError("Invalid MySQL port")
+        weights = (self.matching_e5_weight, self.matching_theme_weight, self.matching_pace_weight)
+        if any(not 0 <= weight <= 1 for weight in weights) or abs(sum(weights) - 1) > 1e-9:
+            raise ValueError('Matching weights must be nonnegative and sum to one')
 
     @classmethod
     def from_env(cls, env_file: Path = ENV_FILE) -> "Settings":
@@ -42,4 +72,22 @@ class Settings:
             e5_model_dir=Path(values.get("E5_MODEL_DIR") or cls.e5_model_dir),
             restaurant_hours_file=Path(values["RESTAURANT_HOURS_FILE"])
             if values.get("RESTAURANT_HOURS_FILE") else None,
+            jobs_redis_url=values.get("JOBS_REDIS_URL") or values.get("REDIS_URL") or None,
+            celery_broker_url=values.get("CELERY_BROKER_URL") or values.get("REDIS_URL") or None,
+            job_ttl_seconds=int(values.get("JOB_TTL_SECONDS", 86400)),
+            job_max_retries=int(values.get("JOB_MAX_RETRIES", 2)),
+            job_retry_delay_seconds=int(values.get("JOB_RETRY_DELAY_SECONDS", 5)),
+            matching_mysql_host=values.get("MATCHING_MYSQL_HOST") or "127.0.0.1",
+            matching_mysql_port=int(values.get("MATCHING_MYSQL_PORT", 3306)),
+            matching_mysql_database=values.get("MATCHING_MYSQL_DATABASE") or None,
+            matching_mysql_user=values.get("MATCHING_MYSQL_USER") or None,
+            matching_mysql_password=values.get("MATCHING_MYSQL_PASSWORD"),
+            matching_mysql_socket=values.get("MATCHING_MYSQL_SOCKET") or None,
+            matching_mysql_ssl_ca=values.get("MATCHING_MYSQL_SSL_CA") or None,
+            matching_mysql_query_file=Path(values["MATCHING_MYSQL_QUERY_FILE"])
+            if values.get("MATCHING_MYSQL_QUERY_FILE") else None,
+            matching_e5_weight=float(values.get('MATCHING_E5_WEIGHT', 1)),
+            matching_theme_weight=float(values.get('MATCHING_THEME_WEIGHT', 0)),
+            matching_pace_weight=float(values.get('MATCHING_PACE_WEIGHT', 0)),
+            matching_candidate_limit=int(values.get('AUDIGO_AI_MATCHING_CANDIDATE_LIMIT', 3)),
         )
