@@ -1,4 +1,4 @@
-from ai_service.errors import ApiError
+from ai_service.core.errors import ApiError
 from ai_service.jobs.schemas import JobError, JobErrorResponse
 
 

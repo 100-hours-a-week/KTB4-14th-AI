@@ -9,20 +9,22 @@ from celery import Celery
 import httpx
 from redis.exceptions import RedisError
 
-from ai_service.backend_contract import backend_result, STAGE_NAMES
-from ai_service.config import Settings
-from ai_service.diagnostics import request_id as log_request_id
-from ai_service.errors import ApiError, ServiceUnavailable
+from ai_service.travel.backend_contract import backend_result, STAGE_NAMES
+from ai_service.core.config import Settings
+from ai_service.core.diagnostics import request_id as log_request_id
+from ai_service.core.errors import ApiError, ServiceUnavailable
 from ai_service.jobs.schemas import MatchingJobRequest, MatchingDatabaseJobRequest
 from ai_service.jobs.errors import JobApiError
 from ai_service.jobs.store import RedisJobStore
-from ai_service.matching import E5MatchingRecommender, eligible_candidates
-from ai_service.matching_mysql import MySQLMatchingCandidateSource
-from ai_service.model import OpenAIPlanner
-from ai_service.pipeline import generation_stages
-from ai_service.places import KakaoPlaces
-from ai_service.routing import KakaoRoutes
-from ai_service.schemas import ItineraryRequest
+from ai_service.matching.service import E5MatchingRecommender, eligible_candidates
+from ai_service.matching.mysql import MySQLMatchingCandidateSource
+from ai_service.travel.model import OpenAIPlanner
+from ai_service.travel.pipeline import generation_stages
+from ai_service.travel.places import KakaoPlaces
+from ai_service.travel.routing import KakaoRoutes
+from ai_service.travel.schemas import (
+    ItineraryRequest
+)
 
 logger = logging.getLogger(__name__)
 _MATCHING_ENCODER = None

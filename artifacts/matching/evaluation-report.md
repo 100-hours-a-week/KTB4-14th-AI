@@ -20,5 +20,5 @@
 실제 입력 분포나 후보가 없는 요청을 포함한 전체 서비스 성공률을 측정한 결과가 아닙니다.
 실행 시간은 정확한 문장 임베딩 캐시를 사용한 평가 시간이며 실서비스 응답 지연 측정값이 아닙니다.
 
-재현: `./.venv/bin/python scripts/evaluate_matching_dev.py`
+재현: `./.venv/bin/python scripts/matching/evaluate_matching_dev.py`
 상세 수치: [JSON](evaluation-report.json), [요청별 CSV](evaluation-details.csv), [가중치 선택 기록](ranking-selection.json)

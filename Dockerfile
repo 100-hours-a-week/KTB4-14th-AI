@@ -17,8 +17,8 @@ COPY ai_service ./ai_service
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev
 
-COPY scripts/download_e5_model.py ./scripts/download_e5_model.py
-RUN python scripts/download_e5_model.py /app/model
+COPY scripts/models/download_e5_model.py ./scripts/models/download_e5_model.py
+RUN python scripts/models/download_e5_model.py /app/model
 
 
 FROM python:3.12-slim AS runtime

@@ -3,8 +3,10 @@ from typing import Literal
 
 from pydantic import AliasChoices, Field
 
-from ai_service.matching import MatchingCandidate, MatchingRecommendationRequest
-from ai_service.schemas import NonEmpty, StrictModel
+from ai_service.matching.schemas import (
+    MatchingCandidate, MatchingRecommendationRequest
+)
+from ai_service.core.schemas import NonEmpty, StrictModel
 
 JobType = Literal['ITINERARY_GENERATION', 'TRAVELER_MATCHING']
 JobState = Literal['QUEUED', 'RUNNING', 'RETRYING', 'COMPLETED', 'FAILED']
