@@ -69,18 +69,18 @@ AI에 고정 E5 모델을 준비하고 새 코드를 반영해 서버를 재시�
 위 변경으로 기존 Java 요청·응답 코드를 바꿀 필요는 없습니다. 실배포의 DNS·네트워크·토큰은 해당
 환경에서 확인해야 하며 전체 Spring 앱·프론트·운영 DB 연동을 실행한 검증은 아닙니다.
 
-## 기존 큐 및 DB 조회 호출
+## 매칭 큐 API 제거
 
-`POST /api/ai/v1/traveler-match-jobs`는 계속 202/job_id를 반환합니다. ID 요청의 MySQL 조회와
-GET /api/ai/v1/jobs/{job_id} 상태 조회도 유지합니다. 기존 `/matches/candidates`에 ID/평면 요청을
-보내던 호출은 202로 호환 처리합니다. **{request,candidates} 형식만 200 최종 응답**입니다.
-새 큐 호출은 /traveler-match-jobs 경로를 사용해 계약을 명확히 구분합니다.
-일정 생성 엔드포인트·일정 생성 로직은 이 변경에 포함되지 않습니다.
+동행자 매칭은 `POST /api/ai/v1/matches/candidates`의 동기 200 응답만 사용합니다.
+이전 `POST /api/ai/v1/traveler-match-jobs` 경로는 제거되었습니다(404).
+ID만 전달하거나 중첩되지 않은 후보 목록을 전달하는 이전 큐 요청은 더 이상 허용하지 않습니다(400).
+매칭 API는 `Idempotency-Key`를 받지 않으며 Redis·Celery·AI MySQL에 의존하지 않습니다.
+일정 생성 작업 접수 및 조회 API는 유지합니다.
 
 ## 구현 위치
 
 - ai_service/matching/backend.py: Java DTO 스키마, 기존 추천기 입력 변환, 결과 DTO 변환.
-- ai_service/api/routes/matching.py: 요청 형태별 동기 추천 또는 기존 큐 접수 분기.
+- ai_service/api/routes/matching.py: 백엔드 DTO만 수신하고 E5 추천 결과를 즉시 반환.
 - matching.py: 공통 E5 순위 계산, 동점 기준을 선택 가능하게 확장.
 - main.py/config.py: 모델 캐시와 추천 수·가중치 설정 연결.
 

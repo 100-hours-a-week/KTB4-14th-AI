@@ -146,10 +146,21 @@ class BackendMatchingTests(unittest.TestCase):
         self.assertIsInstance(candidate['match_rate'],int)
         self.assertTrue(0<=candidate['match_rate']<=100)
 
-    def test_openapi_documents_backend_200_and_queue_202(self):
-        schema=self.app().openapi()
-        sync=schema['paths'][PATH]['post']
-        queue=schema['paths']['/api/ai/v1/traveler-match-jobs']['post']
-        self.assertIn('200',sync['responses'])
-        self.assertEqual(sync['responses']['200']['content']['application/json']['schema']['$ref'],'#/components/schemas/BackendMatchingResponse')
-        self.assertIn('202',queue['responses'])
+    def test_openapi_documents_only_synchronous_matching(self):
+        schema = self.app().openapi()
+        sync = schema['paths'][PATH]['post']
+        self.assertIn('200', sync['responses'])
+        self.assertNotIn('202', sync['responses'])
+        self.assertEqual(
+            sync['responses']['200']['content']['application/json']['schema']['$ref'],
+            '#/components/schemas/BackendMatchingResponse',
+        )
+        self.assertNotIn('/api/ai/v1/traveler-match-jobs', schema['paths'])
+
+    def test_legacy_queue_payload_is_rejected_without_submission(self):
+        from ai_service.jobs.examples import MATCHING_EXAMPLE
+        with TestClient(self.app()) as client:
+            response = client.post(PATH, json=MATCHING_EXAMPLE, headers=HEADERS)
+            self.assertEqual(response.status_code, 400, response.text)
+            self.assertEqual(client.post('/api/ai/v1/traveler-match-jobs', json=MATCHING_EXAMPLE, headers=HEADERS).status_code, 404)
+

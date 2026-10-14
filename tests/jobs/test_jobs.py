@@ -135,18 +135,12 @@ class JobApiTests(unittest.TestCase):
     def tearDown(self):
         self.client.__exit__(None, None, None)
 
-    def test_accept_matching_poll_and_hide_input_internal_tokens(self):
-        response = self.client.post(MATCH_PATH, json=MATCHING_EXAMPLE, headers=HEADERS)
-        self.assertEqual(response.status_code, 202, response.text)
-        accepted = response.json()
-        self.assertEqual(set(accepted), {'job_id', 'job_type', 'status', 'status_url'})
-        self.assertEqual(accepted['job_type'], 'TRAVELER_MATCHING')
-        status = self.client.get(accepted['status_url'], headers=HEADERS).json()
-        self.assertEqual(status['matching_request_id'], 201)
-        self.assertEqual(status['status'], 'QUEUED')
-        self.assertIsNone(status['result'])
-        self.assertFalse({'payload', 'fingerprint', 'lease_token', 'requester_id'} & set(status))
-        self.publisher.assert_called_once()
+    def test_removed_matching_queue_endpoint_returns_404(self):
+        response = self.client.post(
+            '/api/ai/v1/traveler-match-jobs', json=MATCHING_EXAMPLE, headers=HEADERS
+        )
+        self.assertEqual(response.status_code, 404)
+        self.publisher.assert_not_called()
 
     def test_both_itinerary_dtos_are_accepted_without_inference_in_http(self):
         legacy = request(None, 'CAR').model_dump(mode='json')
@@ -159,28 +153,30 @@ class JobApiTests(unittest.TestCase):
             self.assertEqual(doc['attempt'], 0)
 
     def test_duplicate_request_and_conflict_and_explicit_new_key(self):
-        first = self.client.post(MATCH_PATH, json=MATCHING_EXAMPLE, headers=HEADERS).json()
-        second = self.client.post(MATCH_PATH, json=MATCHING_EXAMPLE, headers=HEADERS).json()
+        body = http_request(request(None, 'CAR'))
+        headers = {**HEADERS, 'Idempotency-Key': 'same-itinerary'}
+        first = self.client.post(TRIP_PATH, json=body, headers=headers).json()
+        second = self.client.post(TRIP_PATH, json=body, headers=headers).json()
         self.assertEqual(first['job_id'], second['job_id'])
         self.publisher.assert_called_once()
-        changed = {**MATCHING_EXAMPLE, 'limit': 1}
-        conflict = self.client.post(MATCH_PATH, json=changed, headers=HEADERS)
+        changed = {**body, 'travel_plan_id': body['travel_plan_id'] + 1}
+        conflict = self.client.post(TRIP_PATH, json=changed, headers=headers)
         self.assertEqual(conflict.status_code, 409)
         self.assertEqual(conflict.json()['error']['code'], 'IDEMPOTENCY_CONFLICT')
-        fresh = self.client.post(MATCH_PATH, json=changed, headers={**HEADERS, 'Idempotency-Key': 'new-generation'})
+        fresh = self.client.post(TRIP_PATH, json=changed, headers={**HEADERS, 'Idempotency-Key': 'new-generation'})
         self.assertEqual(fresh.status_code, 202)
         self.assertNotEqual(fresh.json()['job_id'], first['job_id'])
 
-    def test_400_401_404_422_503_have_job_contract_and_request_id(self):
+    def test_400_401_404_503_have_job_contract_and_request_id(self):
+        body = http_request(request(None, 'CAR'))
         cases = [
-            self.client.post(MATCH_PATH, json={}, headers=HEADERS),
-            self.client.post(MATCH_PATH, json=MATCHING_EXAMPLE),
+            self.client.post(TRIP_PATH, json={}, headers=HEADERS),
+            self.client.post(TRIP_PATH, json=body),
             self.client.get('/api/ai/v1/jobs/unknown', headers=HEADERS),
-            self.client.post(MATCH_PATH, json={**MATCHING_EXAMPLE, 'candidates': []}, headers=HEADERS),
         ]
         self.app.state.jobs = None
-        cases.append(self.client.post(MATCH_PATH, json=MATCHING_EXAMPLE, headers=HEADERS))
-        self.assertEqual([r.status_code for r in cases], [400, 401, 404, 422, 503])
+        cases.append(self.client.post(TRIP_PATH, json=body, headers=HEADERS))
+        self.assertEqual([r.status_code for r in cases], [400, 401, 404, 503])
         for response in cases:
             self.assertEqual(set(response.json()), {'error', 'request_id'})
             self.assertEqual(response.json()['request_id'], response.headers['x-request-id'])
@@ -188,21 +184,17 @@ class JobApiTests(unittest.TestCase):
 
     def test_redis_outage_returns_503_without_accepted_job(self):
         with patch.object(self.store, 'reserve', side_effect=RedisConnectionError('secret redis URI')):
-            response = self.client.post(MATCH_PATH, json=MATCHING_EXAMPLE, headers=HEADERS)
+            response = self.client.post(
+                TRIP_PATH, json=http_request(request(None, 'CAR')), headers=HEADERS
+            )
         self.assertEqual(response.status_code, 503)
         self.assertNotIn('secret', response.text)
         self.publisher.assert_not_called()
 
-    def test_budget_gender_self_and_duplicate_filters(self):
-        for candidates in ([], [{**MATCHING_EXAMPLE['candidates'][0], 'user_id': 12}],
-                           [{**MATCHING_EXAMPLE['candidates'][0], 'budget_min': None, 'budget_max': None}]):
-            response = self.client.post(MATCH_PATH, json={**MATCHING_EXAMPLE, 'candidates': candidates}, headers=HEADERS)
-            self.assertEqual(response.status_code, 422)
-        response = self.client.post(MATCH_PATH, json={**MATCHING_EXAMPLE, 'preferred_companion_gender': 'Female'}, headers=HEADERS)
-        self.assertEqual(response.status_code, 422)  # Missing gender is not guessed.
-        duplicate = {**MATCHING_EXAMPLE, 'candidates': MATCHING_EXAMPLE['candidates'] * 2}
-        self.assertEqual(self.client.post(MATCH_PATH, json=duplicate, headers=HEADERS).status_code, 400)
-
+    def test_legacy_matching_queue_payload_is_rejected(self):
+        response = self.client.post(MATCH_PATH, json=MATCHING_EXAMPLE, headers=HEADERS)
+        self.assertEqual(response.status_code, 400, response.text)
+        self.publisher.assert_not_called()
 
 class JobExecutionTests(unittest.TestCase):
     def test_retry_backoff_then_success_and_duplicate_delivery_do_not_rerun(self):

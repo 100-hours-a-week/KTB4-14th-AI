@@ -88,7 +88,6 @@ class BackendContractTests(unittest.TestCase):
             self.assertEqual({path for path, methods in paths.items() if "post" in methods}, {
                 PATH, STREAM_PATH, "/internal/ai/music/recommend",
                 "/api/ai/v1/itinerary-jobs", "/api/ai/v1/matches/candidates",
-                "/api/ai/v1/traveler-match-jobs",
             })
 
     def test_stream_result_and_order_for_both_request_formats(self):
