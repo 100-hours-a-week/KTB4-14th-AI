@@ -1,4 +1,4 @@
-"""블로킹 큐 저장소 호출과 기존 매칭 작업 접수 규칙."""
+"""일정 생성 큐의 Redis 저장소 호출 도우미."""
 import asyncio
 from redis.exceptions import RedisError
 from ai_service.jobs.errors import JobApiError
