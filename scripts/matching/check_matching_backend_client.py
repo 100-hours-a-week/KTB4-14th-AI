@@ -63,7 +63,7 @@ public class BackendMatchingSmoke {
  }
  public static void main(String[] args) {
    var props=new AiServerProperties(args[0],null,"contract-smoke-only",5,30,30);
-   var client=new DefaultMatchingAiClient(RestClient.builder(),props,new MatchingAiProperties(null,false,3));
+   var client=new DefaultMatchingAiClient(RestClient.builder(),props,new MatchingAiProperties("/api/ai/v1/matching-requests",false,3));
    var condition=new MatchingCandidateAiRequest.RequestPayload(10L,1L,PreferredCompanionGender.FEMALE,
      List.of(TravelThemeType.NATURE,TravelThemeType.FOOD),TravelPaceType.BALANCED,100000,800000);
    var response=client.getCandidates(new MatchingCandidateAiRequest(condition,List.of(
@@ -106,7 +106,7 @@ def run(source,cache,output):
         compiled=subprocess.run([javac,'--release','21','-cp',classpath,'-d',str(classes),*files],capture_output=True,text=True,timeout=30)
         if compiled.returncode: raise RuntimeError('Backend client compilation failed:\n'+compiled.stderr)
         captured=[]
-        app=create_app(settings=Settings(api_token='contract-smoke-only',matching_e5_weight=.85,matching_theme_weight=.1,matching_pace_weight=.05))
+        app=create_app(settings=Settings(api_token='contract-smoke-only'))
         @app.middleware('http')
         async def capture(request,call_next):
             payload=await request.json() if request.method=='POST' else None
@@ -130,7 +130,7 @@ def run(source,cache,output):
             if result.returncode:raise RuntimeError('Backend client HTTP test failed:\n'+result.stderr+'\n'+result.stdout)
             if len(captured)!=3 or any(r['http_status']!=200 for r in captured):raise RuntimeError('Expected three final HTTP 200 responses')
             report={'backend_commit':commit,'unchanged_backend_java_client':True,'real_http':True,
-                    'local_e5':True,'database_required':False,'redis_required':False,
+                    'ranking_version':'theme-pace-v1','matching_path':'/api/ai/v1/matching-requests','local_e5':False,'database_required':False,'redis_required':False,
                     'cases':captured,'java_result':result.stdout.strip(),
                     'scope':'Original Java client/DTO HTTP integration; full Spring application and production deployment not started'}
             output.parent.mkdir(parents=True,exist_ok=True)
@@ -144,6 +144,6 @@ if __name__=='__main__':
     parser=argparse.ArgumentParser()
     parser.add_argument('--backend-source',type=Path,required=True)
     parser.add_argument('--gradle-cache',type=Path,default=Path.home()/'.gradle/caches/modules-2/files-2.1')
-    parser.add_argument('--output',type=Path,default=ROOT/'artifacts/matching/backend-client-smoke.json')
+    parser.add_argument('--output',type=Path,default=ROOT/'artifacts/matching/theme-pace-v1/backend-client-smoke.json')
     args=parser.parse_args()
     run(args.backend_source,args.gradle_cache,args.output)

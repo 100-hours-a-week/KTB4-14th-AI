@@ -1,19 +1,14 @@
 """Synthetic data reproducibility and the actual ranking policy's boundaries."""
-import asyncio
 from collections import Counter
 import json
 from pathlib import Path
 import unittest
 
-import numpy as np
-from pydantic import ValidationError
 
-from ai_service.core.config import Settings
-from ai_service.matching.backend import BackendRankingInput
-from ai_service.matching.schemas import MatchingRecommendationRequest
-from ai_service.matching.service import E5MatchingRecommender
+from ai_service.matching.backend import BACKEND_MATCHING_EXAMPLE, BackendMatchingRequest
+from ai_service.matching.service import rank_candidates
 from ai_service.matching.dev import DATA_DIR, eligible_profile, make_dataset
-from scripts.matching.evaluate_matching_dev import metrics, select_weights
+from scripts.matching.evaluate_matching_dev import metrics
 
 
 class MatchingDatasetTests(unittest.TestCase):
@@ -76,58 +71,26 @@ class MatchingDatasetTests(unittest.TestCase):
             self.assertTrue(eligible_profile(requests[rid],profiles[uid]))
         self.assertTrue(all(not reviewed for *_,reviewed in self.data['cases']))
 
-class MatchingRankingTests(unittest.TestCase):
-    def body(self, count=2):
-        return BackendRankingInput(
-            requester_id=1,preferred_companion_gender='ANY',pace='BALANCED',theme=['nature'],top_k=5,
-            candidates=[dict(user_id=uid+2,gender='MALE',pace='BALANCED',theme=['nature'],introduction=f'candidate {uid+2}')
-                        for uid in range(count)])
-
-    def test_global_top_five_includes_best_candidate_after_first_embedding_batch(self):
-        class Encoder:
-            def __init__(self): self.calls=[]
-            def encode(self,texts):
-                self.calls.append(texts)
-                return np.array([[1,0]]+[[1,0] if text.endswith('candidate 406') else [0,1]
-                                        for text in texts[1:]],dtype=np.float32)
-        encoder=Encoder()
-        body=self.body(405)
-        result=asyncio.run(E5MatchingRecommender(Path('/unused'),encoder=encoder).recommend(body))
-        self.assertEqual([r.user_id for r in result.data.recommendations],[406,2,3,4,5])
-        self.assertEqual([len(batch) for batch in encoder.calls],[201,201,6])
-        self.assertTrue(all(batch[0].startswith('query: ') for batch in encoder.calls))
-        self.assertTrue(all(text.startswith('passage: ') for batch in encoder.calls for text in batch[1:]))
-        with self.assertRaises(ValidationError):
-            MatchingRecommendationRequest.model_validate(body.model_dump())
-
-    def test_hybrid_can_correct_semantic_ranking_and_default_retains_cosine(self):
-        body=self.body()
-        body.candidates[0].theme=['city']
-        body.candidates[0].pace='Packed'
-        cosine=np.array([0.9,0.8])
-        np.testing.assert_array_equal(E5MatchingRecommender.combine_scores(body,body.candidates,cosine,(1.,0.,0.)),cosine)
-        hybrid=E5MatchingRecommender.combine_scores(body,body.candidates,cosine,(.85,.1,.05))
-        self.assertGreater(hybrid[1],hybrid[0])
-        self.assertTrue(np.all((0<=hybrid)&(hybrid<=1)))
-
-    def test_weight_validation_prevents_invalid_ranking_configuration(self):
-        for weights in ((.8,.5,0),(-.1,.6,.5),(float('nan'),0,1)):
-            with self.subTest(weights=weights), self.assertRaises(ValueError):
-                Settings(matching_e5_weight=weights[0],matching_theme_weight=weights[1],matching_pace_weight=weights[2])
-
-    def test_metrics_count_missed_positive_and_empty_negative_without_inflating_hit_rate(self):
-        body=self.body(6)
-        case=dict(body=body,candidates=body.candidates,cosine=np.arange(6)[::-1]/6,
+class MatchingMetricsTests(unittest.TestCase):
+    def test_missed_positive_and_empty_negative_do_not_inflate_hit_rate(self):
+        body=BackendMatchingRequest.model_validate({**BACKEND_MATCHING_EXAMPLE,
+            'candidates':[dict(user_id=uid,nickname=str(uid),gender='FEMALE',
+                theme=['NATURE','FOOD'],pace='BALANCED') for uid in range(2,8)]})
+        case=dict(body=body,ranked=rank_candidates(body),
                   labels={2:0,3:0,4:0,5:0,6:0,7:2},expected_empty=False,
-                  split='DEV',scenario='test',matching_request_id=1)
-        baseline,_=metrics([case],(1.,0.,0.))
-        self.assertEqual(baseline['hit_at_3'],0)
-        self.assertEqual(baseline['positive_cases'],1)
-        negative={**case,'candidates':[],'cosine':np.asarray([]),'labels':{},'expected_empty':True}
-        combined,_=metrics([case,negative],(1.,0.,0.))
+                  split='TEST',scenario='test',matching_request_id=1)
+        score,_=metrics([case])
+        self.assertEqual(score['hit_at_3'],0)
+        negative={**case,'ranked':[],'labels':{},'expected_empty':True}
+        combined,_=metrics([case,negative])
         self.assertEqual(combined['hit_at_3'],0)
         self.assertEqual((combined['negative_cases'],combined['negative_correct']),(1,1))
         self.assertEqual(combined['positive_cases'],1)
-        weights,comparisons=select_weights([case])
-        self.assertEqual(len(comparisons),5)
-        self.assertIn(list(weights),[list(row['weights']) for row in comparisons])
+
+    def test_membership_counts_detect_extra_and_missing_candidates(self):
+        body=BackendMatchingRequest.model_validate(BACKEND_MATCHING_EXAMPLE)
+        case=dict(body=body,ranked=rank_candidates(body),labels={99:2},expected_empty=False,
+                  split='TEST',scenario='test',matching_request_id=1)
+        score,_=metrics([case])
+        self.assertEqual(score['hard_condition_violations'],1)
+        self.assertEqual(score['missing_eligible_candidates'],1)

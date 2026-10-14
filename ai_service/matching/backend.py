@@ -1,13 +1,8 @@
 """Synchronous adapter for the backend MatchingCandidateAiRequest contract."""
-import asyncio
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
-from ai_service.core.errors import ServiceUnavailable
-from ai_service.matching.schemas import (
-    MatchingCandidate, MatchingRecommendationRequest
-)
 from ai_service.core.schemas import StrictModel
 
 Theme = Literal['NATURE','FOOD','CULTURE','REST','SNS','ACTIVITY']
@@ -47,16 +42,21 @@ class BackendMatchingCondition(StrictModel):
 
 
 class BackendCandidateProfile(StrictModel):
-    user_id: Id
-    nickname: str | None = Field(default=None, max_length=20)
-    gender: Gender | None = None
-    theme: list[Theme] = Field(default_factory=list, max_length=4)
-    pace: Pace | None = None
+    model_config = ConfigDict(str_strip_whitespace=False)
 
-    @field_validator('theme', mode='before')
+    user_id: Id
+    nickname: str = Field(min_length=1, max_length=500)
+    profile_image_url: str | None = None
+    gender: Gender
+    theme: list[Theme] = Field(min_length=1, max_length=4)
+    pace: Pace
+
+    @field_validator('nickname')
     @classmethod
-    def normalize_null_themes(cls, values):
-        return [] if values is None else values
+    def reject_blank_nickname(cls, value):
+        if not value.strip():
+            raise ValueError('nickname must not be blank')
+        return value
 
     @field_validator('theme')
     @classmethod
@@ -66,12 +66,9 @@ class BackendCandidateProfile(StrictModel):
 
 class BackendMatchingRequest(StrictModel):
     request: BackendMatchingCondition
-    candidates: list[BackendCandidateProfile] = Field(default_factory=list, max_length=10000)
-
-    @field_validator('candidates', mode='before')
-    @classmethod
-    def normalize_null_candidates(cls, values):
-        return [] if values is None else values
+    candidates: list[BackendCandidateProfile] = Field(max_length=10000)
+    limit: int = Field(default=3, ge=1, le=3, strict=True,
+        description='추천할 최대 후보 수. 생략하면 3명이며 1~3만 허용합니다.')
 
     @model_validator(mode='after')
     def validate_unique_candidates(self):
@@ -81,15 +78,10 @@ class BackendMatchingRequest(StrictModel):
         return self
 
 
-class BackendRankingInput(MatchingRecommendationRequest):
-    candidates: list[MatchingCandidate] = Field(max_length=10000)
-    candidate_budget_available: bool = Field(default=False, exclude=True)
-
-
 class BackendRankedCandidate(StrictModel):
     user_id: Id
     match_rate: int = Field(ge=0, le=100, strict=True,
-        description='E5/조건 추천 점수를 0~100으로 표시한 값. 성공 확률이 아닙니다.')
+        description='테마 일치 최대 80점 + 속도 일치 최대 20점. 성공 확률이 아닙니다.')
 
 
 class BackendMatchingResponse(StrictModel):
@@ -97,45 +89,12 @@ class BackendMatchingResponse(StrictModel):
     count: int = Field(ge=0, strict=True)
 
 
-def display_match_rate(score, weights):
-    # Pure cosine spans -1..1; the hybrid formula already spans 0..1.
-    normalized=(score+1)/2 if tuple(weights)==(1.0,0.0,0.0) else score
-    return int(round(min(1.,max(0.,normalized))*100))
-
-
-def ranking_input_for_backend(body: BackendMatchingRequest, top_k: int) -> BackendRankingInput:
-    condition=body.request
-    # Backend profiles have no candidate budget/intro. Do not invent those
-    # values or discard everyone when the requester has a budget condition.
-    candidates=[MatchingCandidate(user_id=c.user_id,gender=c.gender,theme=c.theme,pace=c.pace)
-                for c in body.candidates if c.gender is not None and c.pace is not None and c.theme]
-    ranking=BackendRankingInput(requester_id=condition.user_id,
-        preferred_companion_gender=condition.preferred_companion_gender,
-        theme=condition.theme,pace=condition.pace,
-        budget_min=condition.budget_min,budget_max=condition.budget_max,
-        candidates=candidates,top_k=top_k)
-    return ranking
-
-
-async def recommend_for_backend(body, recommender, settings):
-    ranking=ranking_input_for_backend(body,settings.matching_candidate_limit)
-    nicknames={c.user_id:(c.nickname or '') for c in body.candidates}
-    try:
-        async with asyncio.timeout(settings.model_timeout_seconds):
-            result=await recommender.recommend(ranking,
-                tie_breaker=lambda candidate:(nicknames[candidate.user_id],candidate.user_id))
-    except TimeoutError as exc:
-        raise ServiceUnavailable(reason='matching_timeout') from exc
-    recommendations=[BackendRankedCandidate(user_id=r.user_id,
-        match_rate=display_match_rate(r.score,recommender.weights)) for r in result.data.recommendations]
-    return BackendMatchingResponse(candidates=recommendations,count=len(recommendations))
-
-
 BACKEND_MATCHING_EXAMPLE={
     'request':{'matching_request_id':10,'user_id':1,'preferred_companion_gender':'FEMALE',
                'theme':['NATURE','FOOD'],'pace':'BALANCED','budget_min':100000,'budget_max':800000},
     'candidates':[
-        {'user_id':22,'nickname':'매칭후보A','gender':'MALE','theme':['CULTURE','SNS'],'pace':'RELAXED'},
-        {'user_id':23,'nickname':'매칭후보B','gender':'FEMALE','theme':['NATURE','FOOD'],'pace':'BALANCED'},
+        {'user_id':22,'nickname':'매칭후보A','profile_image_url':None,'gender':'MALE','theme':['CULTURE','SNS'],'pace':'RELAXED'},
+        {'user_id':23,'nickname':'매칭후보B','profile_image_url':None,'gender':'FEMALE','theme':['NATURE','FOOD'],'pace':'BALANCED'},
     ],
+    'limit':3,
 }

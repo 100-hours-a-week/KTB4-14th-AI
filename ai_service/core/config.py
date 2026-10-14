@@ -31,21 +31,12 @@ class Settings:
     job_ttl_seconds: int = 86400
     job_max_retries: int = 2
     job_retry_delay_seconds: int = 5
-    matching_e5_weight: float = 1.0
-    matching_theme_weight: float = 0.0
-    matching_pace_weight: float = 0.0
-    matching_candidate_limit: int = 3
 
     def __post_init__(self):
-        if not 1 <= self.matching_candidate_limit <= 20:
-            raise ValueError('Invalid matching candidate limit')
         if self.job_ttl_seconds < 3600 or not 0 <= self.job_max_retries <= 10 or self.job_retry_delay_seconds < 1:
             raise ValueError("Invalid job retention or retry settings")
         if self.job_ttl_seconds <= (self.generation_timeout_seconds + 120) * (self.job_max_retries + 1):
             raise ValueError("Job retention must exceed the bounded retry lifecycle")
-        weights = (self.matching_e5_weight, self.matching_theme_weight, self.matching_pace_weight)
-        if any(not 0 <= weight <= 1 for weight in weights) or abs(sum(weights) - 1) > 1e-9:
-            raise ValueError('Matching weights must be nonnegative and sum to one')
 
     @classmethod
     def from_env(cls, env_file: Path = ENV_FILE) -> "Settings":
@@ -67,8 +58,4 @@ class Settings:
             job_ttl_seconds=int(values.get("JOB_TTL_SECONDS", 86400)),
             job_max_retries=int(values.get("JOB_MAX_RETRIES", 2)),
             job_retry_delay_seconds=int(values.get("JOB_RETRY_DELAY_SECONDS", 5)),
-            matching_e5_weight=float(values.get('MATCHING_E5_WEIGHT', 1)),
-            matching_theme_weight=float(values.get('MATCHING_THEME_WEIGHT', 0)),
-            matching_pace_weight=float(values.get('MATCHING_PACE_WEIGHT', 0)),
-            matching_candidate_limit=int(values.get('AUDIGO_AI_MATCHING_CANDIDATE_LIMIT', 3)),
         )

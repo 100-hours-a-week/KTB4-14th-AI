@@ -98,7 +98,12 @@ INFO:     Uvicorn running on http://127.0.0.1:8000
 
 ### V2 동행자 후보 추천 명세
 
-백엔드 동행자 추천은 `POST /api/ai/v1/matches/candidates`를 사용합니다. `/docs`의 V2에서 요청·후보를 전달하는 예시를 선택하고 기존 `HTTPBearer` 서비스 토큰을 입력하면, 로컬 E5 추천 결과를 최종 JSON으로 반환합니다. 입력 `{request, candidates}`와 응답 `{candidates, count}`는 [백엔드 연동 계약](docs/matching/backend-contract.md)을 참고하세요.
+백엔드 동행자 추천은 `POST /api/ai/v1/matching-requests`를 사용합니다. `/docs`의 V2에서 요청·후보를 전달하는 예시를 선택하고 기존 `HTTPBearer` 서비스 토큰을 입력하면, 테마·속도 계산식 추천 결과를 최종 JSON으로 반환합니다. 입력 `{request, candidates, limit}`와 응답 `{candidates, count}`는 [백엔드 연동 계약](docs/matching/backend-contract.md)을 참고하세요.
+
+추천 수는 요청 본문의 `limit`으로 지정하며 생략하면 3명, 최대 3명입니다.
+후보 `nickname`은 필수로 최대 500자이며 `profile_image_url`은 선택입니다.
+성별·속도·테마 등 필수 값이 없는 후보는 요청 전체를 400으로 거절합니다.
+속도가 양극단인 `RELAXED ↔ PACKED` 후보는 점수 계산 전에 제외합니다.
 
 개발 DB를 사용하는 오프라인 평가는 [개발 DB 문서](docs/matching/mysql.md)를 참고하세요. 개발 DB의 초기 프로필은 `ai_service/matching/data/matching_seed_profiles.json`에 보관합니다. 실제 사용자 인증과 DB 요청 저장은 백엔드에서 처리합니다.
 
@@ -173,7 +178,7 @@ ROUTE_OPTIMIZE_DONE → complete
 | `ai_service/music/` | E5 음악 추천·YouTube 조회 |
 | `ai_service/matching/` | 동행자 추천·백엔드 계약 |
 | `ai_service/jobs/` | 작업 서비스·Redis 저장·Celery 워커 |
-| `ai_service/embeddings/` | 음악·매칭에서 공유하는 E5 ONNX 추론 |
+| `ai_service/embeddings/` | 음악 추천의 E5 ONNX 추론 |
 | `ai_service/matching/data/` | 매칭 목데이터·개발 DB SQL·카탈로그 |
 | `ai_service/travel/data/` | 확인한 식당 영업시간 데이터 |
 | `scripts/matching/` | DB 준비·평가·백엔드 연동 검증 도구 |
@@ -190,7 +195,7 @@ API 진입점은 `ai_service/main.py`이며 실행 명령은 `ai_service.main:ap
 | --- | --- |
 | `ai_service/travel/schemas.py` | 일정 요청·응답·내부 데이터 계약 |
 | `ai_service/music/schemas.py` | 별도 음악 요청·응답 계약 |
-| `ai_service/matching/schemas.py` | 매칭 프로필·조건·추천 결과 계약 |
+| `ai_service/matching/backend.py` | 매칭 조건·후보·추천 결과 계약 |
 | `ai_service/main.py` | 앱 조립·라우터 등록 |
 | `ai_service/api/routes/` | 기능별 URL·HTTP 요청 및 응답 |
 | `ai_service/core/handlers.py` | 기존 JSON·큐 오류 응답 |
@@ -231,7 +236,7 @@ uv sync --frozen --extra dev
 
 Redis + Celery 일정 작업 접수 API `POST /api/ai/v1/itinerary-jobs`는
 202/job_id/status_url을 반환하며, `GET /api/ai/v1/jobs/{job_id}`에서 진행 단계와 완료 결과를 조회합니다.
-동행자 추천은 `POST /api/ai/v1/matches/candidates`에서 `{request,candidates}`에 대해 200 최종 결과를 반환합니다.
+동행자 추천은 `POST /api/ai/v1/matching-requests`에서 `{request,candidates}`에 대해 200 최종 결과를 반환합니다.
 ID만 보내거나 이전 평면 형식으로 보내면 400 입력 오류를 반환합니다.
 
 [큐 API 계약·중복 방지·재시도·실행·테스트 방법](docs/jobs/queue.md)을 확인하세요.
@@ -242,7 +247,7 @@ Docker 실행은 `docker compose -f compose.jobs.yml up --build -d`입니다.
 
 백엔드 매칭 테이블과 enum에 맞춘 개발 DB를 평가 도구에서 사용합니다.
 운영 AI 서버는 DB에 접속하지 않습니다. 백엔드가 DB에서 조건과 후보를 조회하고
-`POST /api/ai/v1/matches/candidates`에 `{request,candidates}`를 전달합니다.
+`POST /api/ai/v1/matching-requests`에 `{request,candidates}`를 전달합니다.
 AI는 동기 200 `{candidates:[{user_id,match_rate}],count}`를 반환합니다.
 
 개발 DB 생성과 평가에는 개발 의존성을 설치합니다. 기존 DB와 과거 평가 결과는 보존합니다.
@@ -255,8 +260,9 @@ uv sync --frozen --extra dev
 
 평가 도구가 개발 DB의 조건과 프로필을 동일한 백엔드 DTO로 변환합니다.
 후보 프로필에 예산이 없으므로 요청 예산을 순위 비교에 적용하지 않습니다.
-`--apply`를 추가하면 DEV에서 선택한 가중치를 로컬 `.env`에 반영합니다.
+테마 일치 비율에 80점을 배정하고 속도가 같으면 20점, 한 단계 차이면 10점을 더합니다.
+계산식은 고정되며 모델·가중치 선택이 없습니다. 새 평가 결과는 `artifacts/matching/theme-pace-v1/`에 저장합니다.
 평가 적중률은 합성 규칙 정답에 대한 수치이며 실제 사용자 매칭 성사율이 아닙니다.
 
 [백엔드 요청 계약](docs/matching/backend-contract.md) · [개발 DB와 평가](docs/matching/mysql.md).
-기존 [평가 결과](artifacts/matching/evaluation-report.md)는 이전 실행 기록입니다.
+기존 [E5 평가 결과](artifacts/matching/evaluation-report.md)는 이전 실행 기록입니다.

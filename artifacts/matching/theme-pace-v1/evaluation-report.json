@@ -1,0 +1,91 @@
+{
+  "dataset": {
+    "version": "matching-backend-v2",
+    "seed": 20261013,
+    "fingerprint": "decc9b92468abfb2d85923b3294e3b9df3841bff7078835c711891d4e0ea48b7"
+  },
+  "ranking_version": "theme-pace-v1",
+  "e5_used": false,
+  "score_formula": "80 * theme_overlap / requested_theme_count + pace_points; round half up",
+  "pace_points": {
+    "same": 20,
+    "adjacent": 10,
+    "opposite": "excluded"
+  },
+  "input_source": "backend_dto_from_development_db",
+  "filter_policy": "exclude_opposite_pace",
+  "label_source": "synthetic_domain_rules",
+  "human_reviewed": false,
+  "real_user_acceptance_measured": false,
+  "target_hit_at_3": 0.9,
+  "target_met": true,
+  "dev": {
+    "positive_cases": 600,
+    "hit_at_3": 1.0,
+    "hits": 600,
+    "ndcg_at_3": 1.0,
+    "precision_at_3": 1.0,
+    "hard_condition_violations": 0,
+    "missing_eligible_candidates": 0,
+    "negative_cases": 0,
+    "negative_correct": 0,
+    "candidate_counts": {
+      "min": 290,
+      "median": 457.0,
+      "max": 944,
+      "more_than_three": 600
+    },
+    "hit_at_3_wilson_95": [
+      0.9936380666717896,
+      1.0000000000000002
+    ]
+  },
+  "test": {
+    "positive_cases": 300,
+    "hit_at_3": 1.0,
+    "hits": 300,
+    "ndcg_at_3": 1.0,
+    "precision_at_3": 1.0,
+    "hard_condition_violations": 0,
+    "missing_eligible_candidates": 0,
+    "negative_cases": 0,
+    "negative_correct": 0,
+    "candidate_counts": {
+      "min": 290,
+      "median": 457.0,
+      "max": 944,
+      "more_than_three": 300
+    },
+    "hit_at_3_wilson_95": [
+      0.9873565700022643,
+      0.9999999999999999
+    ]
+  },
+  "edge": {
+    "positive_cases": 100,
+    "hit_at_3": 1.0,
+    "hits": 100,
+    "ndcg_at_3": 1.0,
+    "precision_at_3": 1.0,
+    "hard_condition_violations": 0,
+    "missing_eligible_candidates": 0,
+    "negative_cases": 0,
+    "negative_correct": 0,
+    "candidate_counts": {
+      "min": 290,
+      "median": 457.0,
+      "max": 943,
+      "more_than_three": 100
+    },
+    "hit_at_3_wilson_95": [
+      0.9630051925239981,
+      0.9999999999999999
+    ]
+  },
+  "evaluation_requests": 1000,
+  "unique_dev_requesters": 600,
+  "unique_test_requesters": 300,
+  "requester_overlap": 0,
+  "elapsed_seconds": 6.792,
+  "warning": "합성 규칙 정답에 대한 적중률이며 실제 사용자 매칭 성사율이 아닙니다."
+}

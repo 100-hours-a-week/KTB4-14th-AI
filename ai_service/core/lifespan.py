@@ -7,7 +7,6 @@ from fastapi import FastAPI
 from ai_service.core.config import Settings
 from ai_service.music.e5 import E5MusicRecommender
 from ai_service.music.youtube import YouTubeMusic
-from ai_service.matching.service import E5MatchingRecommender
 from ai_service.travel.model import OpenAIPlanner
 from ai_service.travel.places import KakaoPlaces
 from ai_service.travel.routing import KakaoRoutes
@@ -24,8 +23,6 @@ def create_lifespan(settings: Settings, transport: httpx.AsyncBaseTransport | No
             app.state.music_recommender = E5MusicRecommender(
                 YouTubeMusic(client), settings.e5_model_dir
             )
-            app.state.backend_matching_recommender = E5MatchingRecommender(settings.e5_model_dir,
-                weights=(settings.matching_e5_weight, settings.matching_theme_weight, settings.matching_pace_weight))
             app.state.jobs = make_job_service(settings)
             try:
                 yield

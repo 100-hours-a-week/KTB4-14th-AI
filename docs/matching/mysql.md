@@ -1,7 +1,7 @@
 # 동행자 매칭 개발 DB와 오프라인 평가
 
 운영 AI 서버는 MySQL에 접속하지 않습니다. 백엔드가 조건과 후보를 조회해서
-`POST /api/ai/v1/matches/candidates`에 `{request,candidates}`를 전달합니다.
+`POST /api/ai/v1/matching-requests`에 `{request,candidates}`를 전달합니다.
 [백엔드 호출 계약](backend-contract.md)에 따라 동기 HTTP 200 결과를 반환합니다.
 ID 요청, 평면 매칭 요청, 매칭 큐 및 직접 DB 조회 API는 제공하지 않습니다.
 
@@ -32,16 +32,19 @@ uv sync --frozen --extra dev
 
 평가 도구의 `scripts/matching/evaluation_data.py`만 개발 DB를 읽습니다.
 하나의 읽기 전용 스냅샷에서 조건·활성 후보·평가 정답을 로드하고,
-조건과 후보를 공개 백엔드 DTO로 변환해 공통 E5 순위 계산기를 실행합니다.
+조건과 후보를 공개 백엔드 DTO로 변환해 테마·속도 계산식 순위 계산기를 실행합니다.
+BE가 완전한 프로필을 공급하는 동작을 재현하므로 불완전한 개발 프로필은 DTO 구성 전에 제외합니다.
+기존 DB 평가 정답의 후보 집합에도 `RELAXED ↔ PACKED` 제외 정책을 적용합니다.
 평가 정답은 AI 입력에 포함하지 않습니다. PyMySQL은 개발 의존성에만 포함됩니다.
 
-DEV 600건에서 가중치를 선택한 뒤 TEST 300건과 EDGE 100건을 평가합니다.
+고정된 테마 80점·속도 20점 계산식으로 DEV 600건·TEST 300건·EDGE 100건을 평가합니다.
+가중치나 모델을 선택하지 않습니다.
 DEV와 TEST의 요청자는 겹치지 않습니다. 합성 규칙 정답에 대한 Hit@3와 NDCG@3,
 필수 조건 위반·적격 후보 누락을 기록합니다. 실제 사용자 수락률이나 성사율은 측정하지 않습니다.
-`--apply`를 추가하면 DEV에서 선택한 E5·테마·속도 가중치를 로컬 `.env`에 반영합니다.
 `--output`으로 별도 결과 폴더를 지정할 수 있습니다.
 
-기존 `artifacts/matching/`의 결과는 이전 실행 기록이며, API 정리 후 평가를 다시 실행한 결과가 아닙니다.
+계산식 평가 결과는 `artifacts/matching/theme-pace-v1/`에 저장합니다.
+기존 `artifacts/matching/`의 E5 평가 결과는 이전 실행 기록으로 보존합니다.
 
 ## 검증
 
@@ -49,5 +52,5 @@ DEV와 TEST의 요청자는 겹치지 않습니다. 합성 규칙 정답에 대�
 ./.venv/bin/python -m unittest discover -s tests/matching -t . -v
 ```
 
-테스트는 DTO·필터·최대 추천 수·오류·실제 로컬 E5 추론을 검사합니다.
+테스트는 DTO·필터·최대 추천 수·오류·계산식 점수·정렬을 검사합니다.
 이 테스트에 DB·Redis·외부 유료 API는 필요하지 않습니다.

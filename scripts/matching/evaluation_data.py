@@ -52,5 +52,7 @@ def load_snapshot(env_path: Path):
 
 
 def backend_input(condition, profiles):
+    # Emulate BE's complete-profile query before constructing the public DTO.
     return BackendMatchingRequest(request=condition,
-        candidates=[p for p in profiles if p['user_id'] != condition['user_id']])
+        candidates=[p for p in profiles if p['user_id'] != condition['user_id']
+                    and p['gender'] is not None and p['pace'] is not None and p['theme']])
