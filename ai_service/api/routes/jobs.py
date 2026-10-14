@@ -4,15 +4,12 @@ from fastapi import APIRouter, Body, Request
 
 from ai_service.api.deps import IdempotencyKey
 from ai_service.api.examples import GENERATION_REQUEST_EXAMPLES
-from ai_service.api.job_dispatch import call, submit_matching_job
+from ai_service.api.job_dispatch import call
 from ai_service.jobs.errors import JobApiError
-from ai_service.jobs.examples import MATCHING_EXAMPLE, MATCHING_DB_EXAMPLE
 from ai_service.jobs.schemas import (
     JobAccepted,
     JobErrorResponse,
     JobStatus,
-    MatchingJobRequest,
-    MatchingDatabaseJobRequest,
 )
 from ai_service.travel.schemas import LegacyGenerationRequest, TravelGenerationRequest
 from ai_service.travel.features import validate_generation_window
@@ -39,17 +36,6 @@ def router(settings):
         key = idempotency_key or ':'.join(f'{name}:{value}' for name, value in identity.items())
         return await call(request, 'submit', 'ITINERARY_GENERATION', internal.model_dump(mode='json'),
                           identity, request.state.request_id, key)
-
-    @routes.post('/traveler-match-jobs', status_code=202, response_model=JobAccepted,
-                 responses=RESPONSES, tags=['V2'], summary='동행자 추천 작업 접수 (큐)')
-    async def create_matching_job(
-        body: Annotated[MatchingJobRequest | MatchingDatabaseJobRequest, Body(openapi_examples={
-            'database': {'summary': 'MySQL에서 조건·후보 조회', 'value': MATCHING_DB_EXAMPLE},
-            'matching': {'summary': '기존 후보 전달 방식', 'value': MATCHING_EXAMPLE},
-        })],
-        request: Request, idempotency_key: IdempotencyKey = None,
-    ):
-        return await submit_matching_job(body, request, settings, idempotency_key)
 
     @routes.get('/jobs/{job_id}', response_model=JobStatus,
                 responses={code: {'model': JobErrorResponse} for code in (400, 401, 404, 500, 503)},
