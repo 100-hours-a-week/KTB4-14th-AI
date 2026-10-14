@@ -100,7 +100,7 @@ INFO:     Uvicorn running on http://127.0.0.1:8000
 
 백엔드 동행자 추천은 `POST /api/ai/v1/matches/candidates`를 사용합니다. `/docs`의 V2에서 요청·후보를 전달하는 예시를 선택하고 기존 `HTTPBearer` 서비스 토큰을 입력하면, 로컬 E5 추천 결과를 최종 JSON으로 반환합니다. 입력 `{request, candidates}`와 응답 `{candidates, count}`는 [백엔드 연동 계약](docs/matching/backend-contract.md)을 참고하세요.
 
-MySQL 조회와 큐 처리는 [DB 연동 문서](docs/matching/mysql.md)와 [작업 큐 문서](docs/jobs/queue.md)를 참고하세요. 개발 DB의 초기 프로필은 `ai_service/matching/data/matching_seed_profiles.json`에 보관합니다. 실제 사용자 인증과 DB 요청 저장은 백엔드에서 처리합니다.
+MySQL 개발·평가 환경은 [DB 연동 문서](docs/matching/mysql.md)를 참고하세요. 동행자 추천은 큐 없이 동기 처리하며 일정 생성 큐만 [작업 큐 문서](docs/jobs/queue.md)에 설명합니다. 개발 DB의 초기 프로필은 `ai_service/matching/data/matching_seed_profiles.json`에 보관합니다. 실제 사용자 인증과 DB 요청 저장은 백엔드에서 처리합니다.
 
 ```bash
 ./.venv/bin/python -m unittest discover -s tests/matching -t . -v
@@ -227,16 +227,19 @@ uv sync --frozen --extra dev
 
 밤 일정은 18:00~23:59(한국시간) 안에서 생성합니다. 18시 이후 도착하면 도착일 장소 선택에도 이 범위를 적용합니다. `preference.extra_request`에 “밤 일정만 만들어주세요” 또는 “야간 일정만 만들어주세요”를 넣으면 여행의 모든 날짜에 적용합니다. 실제 도착/출발 시각과 도착 후 준비시간을 함께 반영하며, 다음날 00:00~05:59로 방문을 넘기지 않습니다. 일반 주간 여행의 시간 규칙은 유지합니다.
 
-## 큐 기반 일정 생성·동행자 추천
+## 큐 기반 일정 생성
 
-Redis + Celery 작업 접수 API를 추가했습니다. `POST /api/ai/v1/itinerary-jobs`와
-`POST /api/ai/v1/traveler-match-jobs`는 작업을 접수하고 202/job_id/status_url을 반환하며,
-`GET /api/ai/v1/jobs/{job_id}`에서 진행 단계와 완료 결과를 조회합니다. 기존 JSON·SSE·동기 매칭 API는
-유지됩니다. 새 매칭 작업 API는 백엔드가 전달한 실제 후보를 사용하며 기존 동기 매칭의 목데이터를 사용하지 않습니다.
+`POST /api/ai/v1/itinerary-jobs`는 Redis + Celery에 일정 생성 작업을 접수하고
+202/job_id/status_url을 반환하며 `GET /api/ai/v1/jobs/{job_id}`에서 결과를 조회합니다.
+기존 JSON·SSE 여행 API는 유지됩니다.
 
-[큐 API 계약·중복 방지·재시도·실행·테스트 방법](docs/jobs/queue.md)을 확인하세요.
+동행자 추천은 **큐 없이** `POST /api/ai/v1/matches/candidates`로 동기 처리합니다.
+이전 `POST /api/ai/v1/traveler-match-jobs`는 제거되었으며, 매칭 API에서 202 응답이나
+ID 전용 큐 요청을 더 이상 지원하지 않습니다.
+
+[일정 생성 큐·재시도·테스트 방법](docs/jobs/queue.md)을 확인하세요.
 Docker 실행은 `docker compose -f compose.jobs.yml up --build -d`입니다.
-Redis/worker/beat가 모두 필요하며, 큐 설정이 없으면 새 작업 API는 503을 반환합니다.
+일정 생성 큐에는 Redis/worker/beat가 필요하지만, 동기 동행자 추천에는 필요하지 않습니다.
 
 ## MySQL 동행자 매칭
 
@@ -252,17 +255,11 @@ Redis/worker/beat가 모두 필요하며, 큐 설정이 없으면 새 작업 API
 ./.venv/bin/python scripts/matching/evaluate_matching_dev.py --apply
 ```
 
-DB 조회 큐 방식은 API·worker를 재시작하고 `POST /api/ai/v1/traveler-match-jobs`로 보냅니다.
-
-```json
-{"matching_request_id":201,"requester_id":201,"limit":3}
-```
-
-202의 status_url을 조회해 완료 결과를 확인합니다. 후보 예산은 실제 프로필에 없으므로 비교하지 않으며,
-요청에 예산이 있으면 결과에 `unapplied_conditions: ["budget"]`를 표시합니다.
-백엔드의 기존 `POST /api/ai/v1/matches/candidates` `{request,candidates}` 호출은
-동기 200 `{candidates:[{user_id,match_rate}],count}`로 지원합니다. 해당 방식은 백엔드가 전달한
-후보만 사용하므로 Redis·AI MySQL 접속이 없어도 동작합니다.
-[기존 백엔드 호출·점수·검증 방법](docs/matching/backend-contract.md).
+개발용 DB는 오프라인 조회 및 추천 성능 평가에만 사용합니다.
+운영 매칭에서는 BE가 DB에서 매칭 조건과 후보를 조회하여 AI에 전달합니다.
+`POST /api/ai/v1/matches/candidates`의 `{request,candidates}` 입력에
+동기 200 `{candidates:[{user_id,match_rate}],count}` 결과를 반환합니다.
+이 경로는 AI에서 직접 MySQL에 접속하거나 Redis 큐를 사용하지 않습니다.
+[백엔드 동기 호출 계약](docs/matching/backend-contract.md)을 참고하세요.
 
 [DB 구조·근거·SQL·연동 범위](docs/matching/mysql.md), [최신 합성 데이터 평가](artifacts/matching/evaluation-report.md).
