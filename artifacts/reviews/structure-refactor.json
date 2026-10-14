@@ -1,0 +1,29 @@
+{
+  "scope": "기능별 폴더와 HTTP 진입점, 데이터 계약, 공통 E5 인코더 정리",
+  "entrypoints": {
+    "api": "ai_service.main:app",
+    "worker": "ai_service.jobs.worker:celery_app"
+  },
+  "openapi_identical": true,
+  "paths": [
+    "/api/ai/v1/itinerary-jobs",
+    "/api/ai/v1/itinerary-jobs/stream",
+    "/api/ai/v1/jobs/{job_id}",
+    "/api/ai/v1/matches/candidates",
+    "/api/ai/v1/traveler-match-jobs",
+    "/health",
+    "/internal/ai/itineraries/generate",
+    "/internal/ai/music/recommend",
+    "/matching-requests"
+  ],
+  "regression_tests": {
+    "command": "./.venv/bin/python -m unittest discover -s tests -t .",
+    "total": 232,
+    "passed": 220,
+    "skipped": 12,
+    "failures": 0,
+    "errors": 0
+  },
+  "main_line_count": 29,
+  "documentation": "docs/architecture.md"
+}

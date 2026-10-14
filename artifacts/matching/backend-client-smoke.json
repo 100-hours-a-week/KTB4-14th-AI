@@ -1,0 +1,138 @@
+{
+  "backend_commit": "75d7772b03ecc265527e27c78863b0f457761841",
+  "unchanged_backend_java_client": true,
+  "real_http": true,
+  "local_e5": true,
+  "database_required": false,
+  "redis_required": false,
+  "cases": [
+    {
+      "payload": {
+        "request": {
+          "matching_request_id": 10,
+          "user_id": 1,
+          "preferred_companion_gender": "FEMALE",
+          "theme": [
+            "NATURE",
+            "FOOD"
+          ],
+          "pace": "BALANCED",
+          "budget_min": 100000,
+          "budget_max": 800000
+        },
+        "candidates": [
+          {
+            "user_id": 22,
+            "nickname": "매칭후보A",
+            "gender": "MALE",
+            "theme": [
+              "NATURE",
+              "FOOD"
+            ],
+            "pace": "BALANCED"
+          },
+          {
+            "user_id": 23,
+            "nickname": "매칭후보B",
+            "gender": "FEMALE",
+            "theme": [
+              "NATURE",
+              "FOOD"
+            ],
+            "pace": "BALANCED"
+          }
+        ]
+      },
+      "http_status": 200
+    },
+    {
+      "payload": {
+        "request": {
+          "matching_request_id": 10,
+          "user_id": 1,
+          "preferred_companion_gender": "FEMALE",
+          "theme": [
+            "NATURE",
+            "FOOD"
+          ],
+          "pace": "BALANCED",
+          "budget_min": 100000,
+          "budget_max": 800000
+        },
+        "candidates": []
+      },
+      "http_status": 200
+    },
+    {
+      "payload": {
+        "request": {
+          "matching_request_id": 10,
+          "user_id": 1,
+          "preferred_companion_gender": "FEMALE",
+          "theme": [
+            "NATURE",
+            "FOOD"
+          ],
+          "pace": "BALANCED",
+          "budget_min": 100000,
+          "budget_max": 800000
+        },
+        "candidates": [
+          {
+            "user_id": 44,
+            "nickname": "나",
+            "gender": "FEMALE",
+            "theme": [
+              "NATURE",
+              "FOOD"
+            ],
+            "pace": "BALANCED"
+          },
+          {
+            "user_id": 33,
+            "nickname": "가",
+            "gender": "FEMALE",
+            "theme": [
+              "NATURE",
+              "FOOD"
+            ],
+            "pace": "BALANCED"
+          },
+          {
+            "user_id": 55,
+            "nickname": "다",
+            "gender": "FEMALE",
+            "theme": [
+              "NATURE",
+              "FOOD"
+            ],
+            "pace": "BALANCED"
+          },
+          {
+            "user_id": 66,
+            "nickname": "가",
+            "gender": "FEMALE",
+            "theme": [
+              "NATURE",
+              "FOOD"
+            ],
+            "pace": "BALANCED"
+          },
+          {
+            "user_id": 1,
+            "nickname": "본인",
+            "gender": "FEMALE",
+            "theme": [
+              "NATURE",
+              "FOOD"
+            ],
+            "pace": "BALANCED"
+          }
+        ]
+      },
+      "http_status": 200
+    }
+  ],
+  "java_result": "JAVA_CLIENT_OK count=1 user_id=23 match_rate=98 empty_count=0 tie_ids=33,66,44",
+  "scope": "Original Java client/DTO HTTP integration; full Spring application and production deployment not started"
+}

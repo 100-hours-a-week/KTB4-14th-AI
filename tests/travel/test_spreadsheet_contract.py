@@ -1,0 +1,131 @@
+import copy
+import json
+import unittest
+from unittest.mock import AsyncMock, patch
+
+from fastapi.testclient import TestClient
+from pydantic import ValidationError
+
+from ai_service.api.examples import ITINERARY_REQUEST_EXAMPLE, MUSIC_REQUEST_EXAMPLE, LEGACY_ITINERARY_REQUEST_EXAMPLE
+from ai_service.core.config import Settings
+from ai_service.main import create_app
+from ai_service.core.errors import MusicRecommendationFailed, ServiceUnavailable
+from ai_service.travel.schemas import (
+    GenerationResult, ItineraryRequest, ItineraryResponse, TravelGenerationRequest, LegacyGenerationRequest
+)
+from ai_service.music.schemas import (
+    MusicRecommendation, MusicRequest
+)
+
+
+HEADERS = {"Authorization": "Bearer test-only"}
+
+
+class SpreadsheetContractTests(unittest.TestCase):
+    def test_exact_trip_request_reaches_generator_without_adding_response_fields(self):
+        settings = Settings(api_token="test-only", openai_api_key="test", kakao_rest_api_key="test")
+        body = TravelGenerationRequest.model_validate(ITINERARY_REQUEST_EXAMPLE).generation_context()
+        result = ItineraryResponse(**body.model_dump(), title="테스트 일정", days=[])
+        generate = AsyncMock(return_value=GenerationResult(
+            itinerary=result, music={"title": "테스트", "artist": "테스트", "youtube_url": "https://www.youtube.com/watch?v=abcdefghijk"},
+        ))
+        with patch("ai_service.api.routes.travel.generate_plan", generate), TestClient(create_app(settings=settings)) as client:
+            response = client.post("/internal/ai/itineraries/generate", json=ITINERARY_REQUEST_EXAMPLE, headers=HEADERS)
+        self.assertEqual(response.status_code, 200, response.text)
+        received = generate.call_args.args[0]
+        self.assertNotIn("client_draft_id", received.model_dump())
+        self.assertEqual(received.preference.budget_type, "KRW")
+        self.assertEqual(received.required_places[0].provider_place_id, "26338954")
+        self.assertNotIn("client_draft_id", response.json())
+        self.assertEqual(response.json(), result.model_dump(mode="json"))
+        self.assertNotIn("generation_job_id", response.json())
+        self.assertEqual(received.region.full_name, "제주특별자치도 서귀포시")
+        self.assertNotIn("budget_currency", response.json()["preference"])
+
+    def test_removed_draft_field_rejected_and_absent_from_openapi(self):
+        body = {**ITINERARY_REQUEST_EXAMPLE, "client_draft_id": 1}
+        with TestClient(create_app(settings=Settings(api_token="test-only"))) as client:
+            for endpoint in ("/internal/ai/itineraries/generate",):
+                with self.subTest(endpoint=endpoint):
+                    response = client.post(endpoint, json=body, headers=HEADERS)
+                    self.assertEqual(response.status_code, 400, response.text)
+            self.assertNotIn("client_draft_id", client.get("/openapi.json").text)
+
+    def test_both_currency_names_are_not_silently_combined(self):
+        data = copy.deepcopy(ITINERARY_REQUEST_EXAMPLE)
+        data["preference"]["budget_currency"] = "USD"
+        with self.assertRaises(ValidationError):
+            TravelGenerationRequest.model_validate(data)
+
+    def test_music_request_recommends_song_and_returns_verified_video(self):
+        settings = Settings(api_token="test-only")
+        app = create_app(settings=settings)
+        selected = MusicRecommendation(title="Yellow", artist="Coldplay",
+                                       youtube_url="https://www.youtube.com/watch?v=abcdefghijk")
+        with TestClient(app) as client:
+            app.state.music_recommender.recommend = AsyncMock(return_value=selected)
+            app.state.planner.recommend_music = AsyncMock(side_effect=AssertionError("OpenAI music must not run"))
+            response = client.post("/internal/ai/music/recommend", json=MUSIC_REQUEST_EXAMPLE, headers=HEADERS)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), {
+            "message": "ai_music_recommended",
+            "data": {"travel_plan_id": 1, "title": "Yellow", "artist": "Coldplay", "youtube_url": "https://www.youtube.com/watch?v=abcdefghijk"},
+        })
+        app.state.music_recommender.recommend.assert_awaited_once()
+        app.state.planner.recommend_music.assert_not_called()
+
+    def test_failed_music_recommendation_returns_422_with_travel_plan_id(self):
+        app = create_app(settings=Settings(api_token="test-only"))
+        with TestClient(app) as client:
+            app.state.music_recommender.recommend = AsyncMock(side_effect=MusicRecommendationFailed())
+            response = client.post("/internal/ai/music/recommend", json=MUSIC_REQUEST_EXAMPLE, headers=HEADERS)
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertEqual(response.json()["message"], "ai_music_recommendation_failed")
+        self.assertEqual(response.json()["data"]["travel_plan_id"], 1)
+        self.assertNotIn("generation_job_id", response.json()["data"])
+
+    def test_music_model_unavailable_returns_503_without_openai_key(self):
+        app = create_app(settings=Settings(api_token="test-only"))
+        with TestClient(app) as client:
+            app.state.music_recommender.recommend = AsyncMock(side_effect=ServiceUnavailable(reason="music_model_load_failed"))
+            response = client.post("/internal/ai/music/recommend", json=MUSIC_REQUEST_EXAMPLE, headers=HEADERS)
+        self.assertEqual(response.status_code, 503)
+
+    def test_music_requires_auth_and_rejects_candidate_or_song_input(self):
+        with TestClient(create_app(settings=Settings(api_token="test-only"))) as client:
+            self.assertEqual(client.post("/internal/ai/music/recommend", json=MUSIC_REQUEST_EXAMPLE).status_code, 401)
+            for extra in ({"candidates": []}, {"title": "개화"}, {"artist": "LUCY"}, {"youtube_url": "https://www.youtube.com/watch?v=abcdefghijk"}):
+                body = {**MUSIC_REQUEST_EXAMPLE, **extra}
+                self.assertEqual(client.post("/internal/ai/music/recommend", json=body, headers=HEADERS).status_code, 400)
+            schema = client.get("/openapi.json").json()["components"]["schemas"]
+            self.assertEqual(set(schema["MusicRequest"]["properties"]), {"travel_plan_id", "region", "duration", "preference"})
+            self.assertNotIn("music_id", schema["SelectedMusic"]["properties"])
+
+    def test_openapi_examples_match_spreadsheet_requests(self):
+        spec = create_app(settings=Settings()).openapi()
+        for endpoint, example, schema, example_key in (
+            ("/internal/ai/itineraries/generate", LEGACY_ITINERARY_REQUEST_EXAMPLE, LegacyGenerationRequest, "nested"),
+            ("/internal/ai/music/recommend", MUSIC_REQUEST_EXAMPLE, MusicRequest, "travel"),
+        ):
+            value = spec["paths"][endpoint]["post"]["requestBody"]["content"]["application/json"]["examples"][example_key]["value"]
+            self.assertEqual(value, example)
+            schema.model_validate(value)
+
+    def test_itinerary_swagger_has_concrete_success_and_error_examples(self):
+        from ai_service.api.examples import ITINERARY_RESPONSE_EXAMPLES
+        with TestClient(create_app(settings=Settings())) as client:
+            spec = client.get('/openapi.json').json()
+        for path in ('/internal/ai/itineraries/generate',):
+            responses = spec['paths'][path]['post']['responses']
+            for code, example in ITINERARY_RESPONSE_EXAMPLES.items():
+                shown = responses[str(code)]['content']['application/json']['examples']['default']['value']
+                self.assertEqual(shown, example['value'])
+                self.assertNotIn('additionalProp1', json.dumps(shown))
+                if code in (401, 500):
+                    self.assertIn('data', shown)
+                    self.assertIsNone(shown['data'])
+            self.assertEqual(responses['503']['content']['application/json']['examples']['routing']['value']['message'], 'routing_service_unavailable')
+        success = ITINERARY_RESPONSE_EXAMPLES[200]['value']
+        self.assertEqual(ItineraryResponse.model_validate(success).model_dump(mode='json'), success)
+        self.assertNotIn('travel_plan_id', success)
+        self.assertIsNone(success['days'][0]['items'][0]['route_from_previous'])

@@ -1,0 +1,4 @@
+{
+  "context": "SELECT mr.id AS matching_request_id, mr.travel_plan_id, mr.requester_id, mr.preferred_companion_gender, mr.pace, mr.themes, mr.budget_min, mr.budget_max FROM YOUR_MATCHING_REQUEST_TABLE mr WHERE mr.id = %(matching_request_id)s AND mr.travel_plan_id = %(travel_plan_id)s AND mr.requester_id = %(requester_id)s",
+  "candidates": "SELECT c.user_id, c.gender, c.pace, c.themes, c.budget_min, c.budget_max, c.introduction FROM YOUR_ELIGIBLE_MATCHING_CANDIDATE_VIEW c WHERE c.matching_request_id = %(matching_request_id)s AND c.user_id <> %(requester_id)s ORDER BY c.user_id LIMIT %(candidate_limit)s"
+}

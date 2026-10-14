@@ -1,0 +1,19 @@
+{
+  "database": "audigo_matching_dev",
+  "version": "matching-dev-v1",
+  "seed": 20261013,
+  "fingerprint": "8a4a90496a6d44c9b1067c72c73587ae3232ce1009c264c6e45dc5661d787e9d",
+  "users": 1000,
+  "travel_plans": 1000,
+  "matching_requests": 1000,
+  "dev_cases": 600,
+  "test_cases": 300,
+  "negative_cases": 100,
+  "created": true,
+  "human_reviewed": false,
+  "accounts": [
+    "audigo_ai_reader",
+    "audigo_app",
+    "audigo_seed"
+  ]
+}

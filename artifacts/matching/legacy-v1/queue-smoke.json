@@ -1,0 +1,60 @@
+{
+  "database": "audigo_matching_dev",
+  "local_e5": true,
+  "openai_key_configured": false,
+  "weights": [
+    0.85,
+    0.1,
+    0.05
+  ],
+  "201": {
+    "http_status": 202,
+    "status": "COMPLETED",
+    "attempt": 1,
+    "result": {
+      "matching_request_id": 201,
+      "travel_plan_id": 101,
+      "requester_id": 12,
+      "recommendations": [
+        {
+          "user_id": 2,
+          "score": 0.9801047968563269,
+          "rank": 1
+        },
+        {
+          "user_id": 1,
+          "score": 0.9770219312455407,
+          "rank": 2
+        },
+        {
+          "user_id": 4,
+          "score": 0.975115997474445,
+          "rank": 3
+        },
+        {
+          "user_id": 35,
+          "score": 0.9740873240682788,
+          "rank": 4
+        },
+        {
+          "user_id": 358,
+          "score": 0.9093496661874858,
+          "rank": 5
+        }
+      ]
+    },
+    "error": null
+  },
+  "901": {
+    "http_status": 202,
+    "status": "FAILED",
+    "attempt": 1,
+    "result": null,
+    "error": {
+      "code": "NO_MATCH_CANDIDATES",
+      "message": "추천할 동행 후보가 없습니다.",
+      "retryable": false,
+      "details": []
+    }
+  }
+}

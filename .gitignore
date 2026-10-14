@@ -1,5 +1,10 @@
 .env
+.env.matching-dev
+/artifacts/matching/*.csv
+restaurant_hours.json
 .venv/
+/model/
 __pycache__/
 *.pyc
 .pytest_cache/
+.DS_Store

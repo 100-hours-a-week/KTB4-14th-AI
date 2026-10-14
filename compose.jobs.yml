@@ -1,0 +1,40 @@
+# Redis/Celery job deployment. Legacy JSON and SSE also remain available.
+x-ai: &ai
+  build: .
+  image: audigo-ai:jobs
+  env_file: .env
+  environment:
+    REDIS_URL: redis://redis:6379/0
+    JOBS_REDIS_URL: redis://redis:6379/1
+    CELERY_BROKER_URL: redis://redis:6379/0
+  depends_on:
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  redis:
+    image: redis:7.4
+    command: [redis-server, --appendonly, 'yes', --appendfsync, always, --maxmemory-policy, noeviction]
+    ports: ['127.0.0.1:6379:6379']
+    volumes: [job-redis:/data]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+  api:
+    <<: *ai
+    ports: ['127.0.0.1:8000:8000']
+  worker:
+    <<: *ai
+    entrypoint: [celery, -A, 'ai_service.jobs.worker:celery_app']
+    command: [worker, --loglevel=INFO, --concurrency=2, '--queues=audigo_itineraries,audigo_matching,audigo_control']
+  beat:
+    <<: *ai
+    entrypoint: [celery, -A, 'ai_service.jobs.worker:celery_app']
+    command: [beat, --loglevel=INFO, '--schedule=/tmp/audigo-beat']
+
+volumes:
+  job-redis:
