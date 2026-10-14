@@ -17,6 +17,9 @@ class MatchingOpenAPITests(unittest.TestCase):
         self.assertFalse(any(route.path == "/matching-requests" for route in self.app.routes))
         self.assertNotIn("/internal/ai/matching/recommend", self.spec["paths"])
         self.assertNotIn("/matching-requests", self.spec["paths"])
+        self.assertNotIn("/api/ai/v1/traveler-match-jobs", self.spec["paths"])
+        self.assertNotIn("202", self.operation["responses"])
+        self.assertNotIn("Idempotency-Key", [p["name"] for p in self.operation.get("parameters", [])])
         self.assertEqual(self.operation["operationId"], "matching_candidates_api_ai_v1_matches_candidates_post")
         self.assertEqual(self.operation["tags"], ["V2"])
 
