@@ -4,6 +4,9 @@
 
 [프로젝트 구조와 수정할 파일 찾기](docs/architecture.md) · [백엔드 매칭 계약](docs/matching/backend-contract.md) · [MySQL 연동](docs/matching/mysql.md) · [큐 작업](docs/jobs/queue.md)
 
+
+## 진행중인 항목
+
 ## 로컬 실행 — 한 번에 붙여넣기
 
 아래 블록 전체를 **터미널에 한 번에 복사해서 붙여넣으면 설치부터 로컬 서버 실행까지 진행됩니다.** `uv`가 잠금 파일에 맞춰 가상환경을 만들거나 갱신합니다. 기존 `.env`와 API 키는 그대로 유지합니다.
