@@ -1,11 +1,9 @@
 """작업 접수·내구성 있는 발행·결과 조회 서비스."""
-import logging
 from ai_service.jobs.errors import JobApiError
 from ai_service.jobs.schemas import JobAccepted
 from ai_service.jobs.store import RedisJobStore
 from ai_service.jobs.worker import create_celery_app, publish
-
-logger = logging.getLogger(__name__)
+from ai_service.core.diagnostics import failure
 
 class JobService:
     def __init__(self, store, publisher):
@@ -20,7 +18,8 @@ class JobService:
                 self.publisher(doc)
                 self.store.dispatched(doc['job_id'], score)
             except Exception as exc:
-                logger.warning('queue_delivery_pending job_id=%s error_type=%s', doc['job_id'], type(exc).__name__)
+                failure('queue_delivery_pending',exc,code='QUEUE_PUBLISH_FAILED',reason='queue_publish_failed',
+                        request_id=doc['request_id'],job_id=doc['job_id'])
         latest = self.store.get(doc['job_id']) or doc
         return JobAccepted(job_id=doc['job_id'], job_type=doc['job_type'], status=latest['status'],
                            status_url='/api/ai/v1/jobs/' + doc['job_id'])

@@ -3,6 +3,7 @@ from contextvars import ContextVar
 import json
 import logging
 import traceback
+from ai_service.core.diagnostic_messages import failure_description
 
 request_id = ContextVar("request_id", default="unknown")
 logger = logging.getLogger("uvicorn.error.audigo")
@@ -18,6 +19,8 @@ def failure(event: str, exc: Exception, **fields) -> None:
     # 예외 문자열과 연결된 HTTP 오류에는 비밀값이 있을 수 있다.
     frames = [{"file": frame.filename.rsplit("/", 1)[-1], "line": frame.lineno,
                "function": frame.name} for frame in traceback.extract_tb(exc.__traceback__)]
-    record(event, level=logging.ERROR, error_type=type(exc).__name__, code=getattr(exc, "code", "internal_server_error"),
-           reason=getattr(exc, "reason", None), detail=getattr(exc, "detail", None) or None,
-           frames=frames, **fields)
+    code = fields.pop('code',getattr(exc,'code','internal_server_error'))
+    reason = fields.pop('reason',getattr(exc,'reason',None))
+    record(event, level=logging.ERROR, error_type=type(exc).__name__, code=code,
+           reason=reason, detail=getattr(exc,'detail',None) or None,
+           frames=frames, **failure_description(code,reason), **fields)

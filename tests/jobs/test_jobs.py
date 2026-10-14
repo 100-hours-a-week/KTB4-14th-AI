@@ -82,7 +82,7 @@ class JobStoreTests(unittest.TestCase):
     def test_outbox_survives_publication_failure_and_dispatches_again(self):
         store = new_store()
         publisher = Mock(side_effect=RuntimeError('broker outage'))
-        with self.assertLogs('ai_service.jobs.service', level='WARNING'):
+        with self.assertLogs('uvicorn.error.audigo', level='ERROR'):
             accepted = JobService(store, publisher).submit('ITINERARY_GENERATION', ITINERARY_EXAMPLE,
                 {'travel_plan_id': 101}, 'req', 'key')
         self.assertEqual(accepted.status, 'QUEUED')

@@ -1,7 +1,6 @@
 """Celery executes existing AI services; Redis controls leases and retries."""
 import asyncio
 from contextlib import aclosing
-import logging
 import time
 from uuid import uuid4
 
@@ -11,7 +10,7 @@ from redis.exceptions import RedisError
 
 from ai_service.travel.backend_contract import backend_result, STAGE_NAMES
 from ai_service.core.config import Settings
-from ai_service.core.diagnostics import request_id as log_request_id
+from ai_service.core.diagnostics import request_id as log_request_id, failure
 from ai_service.core.errors import ApiError, ServiceUnavailable
 from ai_service.jobs.errors import JobApiError
 from ai_service.jobs.store import RedisJobStore
@@ -22,9 +21,6 @@ from ai_service.travel.routing import KakaoRoutes
 from ai_service.travel.schemas import (
     ItineraryRequest
 )
-
-logger = logging.getLogger(__name__)
-
 
 def publish(app, doc):
     # Only a job ID is put in the broker; itinerary input and results live in Redis.
@@ -45,7 +41,8 @@ def dispatch_pending(app, store):
             published += 1
         except Exception as exc:
             # Do not lose the durable outbox entry on publication failure.
-            logger.warning('queue_publish_failed job_id=%s error_type=%s', job_id, type(exc).__name__)
+            failure('queue_publish_failed',exc,code='QUEUE_PUBLISH_FAILED',reason='queue_publish_failed',
+                    request_id=doc['request_id'],job_id=job_id)
     return published
 
 
@@ -88,7 +85,9 @@ def execute_job(job_id, store, settings):
                 return await run_pipeline(doc, store, owner, settings)
         try:
             result = asyncio.run(bounded())
-        except RedisError:
+        except RedisError as exc:
+            failure('job_storage_failed',exc,code='QUEUE_UNAVAILABLE',reason='job_storage_unavailable',
+                    job_id=job_id,attempt=doc['attempt'])
             raise  # Lease/outbox recovery retries storage outages, without committing false failure.
         except Exception as exc:
             error = job_error(exc)
@@ -96,8 +95,10 @@ def execute_job(job_id, store, settings):
             delay = min(60, settings.job_retry_delay_seconds * 2 ** (doc['attempt'] - 1))
             store.finish(job_id, owner, 'RETRYING' if can_retry else 'FAILED', error=error,
                          retry_at=time.time() + delay if can_retry else 0)
-            logger.warning('job_attempt_failed job_id=%s attempt=%s error_code=%s retry=%s',
-                           job_id, doc['attempt'], error['code'], can_retry)
+            failure('job_attempt_failed',exc,code=error['code'],job_id=job_id,
+                    attempt=doc['attempt'],max_attempts=doc['max_attempts'],retry_scheduled=can_retry,
+                    retry_message_ko=('일시적인 오류로 전체 작업을 다시 실행할 예정입니다.' if can_retry
+                                      else '자동 재시도 없이 실패 상태로 종료했습니다. 원인을 수정한 뒤 새 작업을 요청하세요.'))
         else:
             store.finish(job_id, owner, 'COMPLETED', result=result)
     finally:

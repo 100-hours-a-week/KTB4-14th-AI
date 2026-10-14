@@ -1,9 +1,12 @@
 import unittest
+from copy import deepcopy
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 from ai_service.core.config import Settings
 from ai_service.main import create_app
+from ai_service.matching.backend import BACKEND_MATCHING_EXAMPLE
 
 
 class MatchingOpenAPITests(unittest.TestCase):
@@ -44,6 +47,49 @@ class MatchingOpenAPITests(unittest.TestCase):
                 response = client.post(path, json={}, headers=headers)
                 self.assertEqual(response.status_code, 404)
                 self.assertEqual(response.json(), {"message": "not_found", "data": None})
+
+    def test_response_examples_match_actual_api_responses(self):
+        path = '/api/ai/v1/matching-requests'
+        headers = {'Authorization': 'Bearer test-only'}
+        app = create_app(settings=Settings(api_token='test-only'))
+        with TestClient(app, raise_server_exceptions=False) as client:
+            documented = client.get('/openapi.json').json()['paths'][path]['post']['responses']
+
+            def assert_example(response, code, name):
+                self.assertEqual(response.status_code, code, response.text)
+                actual = response.json()
+                if 'request_id' in actual:
+                    self.assertTrue(actual['request_id'].startswith('req_'))
+                    actual['request_id'] = 'req_matching_example'
+                expected = documented[str(code)]['content']['application/json']['examples'][name]['value']
+                self.assertEqual(actual, expected)
+
+            assert_example(client.post(path,json=BACKEND_MATCHING_EXAMPLE,headers=headers),200,'recommended')
+            body = deepcopy(BACKEND_MATCHING_EXAMPLE)
+            body['candidates'] = [dict(user_id=uid,nickname=str(uid),gender='FEMALE',theme=themes,pace=pace)
+                for uid,themes,pace in [(23,['NATURE','FOOD'],'BALANCED'),
+                    (24,['NATURE','FOOD'],'RELAXED'),(25,['NATURE'],'BALANCED')]]
+            assert_example(client.post(path,json=body,headers=headers),200,'top_three')
+            assert_example(client.post(path,json={**body,'candidates':[]},headers=headers),200,'empty')
+
+            mutations = {
+                'gender_null': lambda b: b['request'].update(preferred_companion_gender=None),
+                'theme_null': lambda b: b['request'].update(theme=None),
+                'pace_null': lambda b: b['request'].update(pace=None),
+                'candidates_null': lambda b: b.update(candidates=None),
+                'nickname_missing': lambda b: b['candidates'][0].pop('nickname'),
+                'limit_exceeded': lambda b: b.update(limit=4),
+            }
+            for name, mutate in mutations.items():
+                body = deepcopy(BACKEND_MATCHING_EXAMPLE)
+                mutate(body)
+                with self.subTest(example=name):
+                    assert_example(client.post(path,json=body,headers=headers),400,name)
+            assert_example(client.post(path,json=BACKEND_MATCHING_EXAMPLE),401,'unauthorized')
+            with patch('ai_service.api.routes.matching.recommend',side_effect=RuntimeError('test failure')):
+                assert_example(client.post(path,json=BACKEND_MATCHING_EXAMPLE,headers=headers),500,'internal_error')
+        with TestClient(create_app(settings=Settings())) as client:
+            assert_example(client.post(path,json=BACKEND_MATCHING_EXAMPLE,headers=headers),503,'service_unavailable')
 
 
 if __name__ == "__main__":

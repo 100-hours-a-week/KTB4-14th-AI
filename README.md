@@ -226,6 +226,17 @@ uv sync --frozen --extra dev
 
 응답의 `data.error_message`에서 누락된 필드나 JSON 문법 오류를 확인하세요. Swagger의 사용자 중첩 요청 예시는 `generation_job_id`를 받습니다. 문서에서 복사한 줄 끝의 역슬래시, `<br>` 같은 표기 문자는 JSON에 넣지 않습니다.
 
+## 한국어 오류 로그
+
+앱 로그를 CloudWatch로 수집하는 환경에서는 같은 `request_id`로 오류를 추적합니다.
+오류 로그에는 HTTP 상태(`http_status`), 코드(`code`), 호출 메서드·경로(`method`, `path`)와
+한국어 설명(`message_ko`), 원인(`cause_ko`), 확인할 항목(`action_ko`)을 남깁니다.
+입력 검증 실패는 `errors`에 필드별 설명과 수정 방법을 기록합니다.
+예를 들어 매칭 `limit=4`는 “추천 수: 3 이하여야 합니다.”와 “limit은 1~3 정수로 전달하세요.”로 표시합니다.
+서비스 토큰 미설정은 `reason=service_token_missing`과 `AUDIGO_API_TOKEN` 확인 안내를 남깁니다.
+일정 큐 실패는 `job_id`, 실행 횟수, `retry_scheduled`와 한국어 재시도 안내를 함께 기록합니다.
+요청 본문·토큰 값·외부 예외 문자열은 로그에 넣지 않으며 API 응답 계약은 유지합니다.
+
 ## 실제 일정 생성 검증
 
 서버 실행 후 `/docs`에서 유효한 요청과 Bearer 토큰으로 JSON 또는 SSE API를 호출합니다. 응답의 `X-Request-Id`와 같은 요청 ID로 네 단계의 시작·완료 로그를 확인하세요. SSE는 HTTP 200 이후 `error` 이벤트로 실패할 수 있으므로 최종 결과와 `complete`까지 확인해야 합니다. 실제 OpenAI·카카오 호출이 발생하며 백엔드 저장과 프론트 표시도 별도로 확인해야 합니다.
