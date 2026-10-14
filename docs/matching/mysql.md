@@ -76,32 +76,26 @@ DB 조회와 함께 백엔드의 기존 동기 요청·응답 계약도 지원�
 
 예산은 요청 조건으로 읽어 보존하지만 백엔드 후보 프로필에는 비교할 예산이 없습니다.
 이를 0원·요청자 예산 등으로 채우지 않으며, 예산 때문에 모든 후보를 제외하지도 않습니다.
-예산 조건이 있었으면 큐 완료 결과에 `unapplied_conditions: ["budget"]`를 포함합니다.
-없으면 빈 배열입니다. 예산이 필수 필터여야 하는 제품 정책이라면 후보 데이터 기준을 별도로 합의해야 합니다.
+개발 평가에서는 예산 미적용 여부를 `unapplied_conditions: ["budget"]`로 기록합니다.
+예산 조건이 없으면 빈 배열입니다. 예산이 필수 필터여야 하는 제품 정책이라면 후보 데이터 기준을 별도로 합의해야 합니다.
 지역·기간·차단·소개도 현재 백엔드 매칭에 존재하는 조건인 것처럼 처리하지 않습니다.
 
-## AI에서 직접 검증하는 요청
+## 개발 DB 평가 (공개 매칭 큐 API 없음)
 
-```http
-POST /api/ai/v1/traveler-match-jobs
-Authorization: Bearer <AUDIGO_API_TOKEN>
-Content-Type: application/json
+이 DB는 AI 개발자가 SQL 조회·E5 추천 품질을 로컬에서 검증하는 데 사용합니다.
+
+```bash
+./.venv/bin/python scripts/matching/setup_matching_dev_db.py
+./.venv/bin/python scripts/matching/evaluate_matching_dev.py --apply
 ```
 
-```json
-{"matching_request_id":201,"requester_id":201,"limit":3}
-```
-
-202의 status_url을 같은 토큰으로 조회합니다. COMPLETED.result에는 matching_request_id,
-requester_id, recommendations(user_id/score/rank), unapplied_conditions가 있습니다.
-이전 `/api/ai/v1/matches/candidates`의 ID 요청도 202로 호환 처리합니다.
-DB 조회에 travel_plan_id를 넣으면 현재 매핑에서는 INVALID_REQUEST입니다.
-기존 사용자 정의 여행 연계 매핑에 한해서 선택 travel_plan_id를 계속 지원합니다.
-입력에 candidates가 있는 기존 큐 요청은 호환용으로 유지합니다.
+실제 BE 연동은 `POST /api/ai/v1/matches/candidates`에 `{request,candidates}`를 보내는
+동기 방식입니다. `/api/ai/v1/traveler-match-jobs` 및 ID만 보내는 큐 호출은
+더 이상 제공하지 않습니다. 개발용 MySQL 조회 코드가 있어도 동기 추천에서는 사용하지 않습니다.
 
 SQL은 서버 설정 파일에서만 읽고 HTTP Body로 받지 않습니다. 값은 PyMySQL 파라미터로 바인딩합니다.
 DB 장애는 상태의 FAILED/RETRYING로 확인하고, 요청·사용자 불일치는 MATCHING_REQUEST_NOT_FOUND,
-후보 없음은 NO_MATCH_CANDIDATES입니다. 가상 후보로 대체하지 않습니다.
+후보 없음은 NO_MATCH_CANDIDATES로 구분합니다. 가상 후보로 대체하지 않습니다.
 
 ## E5와 평가
 
@@ -131,7 +125,7 @@ DB 장애는 상태의 FAILED/RETRYING로 확인하고, 요청·사용자 불일
 [요청·응답·점수·실행 계약](backend-contract.md)을 참고하세요.
 
 이 동기 호출은 BE가 보내는 후보를 사용하므로 AI의 MySQL·Redis 설정이 필요하지 않습니다.
-이 문서의 ID 기반 큐 호출을 사용할 때에만 실제 DB와 Redis·worker·beat 설정이 필요합니다.
+로컬 개발·평가에서 SQL 조회를 시험하는 경우에만 아래 MySQL 접속 설정이 필요합니다.
 MySQL은 MATCHING_MYSQL_HOST/PORT/DATABASE/USER/PASSWORD/QUERY_FILE로 연결합니다.
 Docker localhost는 컨테이너 자신입니다. 호스트 DB 주소·접속 허용 계정은 배포 환경에 맞추고,
 이미지 내 매핑은 /app/ai_service/matching/data/matching_dev_queries.json, 원격 TLS는 MATCHING_MYSQL_SSL_CA입니다.
