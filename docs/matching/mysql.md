@@ -97,7 +97,7 @@ requester_id, recommendations(user_id/score/rank), unapplied_conditions가 있�
 이전 `/api/ai/v1/matches/candidates`의 ID 요청도 202로 호환 처리합니다.
 DB 조회에 travel_plan_id를 넣으면 현재 매핑에서는 INVALID_REQUEST입니다.
 기존 사용자 정의 여행 연계 매핑에 한해서 선택 travel_plan_id를 계속 지원합니다.
-입력에 candidates가 있는 기존 큐 요청과 동기 `/matching-requests` 목데이터 데모는 호환용으로 유지합니다.
+입력에 candidates가 있는 기존 큐 요청은 호환용으로 유지합니다.
 
 SQL은 서버 설정 파일에서만 읽고 HTTP Body로 받지 않습니다. 값은 PyMySQL 파라미터로 바인딩합니다.
 DB 장애는 상태의 FAILED/RETRYING로 확인하고, 요청·사용자 불일치는 MATCHING_REQUEST_NOT_FOUND,

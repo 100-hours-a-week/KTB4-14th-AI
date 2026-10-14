@@ -32,8 +32,8 @@ def relevance(request, profile):
 
 def make_dataset(seed=SEED):
     rng=random.Random(seed)
-    fixture=json.loads((DATA_DIR/'matching_request.mock.json').read_text())
-    originals={c['user_id']:c for c in fixture['candidates']}
+    fixture=json.loads((DATA_DIR/'matching_seed_profiles.json').read_text())
+    originals={c['user_id']:c for c in fixture}
     profiles=[]
     for uid in range(1,1001):
         themes=sorted(rng.sample(THEMES,rng.randint(1,4)))

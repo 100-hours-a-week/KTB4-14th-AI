@@ -42,8 +42,8 @@ class MatchingCandidate(MatchingTravelProfile):
         return value.strip().title() if isinstance(value, str) else value
 
 
-class MatchingRequestCreate(MatchingTravelProfile):
-    """풀스택에서 보내는 매칭 조건만 입력받는다."""
+class MatchingRecommendationRequest(MatchingTravelProfile):
+    """서버가 요청자·후보를 채워 E5에 전달하는 내부 입력."""
 
     preferred_companion_gender: Literal["Female", "Male", "Other", "Any"]
 
@@ -52,9 +52,6 @@ class MatchingRequestCreate(MatchingTravelProfile):
     def normalize_gender(cls, value):
         return value.strip().title() if isinstance(value, str) else value
 
-
-class MatchingRecommendationRequest(MatchingRequestCreate):
-    """서버가 요청자·후보를 채워 E5에 전달하는 내부 입력."""
 
     requester_id: int = Field(gt=0, strict=True)
     candidates: list[MatchingCandidate] = Field(max_length=200)

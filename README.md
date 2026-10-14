@@ -98,33 +98,13 @@ INFO:     Uvicorn running on http://127.0.0.1:8000
 
 ### V2 동행자 후보 추천 명세
 
-**실행 가능한 AI 추천 API는 합의한 `POST /matching-requests`입니다.** `/docs`의 V2에서 이 경로를 선택하고, 기존 `HTTPBearer`에 `AUDIGO_API_TOKEN`을 입력한 뒤 조건 예시를 실행하면 실제 로컬 E5로 추천합니다. OpenAI·카카오 키와 DB는 필요하지 않으며, 고정된 추천 결과를 반환하지 않습니다.
+백엔드 동행자 추천은 `POST /api/ai/v1/matches/candidates`를 사용합니다. `/docs`의 V2에서 요청·후보를 전달하는 예시를 선택하고 기존 `HTTPBearer` 서비스 토큰을 입력하면, 로컬 E5 추천 결과를 최종 JSON으로 반환합니다. 입력 `{request, candidates}`와 응답 `{candidates, count}`는 [백엔드 연동 계약](docs/matching/backend-contract.md)을 참고하세요.
 
-풀스택 요청 본문은 아래 5개 필드만 받습니다. `preferred_companion_gender`, `theme`, `pace`는 필수이며 `budget_min`, `budget_max`는 선택입니다. `user_id`, `requester_id`, `candidates`, `top_k`, 자유 입력 요청 메시지를 본문으로 보내면 400입니다. `buget_max`는 지원하지 않으며 `budget_max`로 보내야 합니다.
-
-```json
-{
-  "preferred_companion_gender": "Female",
-  "theme": ["nature", "food"],
-  "pace": "Balanced",
-  "budget_min": 100000,
-  "budget_max": 3000000
-}
-```
-
-동기 `/matching-requests` 데모는 `MockMatchingCandidateSource`가 `ai_service/matching/data/matching_request.mock.json`에서 가상 요청자 1번과 후보 8명을 공급합니다. 실제 MySQL 조회는 아래 `POST /api/ai/v1/matches/candidates`에서 ID만 전달하는 방식으로 구현되어 있습니다. 기존 서비스 토큰은 서비스 접근만 인증하며 실제 로그인 사용자를 식별하지 않습니다.
-
-선호 성별은 `Female`·`Male`·`Other`·`Any`, 속도는 `Relaxed`·`Balanced`·`Packed`와 기존 대문자 별칭을 받습니다. 예산은 요청자·후보 모두 같은 기준의 원화 여행 예산이며 음수 또는 최소 예산보다 작은 최대 예산은 거절합니다. 내부 후보는 최대 200명, 내부 `top_k`는 기본 5명·최대 20명이며 현재 목데이터는 3명을 추천하도록 설정되어 있습니다.
-
-AI는 본인과 선호 성별이 다른 후보를 제외합니다. 요청에 예산 조건이 있으면 후보의 최소·최대 예산이 모두 확인되어야 하고, 두 예산 구간이 겹쳐야 합니다(경계값 포함). 테마·속도·서버 내부 후보 소개는 E5 유사도로 정렬하며, 동점은 사용자 ID 순서입니다. 200 응답의 `data`는 `requester_id`, `recommendations`를 포함하며 추천 항목은 `user_id`, 코사인 유사도 `score`, `rank`입니다. 점수는 매칭 성공 확률이 아닙니다. 후보가 없으면 200과 빈 배열, 검증 오류는 400, 인증 오류는 401, 모델 누락·추론 실패·시간 초과는 503입니다.
+MySQL 조회와 큐 처리는 [DB 연동 문서](docs/matching/mysql.md)와 [작업 큐 문서](docs/jobs/queue.md)를 참고하세요. 개발 DB의 초기 프로필은 `ai_service/matching/data/matching_seed_profiles.json`에 보관합니다. 실제 사용자 인증과 DB 요청 저장은 백엔드에서 처리합니다.
 
 ```bash
-./.venv/bin/python -m unittest discover -s tests/matching -t . -p test_matching.py -v
+./.venv/bin/python -m unittest discover -s tests/matching -t . -v
 ```
-
-이 테스트는 필터·인증·입력 검증·오류 처리와 로컬 E5 실제 HTTP 추천을 검사합니다. 로컬 모델이 없으면 실제 모델 검사는 건너뛰며 `scripts/models/download_e5_model.py`로 먼저 준비해야 합니다.
-
-AI 서버의 `/matching-requests`는 풀스택의 5개 조건 필드를 받아 추천 결과를 200으로 반환합니다. 원래 백엔드 요청 생성 계약(사용자 로그인 토큰·201 `requests_success`)은 `ai_service/matching/openapi.py`에 참고용으로 보존하며, AI Swagger에는 실행 API 하나만 표시합니다. 사용자 인증 및 DB 요청 저장은 백엔드에서 처리해야 합니다.
 
 **여행 요청은 두 형식을 지원합니다.** Swagger에는 사용자가 확정한 요청 예시 하나만 표시합니다. 표시 형식은 `generation_job_id`, `region`, `duration`, `budget_type`, 장소 `category` 형식입니다. JSON을 그대로 붙여 넣을 수 있습니다. 백엔드 `AiTravelGenerationRequest.java`의 최상위 `travel_plan_id`, `region_id`, `region_name`, 날짜 형식도 계속 지원합니다. 두 형식을 섞지는 않습니다. 사용자 중첩 요청에는 `generation_job_id`만 보내면 되며 `travel_plan_id`는 필요하지 않습니다. 사용하지 않는 ID는 응답에서 생략합니다.
 

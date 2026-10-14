@@ -18,8 +18,7 @@ Redis는 공유 상태·결과·중복 방지·전달 대기 목록을 담당합
 | 작업 상태·결과 조회 | `GET /api/ai/v1/jobs/{job_id}` | 200 |
 
 일정 요청 Body는 기존 두 DTO(중첩 `generation_job_id` 또는 평면 `travel_plan_id`)와 같습니다.
-`title`, `days` 등 응답 필드를 요청에 넣지 않습니다. 기존 JSON/SSE API 및 동기 `/matching-requests`는
-호환을 위해 유지합니다. Spring이 새 경로로 전환한 뒤 SSE 제거를 별도로 진행할 수 있습니다.
+`title`, `days` 등 응답 필드를 요청에 넣지 않습니다. 기존 JSON/SSE API는 호환을 위해 유지합니다. Spring이 새 경로로 전환한 뒤 SSE 제거를 별도로 진행할 수 있습니다.
 
 202는 Redis에 작업과 전달 대기 기록이 **동시에 저장된 접수 성공**입니다. 생성 성공을 의미하지
 않습니다. 브로커 전송이 실패해도 Celery beat가 전달을 복구합니다. Redis 저장 실패는 503입니다.

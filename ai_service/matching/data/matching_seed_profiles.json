@@ -1,0 +1,74 @@
+[
+  {
+    "user_id": 1,
+    "gender": "Female",
+    "theme": [
+      "nature",
+      "food"
+    ],
+    "pace": "Balanced"
+  },
+  {
+    "user_id": 2,
+    "gender": "Female",
+    "theme": [
+      "nature",
+      "food"
+    ],
+    "pace": "Balanced"
+  },
+  {
+    "user_id": 3,
+    "gender": "Female",
+    "theme": [
+      "city",
+      "culture"
+    ],
+    "pace": "Packed"
+  },
+  {
+    "user_id": 4,
+    "gender": "Male",
+    "theme": [
+      "nature",
+      "food"
+    ],
+    "pace": "Balanced"
+  },
+  {
+    "user_id": 5,
+    "gender": "Female",
+    "theme": [
+      "nature",
+      "food"
+    ],
+    "pace": "Balanced"
+  },
+  {
+    "user_id": 6,
+    "gender": "Female",
+    "theme": [
+      "nature",
+      "food"
+    ],
+    "pace": "Balanced"
+  },
+  {
+    "user_id": 7,
+    "gender": "Female",
+    "theme": [
+      "beach",
+      "relax"
+    ],
+    "pace": "Relaxed"
+  },
+  {
+    "user_id": 8,
+    "gender": "Female",
+    "theme": [
+      "nature",
+      "food"
+    ],
+    "pace": "Balanced"
+  }
+]
