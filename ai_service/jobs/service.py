@@ -27,7 +27,7 @@ class JobService:
 
     def status(self, job_id):
         doc = self.store.get(job_id)
-        if not doc:
+        if not doc or doc['job_type'] != 'ITINERARY_GENERATION':
             raise JobApiError(404, 'JOB_NOT_FOUND', '작업이 없거나 보관 기간이 만료됐습니다.')
         return self.store.public(doc)
 

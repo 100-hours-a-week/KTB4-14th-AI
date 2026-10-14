@@ -31,14 +31,6 @@ class Settings:
     job_ttl_seconds: int = 86400
     job_max_retries: int = 2
     job_retry_delay_seconds: int = 5
-    matching_mysql_host: str = "127.0.0.1"
-    matching_mysql_port: int = 3306
-    matching_mysql_database: str | None = field(default=None, repr=False)
-    matching_mysql_user: str | None = field(default=None, repr=False)
-    matching_mysql_password: str | None = field(default=None, repr=False)
-    matching_mysql_socket: str | None = field(default=None, repr=False)
-    matching_mysql_ssl_ca: str | None = None
-    matching_mysql_query_file: Path | None = None
     matching_e5_weight: float = 1.0
     matching_theme_weight: float = 0.0
     matching_pace_weight: float = 0.0
@@ -51,8 +43,6 @@ class Settings:
             raise ValueError("Invalid job retention or retry settings")
         if self.job_ttl_seconds <= (self.generation_timeout_seconds + 120) * (self.job_max_retries + 1):
             raise ValueError("Job retention must exceed the bounded retry lifecycle")
-        if not 1 <= self.matching_mysql_port <= 65535:
-            raise ValueError("Invalid MySQL port")
         weights = (self.matching_e5_weight, self.matching_theme_weight, self.matching_pace_weight)
         if any(not 0 <= weight <= 1 for weight in weights) or abs(sum(weights) - 1) > 1e-9:
             raise ValueError('Matching weights must be nonnegative and sum to one')
@@ -77,15 +67,6 @@ class Settings:
             job_ttl_seconds=int(values.get("JOB_TTL_SECONDS", 86400)),
             job_max_retries=int(values.get("JOB_MAX_RETRIES", 2)),
             job_retry_delay_seconds=int(values.get("JOB_RETRY_DELAY_SECONDS", 5)),
-            matching_mysql_host=values.get("MATCHING_MYSQL_HOST") or "127.0.0.1",
-            matching_mysql_port=int(values.get("MATCHING_MYSQL_PORT", 3306)),
-            matching_mysql_database=values.get("MATCHING_MYSQL_DATABASE") or None,
-            matching_mysql_user=values.get("MATCHING_MYSQL_USER") or None,
-            matching_mysql_password=values.get("MATCHING_MYSQL_PASSWORD"),
-            matching_mysql_socket=values.get("MATCHING_MYSQL_SOCKET") or None,
-            matching_mysql_ssl_ca=values.get("MATCHING_MYSQL_SSL_CA") or None,
-            matching_mysql_query_file=Path(values["MATCHING_MYSQL_QUERY_FILE"])
-            if values.get("MATCHING_MYSQL_QUERY_FILE") else None,
             matching_e5_weight=float(values.get('MATCHING_E5_WEIGHT', 1)),
             matching_theme_weight=float(values.get('MATCHING_THEME_WEIGHT', 0)),
             matching_pace_weight=float(values.get('MATCHING_PACE_WEIGHT', 0)),

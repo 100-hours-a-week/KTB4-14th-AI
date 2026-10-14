@@ -33,6 +33,16 @@ class MatchingOpenAPITests(unittest.TestCase):
             self.assertFalse(hasattr(self.app.state, "matching_recommender"))
             self.assertFalse(hasattr(self.app.state, "matching_candidate_source"))
 
+    def test_matching_queue_route_is_removed_from_runtime_and_swagger(self):
+        path = "/api/ai/v1/traveler-match-jobs"
+        self.assertNotIn(path, self.spec["paths"])
+        self.assertFalse(any(route.path == path for route in self.app.routes))
+        with TestClient(self.app) as client:
+            for headers in ({}, {"Authorization": "Bearer test-only"}):
+                response = client.post(path, json={}, headers=headers)
+                self.assertEqual(response.status_code, 404)
+                self.assertEqual(response.json(), {"message": "not_found", "data": None})
+
 
 if __name__ == "__main__":
     unittest.main()

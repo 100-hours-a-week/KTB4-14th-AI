@@ -10,8 +10,8 @@ ai_service/
 │   │   ├── system.py       # /health, /docs
 │   │   ├── travel.py       # 일정 생성 JSON·SSE
 │   │   ├── music.py        # 별도 E5 음악 추천
-│   │   ├── matching.py     # 백엔드 후보 추천·기존 데모
-│   │   └── jobs.py         # 큐 작업 접수·상태 조회
+│   │   ├── matching.py     # 백엔드 후보 동기 추천
+│   │   └── jobs.py         # 일정 큐 접수·상태 조회
 │   ├── deps.py             # 일정 요청 변환·사전 검사·공통 헤더
 │   ├── job_dispatch.py     # HTTP 요청에서 큐 서비스를 호출하는 변환 계층
 │   ├── responses.py        # 공통 OpenAPI 응답 정의
@@ -50,20 +50,15 @@ ai_service/
 │   ├── schemas.py          # 프로필·조건·후보·순위
 │   ├── service.py          # 조건 필터링·문장 변환·추천 순위
 │   ├── backend.py          # 백엔드 DTO·match_rate 응답 변환
-│   ├── mysql.py            # 조회 전용 MySQL 연동
-│   ├── source.py           # 기존 데모 후보 공급
 │   ├── catalog.py          # 백엔드 기준값 로드
 │   ├── dev.py              # 합성 개발 데이터 생성
-│   ├── examples.py         # 매칭 API 예시
-│   ├── openapi.py          # 참고용 백엔드 명세
-│   └── data/               # SQL·조회 매핑·기준값·목데이터
+│   └── data/               # 개발 DB SQL·기준값·목데이터
 └── jobs/
     ├── schemas.py          # 접수·상태·오류 계약
     ├── service.py          # 작업 접수·발행·결과 조회
     ├── store.py            # Redis 상태·중복 방지·lease·outbox
     ├── worker.py           # Celery 실행·재시도·진행 상태
-    ├── errors.py           # 큐 API 오류 계약
-    └── examples.py         # 큐 요청 예시
+    └── errors.py           # 큐 API 오류 계약
 
 tests/                      # core·travel·music·matching·jobs별 테스트
 scripts/matching/           # DB 준비·평가·백엔드 호출 검증
@@ -85,7 +80,7 @@ model/                      # 로컬 모델 자산, Git 제외
 | E5 모델 로드·풀링·정규화 | `ai_service/embeddings/e5.py` |
 | 매칭 문장·필터·점수 | `ai_service/matching/service.py` |
 | 백엔드 매칭 DTO | `ai_service/matching/backend.py` |
-| MySQL 조회 SQL | `ai_service/matching/data/matching_dev_queries.json` |
+| 개발 DB 오프라인 조회 | `scripts/matching/evaluation_data.py` |
 | 큐 재시도·중복 처리 | `ai_service/jobs/worker.py`, `store.py`, `service.py` |
 | 인증·오류 응답 | `ai_service/core/auth.py`, `handlers.py` |
 
@@ -94,16 +89,16 @@ model/                      # 로컬 모델 자산, Git 제외
 - 일정 JSON/SSE: `api/routes/travel.py` → 요청 변환·설정 검사 → `travel/pipeline.py` → 기존 JSON 또는 백엔드 SSE 변환.
 - 별도 음악 추천: `api/routes/music.py` → `music/e5.py` → YouTube 후보 검색 → 공통 E5 추론 → 영상 검증 → 최종 JSON.
 - 백엔드 동기 매칭: `api/routes/matching.py` → `matching/backend.py` → `matching/service.py` → 공통 E5 추론 → `{candidates, count}`.
-- 큐 작업: `api/routes/jobs.py` → `jobs/service.py` → Redis·Celery → `jobs/worker.py` → 기존 생성·매칭 서비스 → 결과 저장·상태 조회.
+- 큐 작업: `api/routes/jobs.py` → `jobs/service.py` → Redis·Celery → `jobs/worker.py` → 일정 생성 서비스 → 결과 저장·상태 조회.
 
 음악과 매칭 서비스는 `embeddings/e5.py`를 함께 사용합니다. 일정 생성의 음악 단계는 기존 OpenAI 경로를 유지하며 별도 음악 API의 E5 경로와 구분합니다.
 
 ## 구조 변경 검증
 
-앱 실행은 `ai_service.main:app`, 워커 실행은 `ai_service.jobs.worker:celery_app`을 유지합니다. 이번 구조 변경 전후 OpenAPI 전체를 비교해 URL, 요청·응답 스키마, 예시, 인증 정의가 같은지 확인합니다.
+앱 실행은 `ai_service.main:app`, 워커 실행은 `ai_service.jobs.worker:celery_app`을 유지합니다. OpenAPI에서 매칭은 백엔드 DTO의 동기 200 계약만 제공하는지 확인합니다.
 
 ```bash
 ./.venv/bin/python -m unittest discover -s tests -t .
 ```
 
-외부 API는 테스트 대역으로 대체합니다. 로컬 모델이 있으면 실제 E5 검사도 실행하고, MySQL·Redis 통합 검사는 필요한 실행 환경이 없으면 건너뜁니다.
+외부 API는 테스트 대역으로 대체합니다. 로컬 모델이 있으면 실제 E5 검사도 실행하고, Redis 통합 검사는 필요한 실행 환경이 없으면 건너뜁니다.

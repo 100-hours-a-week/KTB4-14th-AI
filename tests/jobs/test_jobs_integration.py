@@ -18,9 +18,6 @@ from fastapi.testclient import TestClient
 import redis
 
 from ai_service.core.config import Settings
-from ai_service.jobs.examples import (
-    MATCHING_EXAMPLE
-)
 from ai_service.jobs.service import (
     JobService
 )
@@ -64,7 +61,7 @@ class QueueIntegrationTests(unittest.TestCase):
             raise RuntimeError('Test Redis failed to start')
         cls.celery = create_celery_app(cls.settings)
         cls.worker_context = start_worker(cls.celery, pool='solo', concurrency=1, perform_ping_check=False,
-            queues=['audigo_control', 'audigo_itineraries', 'audigo_matching'], shutdown_timeout=10)
+            queues=['audigo_control', 'audigo_itineraries'], shutdown_timeout=10)
         cls.worker_context.__enter__()
 
     @classmethod
@@ -113,21 +110,6 @@ class QueueIntegrationTests(unittest.TestCase):
                 self.assertEqual(again['result'], status['result'])
                 self.assertEqual(again['attempt'], 1)
 
-    @unittest.skipUnless((Path(__file__).resolve().parents[2] / 'model/model_O4.onnx').is_file(), 'Pinned E5 assets not installed')
-    def test_matching_real_local_e5_model_without_openai_or_mock_candidates(self):
-        settings = Settings(api_token='test-only', jobs_redis_url=self.settings.jobs_redis_url,
-                            celery_broker_url=self.settings.celery_broker_url)
-        with TestClient(create_app(settings=settings)) as client:
-            body = {**MATCHING_EXAMPLE, 'matching_request_id': 1201}
-            accepted = client.post('/api/ai/v1/matches/candidates', json=body, headers=HEADERS)
-            self.assertEqual(accepted.status_code, 202, accepted.text)
-            status = self.await_status(client, accepted.json()['status_url'])
-            self.assertEqual(status['status'], 'COMPLETED', status)
-            recommendations = status['result']['recommendations']
-            self.assertEqual([r['user_id'] for r in recommendations], [35])
-            self.assertEqual(recommendations[0]['rank'], 1)
-            self.assertTrue(-1 <= recommendations[0]['score'] <= 1)
-
     def test_dispatcher_recovers_delivery_and_retry_without_losing_job_id(self):
         from ai_service.jobs import worker
         attempts = []
@@ -135,10 +117,10 @@ class QueueIntegrationTests(unittest.TestCase):
             attempts.append(doc['attempt'])
             if doc['attempt'] == 1:
                 raise ServiceUnavailable(reason='provider_timeout')
-            return {'recommendations': []}
+            return {'days': []}
         service = JobService(self.store, lambda doc: None)  # Simulate no delivered Celery message.
-        accepted = service.submit('TRAVELER_MATCHING', MATCHING_EXAMPLE,
-                                   {'matching_request_id': 1301}, 'req-retry', 'integration-retry')
+        accepted = service.submit('ITINERARY_GENERATION', request(None, 'CAR').model_dump(mode='json'),
+                                   {'generation_job_id': 1301}, 'req-retry', 'integration-retry')
         # Restore an undelivered outbox record to exercise the dispatcher.
         self.store.client.zadd(self.store.outbox, {accepted.job_id: 0})
         with patch('ai_service.jobs.worker.run_pipeline', flaky):

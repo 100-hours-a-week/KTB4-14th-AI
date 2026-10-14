@@ -15,9 +15,6 @@ from ai_service.core.errors import GenerationFailed, ServiceUnavailable
 from ai_service.jobs.service import (
     JobService
 )
-from ai_service.jobs.examples import (
-    MATCHING_EXAMPLE
-)
 from ai_service.jobs.store import RedisJobStore
 from ai_service.jobs.worker import dispatch_pending, execute_job, run_pipeline
 from ai_service.main import create_app
@@ -25,8 +22,9 @@ from tests.travel.test_day_transport import http_request, request
 from tests.travel.test_compact_routes import PlaceClient, Planner
 
 HEADERS = {'Authorization': 'Bearer test-only'}
-MATCH_PATH = '/api/ai/v1/matches/candidates'
 TRIP_PATH = '/api/ai/v1/itinerary-jobs'
+ITINERARY_EXAMPLE = request(None, 'CAR').model_dump(mode='json')
+ITINERARY_EXAMPLE.pop('travel_plan_id')
 
 
 def new_store(**kwargs):
@@ -34,8 +32,8 @@ def new_store(**kwargs):
 
 
 def reserve(store, key='one', payload=None):
-    return store.reserve('TRAVELER_MATCHING', payload or MATCHING_EXAMPLE,
-                         {'matching_request_id': 201, 'travel_plan_id': 101}, 'req-job', key)[0]
+    return store.reserve('ITINERARY_GENERATION', payload or ITINERARY_EXAMPLE,
+                         {'generation_job_id': 1, 'travel_plan_id': 101}, 'req-job', key)[0]
 
 
 class JobStoreTests(unittest.TestCase):
@@ -85,7 +83,7 @@ class JobStoreTests(unittest.TestCase):
         store = new_store()
         publisher = Mock(side_effect=RuntimeError('broker outage'))
         with self.assertLogs('ai_service.jobs.service', level='WARNING'):
-            accepted = JobService(store, publisher).submit('TRAVELER_MATCHING', MATCHING_EXAMPLE,
+            accepted = JobService(store, publisher).submit('ITINERARY_GENERATION', ITINERARY_EXAMPLE,
                 {'travel_plan_id': 101}, 'req', 'key')
         self.assertEqual(accepted.status, 'QUEUED')
         self.assertEqual(len(store.due()), 1)
@@ -102,15 +100,15 @@ class JobStoreTests(unittest.TestCase):
         store.dispatched(doc['job_id'], score)
         self.assertEqual(store.client.zcard(store.outbox), 1)
         self.assertEqual(store.get(doc['job_id'])['payload']['required_places'], [])
-        store.finish(doc['job_id'], 'owner', 'COMPLETED', result={'recommendations': []})
-        self.assertEqual(store.get(doc['job_id'])['result']['recommendations'], [])
+        store.finish(doc['job_id'], 'owner', 'COMPLETED', result={'days': []})
+        self.assertEqual(store.get(doc['job_id'])['result']['days'], [])
 
     def test_business_ids_preserve_java_long_precision_after_updates(self):
         store = new_store()
-        doc, _ = store.reserve('TRAVELER_MATCHING', MATCHING_EXAMPLE,
+        doc, _ = store.reserve('ITINERARY_GENERATION', ITINERARY_EXAMPLE,
                               {'travel_plan_id': 9223372036854775807}, 'req-long', 'long-id')
         store.claim(doc['job_id'], 'owner')
-        store.finish(doc['job_id'], 'owner', 'COMPLETED', result={'recommendations': []})
+        store.finish(doc['job_id'], 'owner', 'COMPLETED', result={'days': []})
         self.assertEqual(store.public(store.get(doc['job_id'])).travel_plan_id, 9223372036854775807)
 
     def test_record_ttl_and_reconnecting_status_store(self):
@@ -135,14 +133,14 @@ class JobApiTests(unittest.TestCase):
     def tearDown(self):
         self.client.__exit__(None, None, None)
 
-    def test_accept_matching_poll_and_hide_input_internal_tokens(self):
-        response = self.client.post(MATCH_PATH, json=MATCHING_EXAMPLE, headers=HEADERS)
+    def test_accept_itinerary_poll_and_hide_input_internal_tokens(self):
+        response = self.client.post(TRIP_PATH, json=ITINERARY_EXAMPLE, headers=HEADERS)
         self.assertEqual(response.status_code, 202, response.text)
         accepted = response.json()
         self.assertEqual(set(accepted), {'job_id', 'job_type', 'status', 'status_url'})
-        self.assertEqual(accepted['job_type'], 'TRAVELER_MATCHING')
+        self.assertEqual(accepted['job_type'], 'ITINERARY_GENERATION')
         status = self.client.get(accepted['status_url'], headers=HEADERS).json()
-        self.assertEqual(status['matching_request_id'], 201)
+        self.assertEqual(status['generation_job_id'], 1)
         self.assertEqual(status['status'], 'QUEUED')
         self.assertIsNone(status['result'])
         self.assertFalse({'payload', 'fingerprint', 'lease_token', 'requester_id'} & set(status))
@@ -159,28 +157,27 @@ class JobApiTests(unittest.TestCase):
             self.assertEqual(doc['attempt'], 0)
 
     def test_duplicate_request_and_conflict_and_explicit_new_key(self):
-        first = self.client.post(MATCH_PATH, json=MATCHING_EXAMPLE, headers=HEADERS).json()
-        second = self.client.post(MATCH_PATH, json=MATCHING_EXAMPLE, headers=HEADERS).json()
+        first = self.client.post(TRIP_PATH, json=ITINERARY_EXAMPLE, headers=HEADERS).json()
+        second = self.client.post(TRIP_PATH, json=ITINERARY_EXAMPLE, headers=HEADERS).json()
         self.assertEqual(first['job_id'], second['job_id'])
         self.publisher.assert_called_once()
-        changed = {**MATCHING_EXAMPLE, 'limit': 1}
-        conflict = self.client.post(MATCH_PATH, json=changed, headers=HEADERS)
+        changed = {**ITINERARY_EXAMPLE, 'headcount': ITINERARY_EXAMPLE['headcount'] + 1}
+        conflict = self.client.post(TRIP_PATH, json=changed, headers=HEADERS)
         self.assertEqual(conflict.status_code, 409)
         self.assertEqual(conflict.json()['error']['code'], 'IDEMPOTENCY_CONFLICT')
-        fresh = self.client.post(MATCH_PATH, json=changed, headers={**HEADERS, 'Idempotency-Key': 'new-generation'})
+        fresh = self.client.post(TRIP_PATH, json=changed, headers={**HEADERS, 'Idempotency-Key': 'new-generation'})
         self.assertEqual(fresh.status_code, 202)
         self.assertNotEqual(fresh.json()['job_id'], first['job_id'])
 
-    def test_400_401_404_422_503_have_job_contract_and_request_id(self):
+    def test_400_401_404_503_have_job_contract_and_request_id(self):
         cases = [
-            self.client.post(MATCH_PATH, json={}, headers=HEADERS),
-            self.client.post(MATCH_PATH, json=MATCHING_EXAMPLE),
+            self.client.post(TRIP_PATH, json={}, headers=HEADERS),
+            self.client.post(TRIP_PATH, json=ITINERARY_EXAMPLE),
             self.client.get('/api/ai/v1/jobs/unknown', headers=HEADERS),
-            self.client.post(MATCH_PATH, json={**MATCHING_EXAMPLE, 'candidates': []}, headers=HEADERS),
         ]
         self.app.state.jobs = None
-        cases.append(self.client.post(MATCH_PATH, json=MATCHING_EXAMPLE, headers=HEADERS))
-        self.assertEqual([r.status_code for r in cases], [400, 401, 404, 422, 503])
+        cases.append(self.client.post(TRIP_PATH, json=ITINERARY_EXAMPLE, headers=HEADERS))
+        self.assertEqual([r.status_code for r in cases], [400, 401, 404, 503])
         for response in cases:
             self.assertEqual(set(response.json()), {'error', 'request_id'})
             self.assertEqual(response.json()['request_id'], response.headers['x-request-id'])
@@ -188,27 +185,30 @@ class JobApiTests(unittest.TestCase):
 
     def test_redis_outage_returns_503_without_accepted_job(self):
         with patch.object(self.store, 'reserve', side_effect=RedisConnectionError('secret redis URI')):
-            response = self.client.post(MATCH_PATH, json=MATCHING_EXAMPLE, headers=HEADERS)
+            response = self.client.post(TRIP_PATH, json=ITINERARY_EXAMPLE, headers=HEADERS)
         self.assertEqual(response.status_code, 503)
         self.assertNotIn('secret', response.text)
         self.publisher.assert_not_called()
 
-    def test_budget_gender_self_and_duplicate_filters(self):
-        for candidates in ([], [{**MATCHING_EXAMPLE['candidates'][0], 'user_id': 12}],
-                           [{**MATCHING_EXAMPLE['candidates'][0], 'budget_min': None, 'budget_max': None}]):
-            response = self.client.post(MATCH_PATH, json={**MATCHING_EXAMPLE, 'candidates': candidates}, headers=HEADERS)
-            self.assertEqual(response.status_code, 422)
-        response = self.client.post(MATCH_PATH, json={**MATCHING_EXAMPLE, 'preferred_companion_gender': 'Female'}, headers=HEADERS)
-        self.assertEqual(response.status_code, 422)  # Missing gender is not guessed.
-        duplicate = {**MATCHING_EXAMPLE, 'candidates': MATCHING_EXAMPLE['candidates'] * 2}
-        self.assertEqual(self.client.post(MATCH_PATH, json=duplicate, headers=HEADERS).status_code, 400)
+    def test_unknown_job_type_cannot_be_submitted_or_polled(self):
+        from ai_service.jobs.errors import JobApiError
+        with self.assertRaises(JobApiError) as error:
+            self.store.reserve('REMOVED_TYPE', {}, {}, 'req', 'old')
+        self.assertEqual(error.exception.code, 'UNSUPPORTED_JOB_TYPE')
+        self.assertEqual(self.store.client.zcard(self.store.outbox), 0)
+        doc = reserve(self.store)
+        raw = json.loads(self.store.client.get(self.store.key(doc['job_id'])))
+        raw['job_type'] = 'REMOVED_TYPE'
+        self.store.client.set(self.store.key(doc['job_id']), json.dumps(raw))
+        response = self.client.get('/api/ai/v1/jobs/' + doc['job_id'], headers=HEADERS)
+        self.assertEqual(response.status_code, 404)
 
 
 class JobExecutionTests(unittest.TestCase):
     def test_retry_backoff_then_success_and_duplicate_delivery_do_not_rerun(self):
         store, settings = new_store(), Settings(job_retry_delay_seconds=1)
         job_id = reserve(store)['job_id']
-        runner = AsyncMock(side_effect=[ServiceUnavailable(reason='provider_timeout'), {'recommendations': []}])
+        runner = AsyncMock(side_effect=[ServiceUnavailable(reason='provider_timeout'), {'days': []}])
         with patch('ai_service.jobs.worker.run_pipeline', runner):
             execute_job(job_id, store, settings)
             doc = store.get(job_id)
@@ -225,7 +225,7 @@ class JobExecutionTests(unittest.TestCase):
 
     def test_retry_exhaustion_and_permanent_error(self):
         for error, expected_attempts in ((GenerationFailed(), 1),
-                                         (ServiceUnavailable(reason='matching_model_load_failed'), 1),
+                                         (ServiceUnavailable(reason='provider_model_load_failed'), 1),
                                          (ServiceUnavailable(reason='provider_timeout'), 2)):
             store = new_store(max_attempts=2)
             job_id = reserve(store)['job_id']
@@ -256,6 +256,20 @@ class JobExecutionTests(unittest.TestCase):
             for state in ('STARTED', 'COMPLETED')])
         self.assertEqual(result['result']['music']['title'], '테스트 음악')
         self.assertEqual(result['result']['days'][0]['items'][-1]['place_type'], 'ACCOMMODATION')
+
+    def test_removed_job_record_fails_without_running_itinerary_or_matching(self):
+        store = new_store()
+        doc = reserve(store)
+        raw = json.loads(store.client.get(store.key(doc['job_id'])))
+        raw['job_type'] = 'REMOVED_TYPE'
+        store.client.set(store.key(doc['job_id']), json.dumps(raw))
+        with patch('ai_service.jobs.worker.generation_stages') as stages:
+            execute_job(doc['job_id'], store, Settings())
+        status = store.get(doc['job_id'])
+        self.assertEqual(status['status'], 'FAILED')
+        self.assertEqual(status['error']['code'], 'UNSUPPORTED_JOB_TYPE')
+        self.assertFalse(status['error']['retryable'])
+        stages.assert_not_called()
 
     def test_timeout_is_retried_and_sensitive_exception_is_not_exposed(self):
         import asyncio

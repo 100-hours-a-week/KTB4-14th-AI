@@ -9,7 +9,8 @@ import numpy as np
 from pydantic import ValidationError
 
 from ai_service.core.config import Settings
-from ai_service.jobs.schemas import DatabaseMatchingRecommendationRequest, MatchingJobRequest
+from ai_service.matching.backend import BackendRankingInput
+from ai_service.matching.schemas import MatchingRecommendationRequest
 from ai_service.matching.service import E5MatchingRecommender
 from ai_service.matching.dev import DATA_DIR, eligible_profile, make_dataset
 from scripts.matching.evaluate_matching_dev import metrics, select_weights
@@ -77,9 +78,9 @@ class MatchingDatasetTests(unittest.TestCase):
 
 class MatchingRankingTests(unittest.TestCase):
     def body(self, count=2):
-        return DatabaseMatchingRecommendationRequest(matching_request_id=1,travel_plan_id=1,
-            requester_id=1,preferred_companion_gender='ANY',pace='BALANCED',themes=['nature'],limit=5,
-            candidates=[dict(user_id=uid+2,pace='BALANCED',themes=['nature'],introduction=f'candidate {uid+2}')
+        return BackendRankingInput(
+            requester_id=1,preferred_companion_gender='ANY',pace='BALANCED',theme=['nature'],top_k=5,
+            candidates=[dict(user_id=uid+2,gender='MALE',pace='BALANCED',theme=['nature'],introduction=f'candidate {uid+2}')
                         for uid in range(count)])
 
     def test_global_top_five_includes_best_candidate_after_first_embedding_batch(self):
@@ -97,7 +98,7 @@ class MatchingRankingTests(unittest.TestCase):
         self.assertTrue(all(batch[0].startswith('query: ') for batch in encoder.calls))
         self.assertTrue(all(text.startswith('passage: ') for batch in encoder.calls for text in batch[1:]))
         with self.assertRaises(ValidationError):
-            MatchingJobRequest.model_validate(body.model_dump())
+            MatchingRecommendationRequest.model_validate(body.model_dump())
 
     def test_hybrid_can_correct_semantic_ranking_and_default_retains_cosine(self):
         body=self.body()
@@ -118,7 +119,7 @@ class MatchingRankingTests(unittest.TestCase):
         body=self.body(6)
         case=dict(body=body,candidates=body.candidates,cosine=np.arange(6)[::-1]/6,
                   labels={2:0,3:0,4:0,5:0,6:0,7:2},expected_empty=False,
-                  split='DEV',scenario='test',region_id=1)
+                  split='DEV',scenario='test',matching_request_id=1)
         baseline,_=metrics([case],(1.,0.,0.))
         self.assertEqual(baseline['hit_at_3'],0)
         self.assertEqual(baseline['positive_cases'],1)

@@ -2,8 +2,8 @@
 
 Redis + Celery를 사용합니다. FastAPI는 입력 검증과 작업 접수, Celery 워커는 AI 실행,
 Redis는 공유 상태·결과·중복 방지·전달 대기 목록을 담당합니다. Spring은 사용자 인증,
-최종 여행/매칭 결과의 DB 저장과 프론트 전달을 담당합니다. 매칭 후보는 기존 요청 전달 방식 또는
-추가된 AI 워커의 MySQL 조회 방식으로 가져올 수 있습니다.
+최종 여행 결과의 DB 저장과 프론트 전달을 담당합니다.
+동행자 매칭은 [별도 동기 API](../matching/backend-contract.md)를 사용합니다.
 
 ## API
 
@@ -13,8 +13,6 @@ Redis는 공유 상태·결과·중복 방지·전달 대기 목록을 담당합
 | 기능 | 경로 | 정상 응답 |
 | --- | --- | --- |
 | 일정 작업 접수 | `POST /api/ai/v1/itinerary-jobs` | 202 |
-| 동행자 추천 작업 접수 | `POST /api/ai/v1/traveler-match-jobs` | 202 |
-| 백엔드 기존 동기 추천 | `POST /api/ai/v1/matches/candidates` + `{request,candidates}` | 200 |
 | 작업 상태·결과 조회 | `GET /api/ai/v1/jobs/{job_id}` | 200 |
 
 일정 요청 Body는 기존 두 DTO(중첩 `generation_job_id` 또는 평면 `travel_plan_id`)와 같습니다.
@@ -52,78 +50,17 @@ COMPLETED/FAILED에서 조회를 종료합니다. 조회 자체가 200이어도 
 `days[].routes`에 들어갑니다. 날짜를 넘는 이동은 다음날 첫 항목의 route_from_previous에 유지됩니다.
 총요금·간결한 경로 필드는 기존 SSE와 같습니다. result는 Redis의 임시 결과이며 여행 DB 저장은 Spring의 책임입니다.
 
-매칭 요청 예시(후보는 실제 Spring 조회 결과로 채우며 AI는 목데이터를 추가하지 않습니다):
-
-추가된 MySQL 조회 방식은 식별자만 전달하는 요청을 지원합니다. 조건·후보를 DB에서 읽는 설정과
-계약은 [MySQL 매칭 연동](../matching/mysql.md)을 참고하세요. 아래 후보 전달 방식도 계속 지원합니다.
-
-현재 백엔드 매칭 테이블용 DB 요청은 다음과 같습니다. 기본 limit은 3이며 여행 ID는 필요하지 않습니다.
-
-```json
-{"matching_request_id":201,"requester_id":201,"limit":3}
-```
-
-후보 예산은 백엔드 프로필에 없으므로 비교하지 않습니다. 요청에 예산이 있으면 완료 결과에
-`unapplied_conditions: ["budget"]`를 표시합니다. 기존 `/api/ai/v1/matches/candidates`에 ID 요청을 보내던 호출도 같은 큐의
-202 접수로 호환합니다. 중첩 `{request,candidates}`는 [백엔드 동기 추천](../matching/backend-contract.md) 계약입니다. 아래 3개 ID와 후보를 전달하는 예시는 이전 계약의 호환 경로입니다.
-
-```json
-{
-  "matching_request_id": 201,
-  "travel_plan_id": 101,
-  "requester_id": 12,
-  "preferred_companion_gender": "ANY",
-  "pace": "BALANCED",
-  "budget_min": 300000,
-  "budget_max": 800000,
-  "themes": ["자연", "미식"],
-  "candidates": [
-    {
-      "user_id": 35,
-      "pace": "BALANCED",
-      "themes": ["자연", "사진"],
-      "budget_min": 300000,
-      "budget_max": 800000
-    }
-  ],
-  "limit": 10
-}
-```
-
-필수: matching_request_id/travel_plan_id/requester_id/preferred_companion_gender/pace/themes/candidates.
-선택: budget_min/budget_max/limit(기본10, 1~20).
-각 후보의 필수 필드는 user_id/pace/themes입니다. gender(Female/Male/Other), 예산 구간,
-introduction은 선택입니다. Any 조건에서는 성별을 생략할 수 있고 성별 조건이 있으면 미확인 후보는
-제외합니다. 예산 조건이 있으면 후보의 budget_min/budget_max가 둘 다 필요합니다.
-자기 자신을 제외하며 중복 후보 ID는 400입니다. 후보는 최대 200명입니다.
-
-매칭 완료 result:
-
-```json
-{
-  "matching_request_id": 201,
-  "travel_plan_id": 101,
-  "requester_id": 12,
-  "recommendations": [{"user_id": 35, "score": 0.85, "rank": 1}]
-}
-```
-
-점수는 기본 설정에서 E5 코사인 유사도이며, 선택 가중치를 설정하면 E5·테마·속도 조합 점수입니다.
-어느 방식도 매칭 성공 확률이 아닙니다. 구성과 평가 기준은 [MySQL 매칭 연동](../matching/mysql.md)을 참고하세요.
-모델은 기존 로컬 multilingual-e5-small을
-재사용하며 모델 추론은 OpenAI를 호출하지 않습니다. ID 요청의 후보는 모델 추론 전에 MySQL에서 조회합니다.
-
 ## 오류·재시도·중복
 
 접수 오류: 400 INVALID_REQUEST, 401 UNAUTHORIZED, 409 IDEMPOTENCY_CONFLICT,
-422 NO_MATCH_CANDIDATES 또는 일정 조건 실패, 503 큐/필수 서비스 설정 오류.
+422 일정 조건 실패, 503 큐/필수 서비스 설정 오류.
 없는 작업·만료 작업의 조회는 404 JOB_NOT_FOUND입니다.
 
 ```json
 {
   "error": {
-    "code": "NO_MATCH_CANDIDATES",
-    "message": "추천할 동행 후보가 없습니다.",
+    "code": "JOB_NOT_FOUND",
+    "message": "작업을 찾을 수 없습니다.",
     "retryable": false,
     "details": []
   },
@@ -136,8 +73,7 @@ introduction은 선택입니다. Any 조건에서는 성별을 생략할 수 있
 요청 조건 실패·모델 로딩/설정 누락·예상하지 못한 내부 오류는 자동 재시도하지 않습니다.
 재시도는 전체 파이프라인을 다시 실행합니다. 단계별 체크포인트 재개는 포함하지 않습니다.
 
-`Idempotency-Key` 헤더(1~128자)를 권장합니다. 생략하면 일정의 generation_job_id 또는 travel_plan_id,
-매칭의 matching_request_id를 기본 키로 사용합니다. 같은 작업 유형·키·입력은 같은 작업을 반환하고,
+`Idempotency-Key` 헤더(1~128자)를 권장합니다. 생략하면 일정의 generation_job_id 또는 travel_plan_id를 기본 키로 사용합니다. 같은 작업 유형·키·입력은 같은 작업을 반환하고,
 같은 키에 다른 입력을 넣으면 409입니다. 다시 생성하려면 새 키를 사용합니다.
 
 워커는 Redis의 원자적 실행 소유권을 획득한 경우에만 실행합니다. 중복 전달은 진행 중인 작업이나
@@ -151,8 +87,7 @@ noeviction 정책을 사용합니다. Redis Cluster는 현재 단일 인스턴�
 
 ## 실행
 
-프로젝트의 .env에 기존 서비스 토큰과 OpenAI/Kakao 키를 설정합니다. 모델은 기존 배포 이미지에
-포함되며 매칭 워커는 로컬 모델만 로딩합니다.
+프로젝트의 .env에 기존 서비스 토큰과 OpenAI/Kakao 키를 설정합니다.
 
 Docker Desktop/엔진을 실행한 뒤:
 
@@ -172,7 +107,7 @@ uv sync --frozen
 ```
 
 ```bash
-./.venv/bin/celery -A ai_service.jobs.worker:celery_app worker --loglevel=INFO --concurrency=2 --queues=audigo_itineraries,audigo_matching,audigo_control
+./.venv/bin/celery -A ai_service.jobs.worker:celery_app worker --loglevel=INFO --concurrency=2 --queues=audigo_itineraries,audigo_control
 ```
 
 ```bash
@@ -190,7 +125,7 @@ uv sync --frozen --extra dev
 ```
 
 실제 Redis/Celery 워커 통합 테스트는 별도의 임시 Redis를 실행하고 종료합니다. 외부 유료 API는
-호출하지 않으며 일정 제공사는 모의 응답, 동행자 매칭은 고정 로컬 E5 모델을 사용합니다.
+호출하지 않으며 일정 제공사는 모의 응답을 사용합니다.
 redis-server 실행 파일이 없으면 이 통합 테스트는 skip되며 일반 단위 테스트는 실행됩니다.
 
 ```bash

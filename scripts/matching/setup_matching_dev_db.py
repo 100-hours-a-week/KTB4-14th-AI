@@ -57,7 +57,7 @@ def setup(host, port, admin, password, database):
                     conn.rollback()
                     raise
             credentials = {}
-            for user, prefix in [('audigo_ai_reader','MATCHING_MYSQL'),('audigo_app','MATCHING_APP'),('audigo_seed','MATCHING_SEED')]:
+            for user, prefix in [('audigo_app','MATCHING_APP'),('audigo_seed','MATCHING_SEED')]:
                 cur.execute('SELECT user FROM mysql.user WHERE user=%s AND host=%s',(user,'localhost'))
                 exists = cur.fetchone()
                 saved = existing_secrets.get(prefix+'_PASSWORD')
@@ -73,35 +73,22 @@ def setup(host, port, admin, password, database):
                     set_key(str(LOCAL_ENV),prefix+'_PASSWORD',credential)
                     cur.execute('CREATE USER %s@%s IDENTIFIED BY %s',(user,'localhost',credential))
                 for table in BUSINESS:
-                    privilege = 'SELECT' if user=='audigo_ai_reader' else 'SELECT,INSERT,UPDATE,DELETE'
+                    privilege = 'SELECT,INSERT,UPDATE,DELETE'
                     cur.execute(f'GRANT {privilege} ON `{database}`.`{table}` TO %s@%s',(user,'localhost'))
                 if user=='audigo_seed':
                     for table in ['matching_evaluation_cases','matching_evaluation_labels','matching_dataset_meta']:
                         cur.execute(f'GRANT SELECT,INSERT,UPDATE,DELETE ON `{database}`.`{table}` TO %s@%s',(user,'localhost'))
                 credentials[prefix+'_USER'],credentials[prefix+'_PASSWORD'] = user,credential
     values = {**credentials,'MATCHING_MYSQL_HOST':host,'MATCHING_MYSQL_PORT':str(port),
-              'MATCHING_MYSQL_DATABASE':database,'MATCHING_MYSQL_QUERY_FILE':str(DATA_DIR/'matching_dev_queries.json')}
+              'MATCHING_MYSQL_DATABASE':database}
     LOCAL_ENV.touch(mode=0o600,exist_ok=True)
     os.chmod(LOCAL_ENV,0o600)
     for key,value in values.items(): set_key(str(LOCAL_ENV),key,str(value))
-    env_path = ROOT/'.env'
-    env_path.touch(mode=0o600,exist_ok=True)
-    os.chmod(env_path,0o600)
-    for key in ['MATCHING_MYSQL_HOST','MATCHING_MYSQL_PORT','MATCHING_MYSQL_DATABASE','MATCHING_MYSQL_QUERY_FILE',
-                'MATCHING_MYSQL_USER','MATCHING_MYSQL_PASSWORD']:
-        set_key(str(env_path),key,values[key])
-    set_key(str(env_path),'MATCHING_MYSQL_SOCKET','')
-    # Verify reader login and that evaluation labels are not visible to runtime AI.
-    with pymysql.connect(host=host,port=port,user=values['MATCHING_MYSQL_USER'],
-                         password=values['MATCHING_MYSQL_PASSWORD'],database=database) as conn, conn.cursor() as cur:
+    # Only development tools use these credentials; do not configure the API.
+    with pymysql.connect(host=host,port=port,user=values['MATCHING_APP_USER'],
+                         password=values['MATCHING_APP_PASSWORD'],database=database) as conn, conn.cursor() as cur:
         cur.execute('SELECT COUNT(*) FROM users')
         count = cur.fetchone()[0]
-        try:
-            cur.execute('SELECT COUNT(*) FROM matching_evaluation_labels')
-        except pymysql.MySQLError as exc:
-            if exc.args[0] != 1142: raise
-        else:
-            raise ValueError('AI reader unexpectedly has access to evaluation labels')
     summary = dict(database=database,version=VERSION,seed=SEED,fingerprint=fingerprint,
                    users=count,matching_profiles=len(rows['profiles']),matching_requests=len(rows['requests']),
                    regions=len(REGIONS),

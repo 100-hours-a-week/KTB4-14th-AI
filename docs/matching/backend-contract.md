@@ -69,20 +69,19 @@ AI에 고정 E5 모델을 준비하고 새 코드를 반영해 서버를 재시�
 위 변경으로 기존 Java 요청·응답 코드를 바꿀 필요는 없습니다. 실배포의 DNS·네트워크·토큰은 해당
 환경에서 확인해야 하며 전체 Spring 앱·프론트·운영 DB 연동을 실행한 검증은 아닙니다.
 
-## 기존 큐 및 DB 조회 호출
+## 지원하는 요청 형식
 
-`POST /api/ai/v1/traveler-match-jobs`는 계속 202/job_id를 반환합니다. ID 요청의 MySQL 조회와
-GET /api/ai/v1/jobs/{job_id} 상태 조회도 유지합니다. 기존 `/matches/candidates`에 ID/평면 요청을
-보내던 호출은 202로 호환 처리합니다. **{request,candidates} 형식만 200 최종 응답**입니다.
-새 큐 호출은 /traveler-match-jobs 경로를 사용해 계약을 명확히 구분합니다.
-일정 생성 엔드포인트·일정 생성 로직은 이 변경에 포함되지 않습니다.
+`{request,candidates}` 형식의 동기 HTTP 200 계약만 지원합니다.
+ID만 전달하는 요청과 이전 평면 요청은 HTTP 400 입력 오류를 반환합니다.
+매칭 작업 접수·상태 조회·AI의 직접 DB 조회 기능은 제거했습니다.
+백엔드가 DB 조회와 후보 구성을 담당하며 AI는 전달받은 후보의 순위를 계산합니다.
 
 ## 구현 위치
 
 - ai_service/matching/backend.py: Java DTO 스키마, 기존 추천기 입력 변환, 결과 DTO 변환.
-- ai_service/api/routes/matching.py: 요청 형태별 동기 추천 또는 기존 큐 접수 분기.
-- matching.py: 공통 E5 순위 계산, 동점 기준을 선택 가능하게 확장.
-- main.py/config.py: 모델 캐시와 추천 수·가중치 설정 연결.
+- ai_service/api/routes/matching.py: 백엔드 DTO를 받는 동기 추천 경로.
+- ai_service/matching/service.py: 공통 E5 순위 계산, 동점 기준을 선택 가능하게 확장.
+- ai_service/main.py/core/config.py: 모델 캐시와 추천 수·가중치 설정 연결.
 
 ## 검증과 재현
 

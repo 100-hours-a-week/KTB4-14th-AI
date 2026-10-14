@@ -30,7 +30,7 @@ services:
   worker:
     <<: *ai
     entrypoint: [celery, -A, 'ai_service.jobs.worker:celery_app']
-    command: [worker, --loglevel=INFO, --concurrency=2, '--queues=audigo_itineraries,audigo_matching,audigo_control']
+    command: [worker, --loglevel=INFO, --concurrency=2, '--queues=audigo_itineraries,audigo_control']
   beat:
     <<: *ai
     entrypoint: [celery, -A, 'ai_service.jobs.worker:celery_app']

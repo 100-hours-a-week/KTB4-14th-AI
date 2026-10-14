@@ -1,4 +1,0 @@
-{
-  "context": "SELECT mr.id AS matching_request_id, mr.requester_id,\n mr.preferred_companion_gender, mr.pace, mr.budget_min, mr.budget_max,\n FALSE AS candidate_budget_available,\n (SELECT JSON_ARRAYAGG(t.theme) FROM matching_requests_themes t WHERE t.matching_request_id=mr.id) AS themes\n FROM matching_requests mr\n WHERE mr.id=%(matching_request_id)s AND mr.requester_id=%(requester_id)s",
-  "candidates": "SELECT p.user_id, p.gender, p.pace,\n (SELECT JSON_ARRAYAGG(t.theme) FROM matching_profile_themes t WHERE t.matching_profile_id=p.id) AS themes\n FROM matching_profiles p JOIN users u ON u.id=p.user_id\n WHERE p.is_active=TRUE AND p.user_id<>%(requester_id)s\n AND p.gender IS NOT NULL AND p.pace IS NOT NULL\n AND EXISTS (SELECT 1 FROM matching_profile_themes t WHERE t.matching_profile_id=p.id)\n AND p.user_id>%(after_user_id)s\n ORDER BY p.user_id LIMIT %(candidate_limit)s"
-}

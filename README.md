@@ -2,7 +2,7 @@
 
 일정 생성 · 음악 추천 · 동행자 매칭 · 큐 작업을 기능별로 관리하는 FastAPI 서비스입니다.
 
-[프로젝트 구조와 수정할 파일 찾기](docs/architecture.md) · [백엔드 매칭 계약](docs/matching/backend-contract.md) · [MySQL 연동](docs/matching/mysql.md) · [큐 작업](docs/jobs/queue.md)
+[프로젝트 구조와 수정할 파일 찾기](docs/architecture.md) · [백엔드 매칭 계약](docs/matching/backend-contract.md) · [개발 DB 평가](docs/matching/mysql.md) · [큐 작업](docs/jobs/queue.md)
 
 
 ## 진행중인 항목
@@ -100,7 +100,7 @@ INFO:     Uvicorn running on http://127.0.0.1:8000
 
 백엔드 동행자 추천은 `POST /api/ai/v1/matches/candidates`를 사용합니다. `/docs`의 V2에서 요청·후보를 전달하는 예시를 선택하고 기존 `HTTPBearer` 서비스 토큰을 입력하면, 로컬 E5 추천 결과를 최종 JSON으로 반환합니다. 입력 `{request, candidates}`와 응답 `{candidates, count}`는 [백엔드 연동 계약](docs/matching/backend-contract.md)을 참고하세요.
 
-MySQL 조회와 큐 처리는 [DB 연동 문서](docs/matching/mysql.md)와 [작업 큐 문서](docs/jobs/queue.md)를 참고하세요. 개발 DB의 초기 프로필은 `ai_service/matching/data/matching_seed_profiles.json`에 보관합니다. 실제 사용자 인증과 DB 요청 저장은 백엔드에서 처리합니다.
+개발 DB를 사용하는 오프라인 평가는 [개발 DB 문서](docs/matching/mysql.md)를 참고하세요. 개발 DB의 초기 프로필은 `ai_service/matching/data/matching_seed_profiles.json`에 보관합니다. 실제 사용자 인증과 DB 요청 저장은 백엔드에서 처리합니다.
 
 ```bash
 ./.venv/bin/python -m unittest discover -s tests/matching -t . -v
@@ -171,10 +171,10 @@ ROUTE_OPTIMIZE_DONE → complete
 | `ai_service/api/` | 공통 요청 처리·Swagger·응답 정의·예시 |
 | `ai_service/travel/` | 일정 생성·장소·숙소·경로·SSE |
 | `ai_service/music/` | E5 음악 추천·YouTube 조회 |
-| `ai_service/matching/` | 동행자 추천·백엔드 계약·MySQL 연동 |
+| `ai_service/matching/` | 동행자 추천·백엔드 계약 |
 | `ai_service/jobs/` | 작업 서비스·Redis 저장·Celery 워커 |
 | `ai_service/embeddings/` | 음악·매칭에서 공유하는 E5 ONNX 추론 |
-| `ai_service/matching/data/` | 매칭 목데이터·SQL·조회 매핑·카탈로그 |
+| `ai_service/matching/data/` | 매칭 목데이터·개발 DB SQL·카탈로그 |
 | `ai_service/travel/data/` | 확인한 식당 영업시간 데이터 |
 | `scripts/matching/` | DB 준비·평가·백엔드 연동 검증 도구 |
 | `scripts/models/` | 고정 모델 다운로드·체크섬 검증 |
@@ -227,42 +227,36 @@ uv sync --frozen --extra dev
 
 밤 일정은 18:00~23:59(한국시간) 안에서 생성합니다. 18시 이후 도착하면 도착일 장소 선택에도 이 범위를 적용합니다. `preference.extra_request`에 “밤 일정만 만들어주세요” 또는 “야간 일정만 만들어주세요”를 넣으면 여행의 모든 날짜에 적용합니다. 실제 도착/출발 시각과 도착 후 준비시간을 함께 반영하며, 다음날 00:00~05:59로 방문을 넘기지 않습니다. 일반 주간 여행의 시간 규칙은 유지합니다.
 
-## 큐 기반 일정 생성·동행자 추천
+## 큐 기반 일정 생성
 
-Redis + Celery 작업 접수 API를 추가했습니다. `POST /api/ai/v1/itinerary-jobs`와
-`POST /api/ai/v1/traveler-match-jobs`는 작업을 접수하고 202/job_id/status_url을 반환하며,
-`GET /api/ai/v1/jobs/{job_id}`에서 진행 단계와 완료 결과를 조회합니다. 기존 JSON·SSE·동기 매칭 API는
-유지됩니다. 새 매칭 작업 API는 백엔드가 전달한 실제 후보를 사용하며 기존 동기 매칭의 목데이터를 사용하지 않습니다.
+Redis + Celery 일정 작업 접수 API `POST /api/ai/v1/itinerary-jobs`는
+202/job_id/status_url을 반환하며, `GET /api/ai/v1/jobs/{job_id}`에서 진행 단계와 완료 결과를 조회합니다.
+동행자 추천은 `POST /api/ai/v1/matches/candidates`에서 `{request,candidates}`에 대해 200 최종 결과를 반환합니다.
+ID만 보내거나 이전 평면 형식으로 보내면 400 입력 오류를 반환합니다.
 
 [큐 API 계약·중복 방지·재시도·실행·테스트 방법](docs/jobs/queue.md)을 확인하세요.
 Docker 실행은 `docker compose -f compose.jobs.yml up --build -d`입니다.
-Redis/worker/beat가 모두 필요하며, 큐 설정이 없으면 새 작업 API는 503을 반환합니다.
+일정 큐에는 Redis/worker/beat가 모두 필요하며, 큐 설정이 없으면 일정 작업 접수는 503을 반환합니다.
 
-## MySQL 동행자 매칭
+## 동행자 매칭 개발 DB와 오프라인 평가
 
-백엔드 development 소스의 매칭 테이블과 enum에 맞춘 개발 DB입니다.
-임의 테마 대신 NATURE/FOOD/CULTURE/REST/SNS/ACTIVITY, 속도는 RELAXED/BALANCED/PACKED를 사용합니다.
-지역 목록은 backend data.sql의 245개 항목이며 현재 매칭에는 지역·여행 조건을 적용하지 않습니다.
+백엔드 매칭 테이블과 enum에 맞춘 개발 DB를 평가 도구에서 사용합니다.
+운영 AI 서버는 DB에 접속하지 않습니다. 백엔드가 DB에서 조건과 후보를 조회하고
+`POST /api/ai/v1/matches/candidates`에 `{request,candidates}`를 전달합니다.
+AI는 동기 200 `{candidates:[{user_id,match_rate}],count}`를 반환합니다.
 
-새 로컬 DB `audigo_matching_backend_dev`에 사용자·매칭 프로필·요청 각각 1,000건을 넣습니다.
-과거 `audigo_matching_dev`는 덮어쓰지 않습니다. AI는 조회 전용 계정을 사용합니다.
+개발 DB 생성과 평가에는 개발 의존성을 설치합니다. 기존 DB와 과거 평가 결과는 보존합니다.
 
 ```bash
+uv sync --frozen --extra dev
 ./.venv/bin/python scripts/matching/setup_matching_dev_db.py
-./.venv/bin/python scripts/matching/evaluate_matching_dev.py --apply
+./.venv/bin/python scripts/matching/evaluate_matching_dev.py
 ```
 
-DB 조회 큐 방식은 API·worker를 재시작하고 `POST /api/ai/v1/traveler-match-jobs`로 보냅니다.
+평가 도구가 개발 DB의 조건과 프로필을 동일한 백엔드 DTO로 변환합니다.
+후보 프로필에 예산이 없으므로 요청 예산을 순위 비교에 적용하지 않습니다.
+`--apply`를 추가하면 DEV에서 선택한 가중치를 로컬 `.env`에 반영합니다.
+평가 적중률은 합성 규칙 정답에 대한 수치이며 실제 사용자 매칭 성사율이 아닙니다.
 
-```json
-{"matching_request_id":201,"requester_id":201,"limit":3}
-```
-
-202의 status_url을 조회해 완료 결과를 확인합니다. 후보 예산은 실제 프로필에 없으므로 비교하지 않으며,
-요청에 예산이 있으면 결과에 `unapplied_conditions: ["budget"]`를 표시합니다.
-백엔드의 기존 `POST /api/ai/v1/matches/candidates` `{request,candidates}` 호출은
-동기 200 `{candidates:[{user_id,match_rate}],count}`로 지원합니다. 해당 방식은 백엔드가 전달한
-후보만 사용하므로 Redis·AI MySQL 접속이 없어도 동작합니다.
-[기존 백엔드 호출·점수·검증 방법](docs/matching/backend-contract.md).
-
-[DB 구조·근거·SQL·연동 범위](docs/matching/mysql.md), [최신 합성 데이터 평가](artifacts/matching/evaluation-report.md).
+[백엔드 요청 계약](docs/matching/backend-contract.md) · [개발 DB와 평가](docs/matching/mysql.md).
+기존 [평가 결과](artifacts/matching/evaluation-report.md)는 이전 실행 기록입니다.

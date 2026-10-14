@@ -39,7 +39,8 @@ class BackendMatchingTests(unittest.TestCase):
 
     def test_backend_document_request_returns_exact_final_dto_without_queue_db_or_openai(self):
         encoder=Encoder()
-        with patch('ai_service.matching.mysql.MySQLMatchingCandidateSource._read',side_effect=AssertionError('No DB')),TestClient(self.app()) as client:
+        with TestClient(self.app()) as client:
+            client.app.state.jobs=None
             client.app.state.backend_matching_recommender.encoder=encoder
             response=client.post(PATH,json=BACKEND_MATCHING_EXAMPLE,headers=HEADERS)
         self.assertEqual(response.status_code,200,response.text)
@@ -146,10 +147,27 @@ class BackendMatchingTests(unittest.TestCase):
         self.assertIsInstance(candidate['match_rate'],int)
         self.assertTrue(0<=candidate['match_rate']<=100)
 
-    def test_openapi_documents_backend_200_and_queue_202(self):
+    def test_openapi_documents_only_synchronous_backend_contract(self):
         schema=self.app().openapi()
         sync=schema['paths'][PATH]['post']
-        queue=schema['paths']['/api/ai/v1/traveler-match-jobs']['post']
+        self.assertNotIn('/api/ai/v1/traveler-match-jobs',schema['paths'])
         self.assertIn('200',sync['responses'])
         self.assertEqual(sync['responses']['200']['content']['application/json']['schema']['$ref'],'#/components/schemas/BackendMatchingResponse')
-        self.assertIn('202',queue['responses'])
+        self.assertNotIn('202',sync['responses'])
+        self.assertEqual(sync['requestBody']['content']['application/json']['schema']['$ref'], '#/components/schemas/BackendMatchingRequest')
+        self.assertFalse(sync.get('parameters'))
+        for name in ('MatchingJobRequest', 'MatchingDatabaseJobRequest', 'DatabaseMatchingRecommendationRequest'):
+            self.assertNotIn(name, schema['components']['schemas'])
+
+    def test_id_and_flat_legacy_payloads_are_rejected_without_queue_or_inference(self):
+        encoder=Encoder()
+        with TestClient(self.app()) as client:
+            client.app.state.jobs=None
+            client.app.state.backend_matching_recommender.encoder=encoder
+            for body in ({'matching_request_id':201,'requester_id':201,'limit':3},
+                         {'requester_id':1,'preferred_companion_gender':'Female',
+                          'themes':['nature'],'pace':'Balanced','candidates':[],'limit':3}):
+                response=client.post(PATH,json=body,headers=HEADERS)
+                self.assertEqual(response.status_code,400,response.text)
+                self.assertEqual(response.json()['error']['code'],'INVALID_REQUEST')
+        self.assertEqual(encoder.calls,[])

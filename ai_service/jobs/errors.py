@@ -11,7 +11,7 @@ class JobApiError(ApiError):
 
 def is_job_request(request):
     path = request.url.path
-    return path in {'/api/ai/v1/itinerary-jobs', '/api/ai/v1/matches/candidates', '/api/ai/v1/traveler-match-jobs'} or path.startswith('/api/ai/v1/jobs/')
+    return path in {'/api/ai/v1/itinerary-jobs', '/api/ai/v1/matches/candidates'} or path.startswith('/api/ai/v1/jobs/')
 
 
 def error_response(request, code, message, *, retryable=False, details=None):

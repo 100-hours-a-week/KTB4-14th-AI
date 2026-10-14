@@ -103,7 +103,7 @@ def display_match_rate(score, weights):
     return int(round(min(1.,max(0.,normalized))*100))
 
 
-async def recommend_for_backend(body, recommender, settings):
+def ranking_input_for_backend(body: BackendMatchingRequest, top_k: int) -> BackendRankingInput:
     condition=body.request
     # Backend profiles have no candidate budget/intro. Do not invent those
     # values or discard everyone when the requester has a budget condition.
@@ -113,7 +113,12 @@ async def recommend_for_backend(body, recommender, settings):
         preferred_companion_gender=condition.preferred_companion_gender,
         theme=condition.theme,pace=condition.pace,
         budget_min=condition.budget_min,budget_max=condition.budget_max,
-        candidates=candidates,top_k=settings.matching_candidate_limit)
+        candidates=candidates,top_k=top_k)
+    return ranking
+
+
+async def recommend_for_backend(body, recommender, settings):
+    ranking=ranking_input_for_backend(body,settings.matching_candidate_limit)
     nicknames={c.user_id:(c.nickname or '') for c in body.candidates}
     try:
         async with asyncio.timeout(settings.model_timeout_seconds):

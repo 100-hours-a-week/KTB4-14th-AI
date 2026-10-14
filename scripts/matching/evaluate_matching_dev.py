@@ -14,7 +14,7 @@ import math
 from pathlib import Path
 import time
 
-from dotenv import dotenv_values, set_key
+from dotenv import set_key
 import numpy as np
 import pymysql
 
@@ -28,10 +28,9 @@ from ai_service.core.config import Settings
 from ai_service.embeddings.e5 import (
     E5Encoder
 )
-from ai_service.jobs.schemas import MatchingDatabaseJobRequest
+from ai_service.matching.backend import ranking_input_for_backend
 from ai_service.matching.service import E5MatchingRecommender, eligible_candidates
-from ai_service.matching.dev import VERSION
-from ai_service.matching.mysql import MySQLMatchingCandidateSource
+from scripts.matching.evaluation_data import load_snapshot, backend_input
 from scripts.models.download_e5_model import ASSETS, MODEL_REVISION, verify
 
 GRID = [(1.0,0.0,0.0),(0.85,0.10,0.05),(0.70,0.20,0.10),(0.50,0.35,0.15),(0.30,0.50,0.20)]
@@ -74,7 +73,7 @@ def metrics(cases, weights):
             ideal = sorted(gold.values(),reverse=True)[:3]
             idcg = sum((2**grade-1)/math.log2(rank+2) for rank,grade in enumerate(ideal))
             ndcgs.append(dcg/idcg if idcg else 0)
-        details.append(dict(matching_request_id=body.matching_request_id,requester_id=body.requester_id,
+        details.append(dict(matching_request_id=case['matching_request_id'],requester_id=body.requester_id,
                             split=case['split'],scenario=case['scenario'],
                             candidate_count=len(candidates),top3=ids,hit_at_3=hit,
                             expected_empty=case['expected_empty'],positive_count=sum(g==2 for g in gold.values())))
@@ -109,40 +108,24 @@ def select_weights(dev):
 async def evaluate(*, apply=False, output=None):
     started = time.monotonic()
     settings = Settings.from_env()
-    private = dotenv_values(ROOT/'.env.matching-dev')
     output = output or ROOT/'artifacts'/'matching'
     output.mkdir(parents=True,exist_ok=True)
     for filename,checksum in ASSETS.values():
         if not verify(settings.e5_model_dir/filename,checksum):
             raise RuntimeError('The pinned local E5 assets do not match the evaluation model')
-    # Evaluation access is separate from the SELECT-only runtime account.
-    with pymysql.connect(host=settings.matching_mysql_host,port=settings.matching_mysql_port,
-        user=private['MATCHING_SEED_USER'],password=private['MATCHING_SEED_PASSWORD'],
-        database=settings.matching_mysql_database,cursorclass=pymysql.cursors.DictCursor) as conn, conn.cursor() as cursor:
-        cursor.execute('SELECT version,seed,fingerprint FROM matching_dataset_meta WHERE id=1')
-        dataset = cursor.fetchone()
-        if not dataset or dataset['version'] != VERSION:
-            raise RuntimeError('Unknown evaluation dataset')
-        cursor.execute('SELECT e.*,r.requester_id FROM matching_evaluation_cases e JOIN matching_requests r ON r.id=e.matching_request_id ORDER BY e.matching_request_id')
-        metadata = cursor.fetchall()
-        cursor.execute('SELECT matching_request_id,candidate_id,relevance FROM matching_evaluation_labels')
-        labels = {}
-        for row in cursor.fetchall():
-            labels.setdefault(row['matching_request_id'],{})[row['candidate_id']] = row['relevance']
+    dataset,metadata,labels,requests,profiles = load_snapshot(ROOT/'.env.matching-dev')
     groups = {split:{row['requester_id'] for row in metadata if row['split']==split} for split in ('DEV','TEST')}
     if groups['DEV'] & groups['TEST']:
         raise RuntimeError('Requester leakage between DEV and TEST')
     encoder = CachedEncoder(E5Encoder(settings.e5_model_dir))
     recommender = E5MatchingRecommender(settings.e5_model_dir,encoder=encoder)
-    source = MySQLMatchingCandidateSource(settings)
     candidate_cache = {}
     async def load(split):
         loaded = []
         for row in metadata:
             if row['split'] != split: continue
-            lookup = MatchingDatabaseJobRequest(matching_request_id=row['matching_request_id'],
-                requester_id=row['requester_id'],limit=3)
-            body = await source.recommendation_request(lookup)
+            payload = backend_input(requests[row['matching_request_id']],profiles)
+            body = ranking_input_for_backend(payload,3)
             # Reuse equal immutable profiles in this offline run, not fabricated embeddings.
             body.candidates = [candidate_cache.setdefault(
                 (c.user_id,c.gender,c.pace,tuple(sorted(c.theme)),c.budget_min,c.budget_max,c.introduction),c)
@@ -173,7 +156,7 @@ async def evaluate(*, apply=False, output=None):
         for key,value in zip(('MATCHING_E5_WEIGHT','MATCHING_THEME_WEIGHT','MATCHING_PACE_WEIGHT'),weights,strict=True):
             set_key(str(ROOT/'.env'),key,str(value))
     report = dict(dataset=dataset,target_hit_at_3=0.9,target_met=passed,
-        label_source='synthetic_domain_rules',human_reviewed=False,real_user_acceptance_measured=False,
+        input_source='backend_dto_from_development_db',label_source='synthetic_domain_rules',human_reviewed=False,real_user_acceptance_measured=False,
         selection_sha256=selection_hash,model_revision=MODEL_REVISION,selected_weights=weights,
         dev_comparison=comparisons,test_baseline=baseline,test_selected=selected,edge=edge_result,
         evaluation_requests=len(metadata),unique_dev_requesters=len(groups['DEV']),
@@ -203,7 +186,8 @@ async def evaluate(*, apply=False, output=None):
 
 **이 수치는 합성 규칙 정답을 사용한 목데이터 평가입니다. 인간 검토는 하지 않았으며 실제 사용자 매칭 성사율을 의미하지 않습니다.**
 상위 3명 중 요청 테마를 모두 충족하고 속도가 일치하는 후보가 1명 이상이면 적중으로 계산합니다.
-개발·최종 평가의 요청자는 겹치지 않으며 평가 정답은 런타임 AI 계정에서 조회할 수 없습니다.
+개발·최종 평가의 요청자는 겹치지 않으며 개발 DB를 백엔드 DTO로 변환해 평가합니다.
+운영 AI 서버는 DB를 조회하지 않으며 평가 정답을 입력에 포함하지 않습니다.
 공통 후보 풀을 사용하는 오프라인 평가이며 새로운 사용자 집단에 대한 일반화는 추가 검증이 필요합니다.
 요청은 백엔드가 허용하는 테마·속도·성별에서 독립적으로 무작위 생성했습니다.
 실제 입력 분포나 후보가 없는 요청을 포함한 전체 서비스 성공률을 측정한 결과가 아닙니다.

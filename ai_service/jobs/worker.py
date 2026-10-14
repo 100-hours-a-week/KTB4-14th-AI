@@ -13,11 +13,8 @@ from ai_service.travel.backend_contract import backend_result, STAGE_NAMES
 from ai_service.core.config import Settings
 from ai_service.core.diagnostics import request_id as log_request_id
 from ai_service.core.errors import ApiError, ServiceUnavailable
-from ai_service.jobs.schemas import MatchingJobRequest, MatchingDatabaseJobRequest
 from ai_service.jobs.errors import JobApiError
 from ai_service.jobs.store import RedisJobStore
-from ai_service.matching.service import E5MatchingRecommender, eligible_candidates
-from ai_service.matching.mysql import MySQLMatchingCandidateSource
 from ai_service.travel.model import OpenAIPlanner
 from ai_service.travel.pipeline import generation_stages
 from ai_service.travel.places import KakaoPlaces
@@ -27,17 +24,12 @@ from ai_service.travel.schemas import (
 )
 
 logger = logging.getLogger(__name__)
-_MATCHING_ENCODER = None
-
-
-def queue_name(job_type):
-    return 'audigo_itineraries' if job_type == 'ITINERARY_GENERATION' else 'audigo_matching'
 
 
 def publish(app, doc):
-    # Only a job ID is put in the broker; profiles and results live in Redis.
+    # Only a job ID is put in the broker; itinerary input and results live in Redis.
     app.send_task('audigo.run_job', args=[doc['job_id']], task_id=doc['job_id'],
-                  queue=queue_name(doc['job_type']), retry=False)
+                  queue='audigo_itineraries', retry=False)
 
 
 def dispatch_pending(app, store):
@@ -58,29 +50,9 @@ def dispatch_pending(app, store):
 
 
 async def run_pipeline(doc, store, owner, settings):
-    global _MATCHING_ENCODER
     job_id = doc['job_id']
-    if doc['job_type'] == 'TRAVELER_MATCHING':
-        if 'candidates' not in doc['payload']:
-            await asyncio.to_thread(store.progress, job_id, owner, 'CANDIDATE_LOOKUP', 'STARTED')
-            lookup = MatchingDatabaseJobRequest.model_validate(doc['payload'])
-            request = await MySQLMatchingCandidateSource(settings).recommendation_request(lookup)
-            await asyncio.to_thread(store.progress, job_id, owner, 'CANDIDATE_LOOKUP', 'COMPLETED')
-        else:
-            request = MatchingJobRequest.model_validate(doc['payload'])
-        if not eligible_candidates(request):
-            raise JobApiError(422, 'NO_MATCH_CANDIDATES', '추천할 동행 후보가 없습니다.')
-        await asyncio.to_thread(store.progress, job_id, owner, 'TRAVELER_MATCHING', 'STARTED')
-        recommender = E5MatchingRecommender(settings.e5_model_dir, encoder=_MATCHING_ENCODER,
-            weights=(settings.matching_e5_weight, settings.matching_theme_weight, settings.matching_pace_weight))
-        result = await recommender.recommend(request)
-        _MATCHING_ENCODER = recommender.encoder
-        response=dict(matching_request_id=request.matching_request_id, **result.data.model_dump(mode='json'))
-        if request.travel_plan_id is not None:
-            response['travel_plan_id']=request.travel_plan_id
-        if not getattr(request, 'candidate_budget_available', True):
-            response['unapplied_conditions']=['budget'] if request.budget_min is not None or request.budget_max is not None else []
-        return response
+    if doc['job_type'] != 'ITINERARY_GENERATION':
+        raise JobApiError(400, 'UNSUPPORTED_JOB_TYPE', '지원하지 않는 작업 유형입니다.')
     request = ItineraryRequest.model_validate(doc['payload'])
     if not settings.openai_api_key or not settings.kakao_rest_api_key:
         raise ServiceUnavailable(reason='provider_keys_missing')
@@ -98,8 +70,7 @@ def job_error(exc):
     if isinstance(exc, TimeoutError):
         return dict(code='JOB_TIMEOUT', message='작업 처리 제한 시간을 초과했습니다.', retryable=True, details=[])
     if isinstance(exc, ApiError):
-        configuration = exc.reason and (exc.reason.endswith('_missing') or exc.reason.endswith('_load_failed')
-                                        or exc.reason in {'matching_db_authentication_failed', 'matching_db_data_invalid'})
+        configuration = exc.reason and (exc.reason.endswith('_missing') or exc.reason.endswith('_load_failed'))
         return dict(code=exc.code.upper(), message=exc.message,
                     retryable=exc.status_code == 503 and not configuration, details=[])
     return dict(code='INTERNAL_SERVER_ERROR', message='작업 처리 중 내부 오류가 발생했습니다.', retryable=False, details=[])

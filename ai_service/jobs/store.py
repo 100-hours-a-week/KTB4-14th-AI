@@ -104,11 +104,13 @@ class RedisJobStore:
         return PREFIX + 'record:' + job_id
 
     def reserve(self, job_type, payload, identity, request_id, idempotency_key):
+        if job_type != 'ITINERARY_GENERATION':
+            raise JobApiError(400, 'UNSUPPORTED_JOB_TYPE', '지원하지 않는 작업 유형입니다.')
         serialized = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(',', ':'))
         fingerprint = hashlib.sha256(serialized.encode()).hexdigest()
         dedup = hashlib.sha256(f'{job_type}:{idempotency_key}'.encode()).hexdigest()
         now = time.time()
-        job_id = ('job_itinerary_' if job_type == 'ITINERARY_GENERATION' else 'job_match_') + uuid4().hex
+        job_id = 'job_itinerary_' + uuid4().hex
         # Keep nested input/result JSON opaque to Lua: cjson would turn [] into {}.
         doc = dict(job_id=job_id, job_type=job_type, status='QUEUED', payload=serialized,
                    fingerprint=fingerprint, request_id=request_id, attempt=0, max_attempts=self.max_attempts,
@@ -130,7 +132,7 @@ class RedisJobStore:
             if isinstance(doc.get(name), str):
                 doc[name] = json.loads(doc[name])
         # Redis Lua numbers cannot exactly represent all Java Long IDs.
-        for name in ('generation_job_id', 'travel_plan_id', 'matching_request_id'):
+        for name in ('generation_job_id', 'travel_plan_id'):
             if name in doc:
                 doc[name] = int(doc[name])
         return doc

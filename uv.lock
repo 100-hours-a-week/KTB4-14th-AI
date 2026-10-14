@@ -61,7 +61,6 @@ dependencies = [
     { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "onnxruntime" },
     { name = "pydantic" },
-    { name = "pymysql", extra = ["rsa"] },
     { name = "python-dotenv" },
     { name = "tokenizers" },
     { name = "uvicorn", extra = ["standard"] },
@@ -71,6 +70,7 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "fakeredis", extra = ["lua"] },
+    { name = "pymysql", extra = ["rsa"] },
     { name = "pytest" },
 ]
 
@@ -83,7 +83,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.2,<3" },
     { name = "onnxruntime", specifier = ">=1.23,<2" },
     { name = "pydantic", specifier = "==2.11.9" },
-    { name = "pymysql", extras = ["rsa"], specifier = "==1.1.2" },
+    { name = "pymysql", extras = ["rsa"], marker = "extra == 'dev'", specifier = "==1.1.2" },
     { name = "pytest", marker = "extra == 'dev'", specifier = "==8.4.2" },
     { name = "python-dotenv", specifier = "==1.1.1" },
     { name = "tokenizers", specifier = ">=0.21,<1" },
