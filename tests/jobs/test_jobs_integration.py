@@ -114,19 +114,18 @@ class QueueIntegrationTests(unittest.TestCase):
                 self.assertEqual(again['attempt'], 1)
 
     @unittest.skipUnless((Path(__file__).resolve().parents[2] / 'model/model_O4.onnx').is_file(), 'Pinned E5 assets not installed')
-    def test_matching_real_local_e5_model_without_openai_or_mock_candidates(self):
+    def test_matching_synchronous_e5_without_queue(self):
+        from ai_service.matching.backend import BACKEND_MATCHING_EXAMPLE
         settings = Settings(api_token='test-only', jobs_redis_url=self.settings.jobs_redis_url,
                             celery_broker_url=self.settings.celery_broker_url)
         with TestClient(create_app(settings=settings)) as client:
-            body = {**MATCHING_EXAMPLE, 'matching_request_id': 1201}
-            accepted = client.post('/api/ai/v1/matches/candidates', json=body, headers=HEADERS)
-            self.assertEqual(accepted.status_code, 202, accepted.text)
-            status = self.await_status(client, accepted.json()['status_url'])
-            self.assertEqual(status['status'], 'COMPLETED', status)
-            recommendations = status['result']['recommendations']
-            self.assertEqual([r['user_id'] for r in recommendations], [35])
-            self.assertEqual(recommendations[0]['rank'], 1)
-            self.assertTrue(-1 <= recommendations[0]['score'] <= 1)
+            response = client.post(
+                '/api/ai/v1/matches/candidates', json=BACKEND_MATCHING_EXAMPLE, headers=HEADERS
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()['count'], 1)
+            self.assertEqual(response.json()['candidates'][0]['user_id'], 23)
+            self.assertNotIn('job_id', response.json())
 
     def test_dispatcher_recovers_delivery_and_retry_without_losing_job_id(self):
         from ai_service.jobs import worker
