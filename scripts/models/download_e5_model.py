@@ -1,4 +1,4 @@
-"""Download and verify the exact E5 ONNX assets used by the music API."""
+"""음악 API에서 사용하는 고정 버전의 E5 ONNX 모델 파일을 다운로드하고 검증한다."""
 from __future__ import annotations
 
 import hashlib

@@ -1,7 +1,7 @@
-"""Atomic Redis job records and a durable outbox for publication/recovery.
+"""Redis 작업 기록과 발행·복구용 발행 대기 목록을 원자적으로 관리한다.
 
-Only a lease owner can update an execution. Expired leases are redispatched.
-The job and its outbox entry are created atomically before returning HTTP 202.
+실행 권한을 보유한 워커만 작업 상태를 갱신할 수 있다. 권한이 만료된 작업은 다시 전달한다.
+HTTP 202를 반환하기 전에 작업과 발행 대기 항목을 함께 저장한다.
 """
 import hashlib
 import json
@@ -11,7 +11,7 @@ from uuid import uuid4
 import redis
 
 from ai_service.jobs.errors import JobApiError
-from ai_service.jobs.schemas import JobStatus
+from ai_service.schemas.jobs import JobStatus
 
 PREFIX = 'audigo:jobs:'
 RESERVE = """

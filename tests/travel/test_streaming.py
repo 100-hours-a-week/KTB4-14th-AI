@@ -1,4 +1,4 @@
-"""Test the SSE boundary without changing or re-running generation logic."""
+"""일정 생성 로직을 변경하거나 다시 실행하지 않고 SSE 전송 동작을 검증한다."""
 import asyncio
 import json
 import unittest
@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 from datetime import timedelta
 
 from ai_service.core.config import Settings
-from ai_service.travel.streaming import stream_generation
+from ai_service.services.travel.streaming import stream_generation
 from tests.travel.test_day_transport import request
 
 
@@ -44,7 +44,7 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
                 closed.set()
 
         settings = Settings(stream_timeout_seconds=0.03, stream_heartbeat_seconds=0.005)
-        with patch("ai_service.travel.streaming.generation_stages", side_effect=pipeline), \
+        with patch("ai_service.services.travel.streaming.generation_stages", side_effect=pipeline), \
                 self.assertLogs("uvicorn.error.audigo", level="ERROR"):
             async with asyncio.timeout(2):
                 chunks = [chunk async for chunk in stream_generation(request(), None, None, settings, "req_timeout")]
@@ -69,7 +69,7 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
             async for chunk in stream_generation(request(), None, None, Settings(), "req_cancel"):
                 chunks.append(chunk)
 
-        with patch("ai_service.travel.streaming.generation_stages", side_effect=pipeline):
+        with patch("ai_service.services.travel.streaming.generation_stages", side_effect=pipeline):
             task = asyncio.create_task(consume())
             await asyncio.wait_for(entered.wait(), 2)
             task.cancel()
@@ -95,7 +95,7 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
         async def pipeline(*args):
             yield "ROUTES", "STARTED", None
             raise RuntimeError("secret-token-in-provider-url")
-        with patch("ai_service.travel.streaming.generation_stages", side_effect=pipeline), self.assertLogs("uvicorn.error.audigo", level="ERROR") as logs:
+        with patch("ai_service.services.travel.streaming.generation_stages", side_effect=pipeline), self.assertLogs("uvicorn.error.audigo", level="ERROR") as logs:
             chunks = [chunk async for chunk in stream_generation(request(), None, None, Settings(), "req_safe")]
         log = "".join(logs.output)
         for expected in ('"request_id": "req_safe"', '"stage": "ROUTES"', '"frames":', '"error_type": "RuntimeError"'):
@@ -116,7 +116,7 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
                 yield stage, "COMPLETED", intermediate
             yield "COMPLETE", "COMPLETED", final
 
-        with patch("ai_service.travel.streaming.generation_stages", side_effect=pipeline):
+        with patch("ai_service.services.travel.streaming.generation_stages", side_effect=pipeline):
             chunks = [chunk async for chunk in stream_generation(request(), None, None, Settings(), "req_test")]
         self.assertEqual(len(chunks), 9)
         for index, chunk in enumerate(chunks, 1):

@@ -1,4 +1,4 @@
-"""Music provider regressions; no paid or live API calls."""
+"""음악 추천 연동의 회귀를 검사한다. 유료·실시간 API는 호출하지 않는다."""
 import asyncio
 import json
 import unittest
@@ -10,12 +10,12 @@ from fastapi.testclient import TestClient
 from ai_service.core.config import Settings
 from ai_service.core.errors import MusicRecommendationFailed, ServiceUnavailable
 from ai_service.main import create_app
-from ai_service.travel.model import OpenAIPlanner
-from ai_service.music.youtube import YouTubeMusic
-from ai_service.travel.schemas import (
+from ai_service.planners.travel import OpenAIPlanner
+from ai_service.clients.youtube import YouTubeMusic
+from ai_service.schemas.travel import (
     ItineraryRequest
 )
-from ai_service.music.schemas import (
+from ai_service.schemas.music import (
     MusicSuggestion
 )
 from tests.travel.test_day_transport import request
@@ -125,7 +125,7 @@ class MusicTests(unittest.IsolatedAsyncioTestCase):
         async with httpx.AsyncClient() as client:
             for output, code in ((b'{"entries": []}', 0), (b'bad json', 0), (b'{}', 0), (b'', 1)):
                 process = Mock(returncode=code, communicate=AsyncMock(return_value=(output, None)))
-                with patch('ai_service.music.youtube.asyncio.create_subprocess_exec', AsyncMock(return_value=process)) as spawn:
+                with patch('ai_service.clients.youtube.asyncio.create_subprocess_exec', AsyncMock(return_value=process)) as spawn:
                     if output == b'{"entries": []}':
                         self.assertEqual(await YouTubeMusic(client)._search('Coldplay Yellow'), [])
                     else:
@@ -140,7 +140,7 @@ class MusicTests(unittest.IsolatedAsyncioTestCase):
         async with httpx.AsyncClient() as client:
             for error in (asyncio.CancelledError(), TimeoutError()):
                 process = Mock(returncode=None, communicate=AsyncMock(side_effect=error), wait=AsyncMock())
-                with patch('ai_service.music.youtube.asyncio.create_subprocess_exec', AsyncMock(return_value=process)):
+                with patch('ai_service.clients.youtube.asyncio.create_subprocess_exec', AsyncMock(return_value=process)):
                     expected = asyncio.CancelledError if isinstance(error, asyncio.CancelledError) else ServiceUnavailable
                     with self.assertRaises(expected):
                         await YouTubeMusic(client)._search('Coldplay Yellow')

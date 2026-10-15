@@ -1,1 +1,1 @@
-"""Durable AI job submission, Redis status and Celery workers."""
+"""AI 작업 접수·Redis 상태 저장·Celery 워커를 통한 안정적인 작업 처리."""

@@ -1,16 +1,17 @@
+"""일정 생성 실패의 원인과 단계 정보가 운영 로그에 기록되는지 검증한다."""
 import json
 import unittest
 
 from ai_service.core.diagnostics import failure
 from ai_service.core.errors import GenerationFailed
-from ai_service.travel.features import PACE_POLICIES, day_windows
-from ai_service.travel.pipeline import (
+from ai_service.services.travel.scheduling import PACE_POLICIES, day_windows
+from ai_service.services.travel.pipeline import (
     lodging_days,
     places_day_minutes,
     trim_places_to_time,
     validate_places_selection,
 )
-from ai_service.travel.schemas import (
+from ai_service.schemas.travel import (
     ModelSelection
 )
 from tests.travel.test_day_transport import places, request

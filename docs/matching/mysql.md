@@ -12,9 +12,9 @@ ID 요청, 평면 매칭 요청, 매칭 큐 및 직접 DB 조회 API는 제공�
 테마는 NATURE/FOOD/CULTURE/REST/SNS/ACTIVITY, 속도는 RELAXED/BALANCED/PACKED입니다.
 후보 프로필에는 예산·자기소개·여행 ID가 없습니다. 요청 예산을 후보와 비교하지 않습니다.
 
-기준값은 `ai_service/matching/data/matching_backend_catalog.json`,
-DB 구조는 `ai_service/matching/data/matching_dev_schema.sql`,
-합성 데이터 생성은 `ai_service/matching/dev.py`를 참고하세요.
+기준값은 `ai_service/data/matching/matching_backend_catalog.json`,
+DB 구조는 `ai_service/data/matching/matching_dev_schema.sql`,
+합성 데이터 생성은 `scripts/matching/dataset.py`를 참고하세요.
 
 ## 준비와 평가
 

@@ -3,10 +3,10 @@ import asyncio
 from typing import Annotated
 from fastapi import APIRouter, Body, Request
 
-from ai_service.api.examples import MUSIC_REQUEST_EXAMPLE, MUSIC_RESPONSE_EXAMPLES
+from ai_service.api.examples.music import MUSIC_REQUEST_EXAMPLE, MUSIC_RESPONSE_EXAMPLES
 from ai_service.api.responses import ERROR_RESPONSES
 from ai_service.core.errors import ServiceUnavailable
-from ai_service.music.schemas import MusicRequest, MusicResponse, SelectedMusic
+from ai_service.schemas.music import MusicRequest, MusicResponse, SelectedMusic
 
 
 def router(settings):

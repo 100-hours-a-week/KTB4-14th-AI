@@ -1,3 +1,4 @@
+"""일정의 시간 제약·필수 방문·숙소 배치·대체 탐색과 경로 반영을 검증한다."""
 from datetime import datetime
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -6,13 +7,13 @@ import httpx
 
 from ai_service.core.config import Settings
 from ai_service.core.errors import GenerationFailed, InvalidModelOutput
-from ai_service.travel.features import complete_selection, day_windows, minimum_day_minutes, schedule_selection, validate_generation_window, validate_itinerary
-from ai_service.travel.pipeline import fallback_multi_day, recommend_accommodations, recommend_places, trim_places_to_time, validate_places_selection
-from ai_service.travel.routing import KakaoRoutes, schedule_with_routes
-from ai_service.core.schemas import (
+from ai_service.services.travel.scheduling import complete_selection, day_windows, minimum_day_minutes, schedule_selection, validate_generation_window, validate_itinerary
+from ai_service.services.travel.pipeline import fallback_multi_day, recommend_accommodations, recommend_places, trim_places_to_time, validate_places_selection
+from ai_service.clients.kakao_routes import KakaoRoutes, schedule_with_routes
+from ai_service.schemas.common import (
     KST
 )
-from ai_service.travel.schemas import (
+from ai_service.schemas.travel import (
     ModelSelection, RequiredPlace
 )
 from tests.travel.test_day_transport import places, request, selection
@@ -172,7 +173,7 @@ class ScheduleQualityTests(unittest.IsolatedAsyncioTestCase):
         }])
         window = day_windows(body)[0]
         self.assertEqual((window["available_minutes"], window["min_items"]), (255, 2))
-        with patch("ai_service.travel.features.travel_minutes", return_value=124):
+        with patch("ai_service.services.travel.scheduling.travel_minutes", return_value=124):
             self.assertEqual(minimum_day_minutes(pool[:2], window,
                 {"관광": [90, 150], "식당": [60, 90], "숙소": [60, 90]}), 274)
             trimmed = trim_places_to_time(body, selected, pool)
@@ -195,7 +196,7 @@ class ScheduleQualityTests(unittest.IsolatedAsyncioTestCase):
         def travel(first, second, mode):
             return 5 if {first.provider_place_id, second.provider_place_id} == {"3", "4"} else 124
 
-        with patch("ai_service.travel.features.travel_minutes", side_effect=travel):
+        with patch("ai_service.services.travel.scheduling.travel_minutes", side_effect=travel):
             trimmed = trim_places_to_time(body, selected, pool)
             with self.assertRaisesRegex(InvalidModelOutput, "select 2..|tourist place and a restaurant"):
                 validate_places_selection(body, trimmed, pool)
@@ -216,7 +217,7 @@ class ScheduleQualityTests(unittest.IsolatedAsyncioTestCase):
         def travel(first, second, mode):
             return 5 if {first.provider_place_id, second.provider_place_id} == {"3", "4"} else 124
 
-        with patch("ai_service.travel.features.travel_minutes", side_effect=travel):
+        with patch("ai_service.services.travel.scheduling.travel_minutes", side_effect=travel):
             result = await recommend_places(body, pool, planner)
             validate_itinerary(body, schedule_selection(body, result, pool), pool)
         self.assertEqual([item.provider_place_id for item in result.days[0].items], ["3", "4"])
@@ -269,7 +270,7 @@ class ScheduleQualityTests(unittest.IsolatedAsyncioTestCase):
                 {"provider_place_id": "0"}, {"provider_place_id": "3"},
             ],
         }])
-        with patch("ai_service.travel.features.travel_minutes", return_value=5):
+        with patch("ai_service.services.travel.scheduling.travel_minutes", return_value=5):
             with self.assertRaisesRegex(InvalidModelOutput, "include a tourist place and a restaurant"):
                 validate_places_selection(body, selected, places())
 
@@ -292,7 +293,7 @@ class ScheduleQualityTests(unittest.IsolatedAsyncioTestCase):
         ])
         client = type("FakePlaces", (), {})()
         client.accommodations = AsyncMock(return_value=[pool[2]])
-        with patch("ai_service.travel.features.travel_minutes", return_value=180):
+        with patch("ai_service.services.travel.scheduling.travel_minutes", return_value=180):
             combined, complete_pool = await recommend_accommodations(body, selected, pool, client)
             days = validate_itinerary(body, schedule_selection(body, combined, complete_pool), complete_pool)
         self.assertEqual(len(combined.days[0].items), 3)
@@ -313,7 +314,7 @@ class ScheduleQualityTests(unittest.IsolatedAsyncioTestCase):
         ])
         client = type("FakePlaces", (), {})()
         client.accommodations = AsyncMock(return_value=[pool[2]])
-        with patch("ai_service.travel.features.travel_minutes", return_value=180):
+        with patch("ai_service.services.travel.scheduling.travel_minutes", return_value=180):
             combined, complete_pool = await recommend_accommodations(body, selected, pool, client)
             days = validate_itinerary(
                 body, schedule_selection(body, combined, complete_pool), complete_pool,

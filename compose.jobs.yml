@@ -1,4 +1,4 @@
-# Redis/Celery job deployment. Legacy JSON and SSE also remain available.
+# AI 서버·Redis·Celery 워커·주기 작업을 함께 실행하는 큐 배포 구성을 정의한다.
 x-ai: &ai
   build: .
   image: audigo-ai:jobs

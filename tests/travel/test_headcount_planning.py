@@ -6,12 +6,12 @@ import unittest
 import httpx
 
 from ai_service.core.config import Settings
-from ai_service.travel.features import (
+from ai_service.services.travel.scheduling import (
     complete_selection, day_windows, optimize_group_order, select_candidates,
 )
-from ai_service.travel.group_policy import movement_buffer_minutes, transfer_penalty_seconds
-from ai_service.travel.routing import KakaoRoutes, schedule_with_routes
-from ai_service.travel.schemas import (
+from ai_service.services.travel.group_policy import movement_buffer_minutes, transfer_penalty_seconds
+from ai_service.clients.kakao_routes import KakaoRoutes, schedule_with_routes
+from ai_service.schemas.travel import (
     ModelSelection, Place, RequiredPlace
 )
 from tests.travel.test_day_transport import request

@@ -1,7 +1,7 @@
-"""Reproducible HTTP stress check with local Kakao/OpenAI stand-ins.
+"""카카오·OpenAI 대역을 사용해 HTTP 부하 검사를 재현한다.
 
-Run: ./.venv/bin/python -m unittest discover -s tests/travel -t . -p test_http_request_stress.py -q
-No provider request is sent. The FastAPI endpoint and itinerary pipeline are real.
+실행: ./.venv/bin/python -m unittest discover -s tests/travel -t . -p test_http_request_stress.py -q
+외부 API 요청은 보내지 않으며 실제 FastAPI 경로와 일정 생성 파이프라인을 실행한다.
 """
 
 from collections import Counter
@@ -15,21 +15,21 @@ import unittest
 import httpx
 from fastapi.testclient import TestClient
 
-from ai_service.api.examples import LEGACY_ITINERARY_REQUEST_EXAMPLE
+from ai_service.api.examples.travel import LEGACY_ITINERARY_REQUEST_EXAMPLE
 from ai_service.core.config import Settings
 from ai_service.main import create_app
-from ai_service.travel.pipeline import replace_closed_restaurant
-from ai_service.travel.restaurant_hours import attach_verified_hours
-from ai_service.travel.schemas import (
+from ai_service.services.travel.pipeline import replace_closed_restaurant
+from ai_service.services.travel.restaurant_hours import attach_verified_hours
+from ai_service.schemas.travel import (
     LegacyGenerationRequest, ModelSelection, Place
 )
-from ai_service.music.schemas import (
+from ai_service.schemas.music import (
     MusicRecommendation
 )
 
 
 PATH = "/internal/ai/itineraries/generate"
-HOURS_FILE = Path(__file__).resolve().parents[2] / "ai_service/travel/data/restaurant_hours.jeju.json"
+HOURS_FILE = Path(__file__).resolve().parents[2] / "ai_service/data/travel/restaurant_hours.jeju.json"
 
 
 def place(place_id, name, address, latitude, longitude, category):

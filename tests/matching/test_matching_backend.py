@@ -1,4 +1,4 @@
-"""Backend DTO validation and synchronous arithmetic recommendation."""
+"""백엔드 DTO 검증과 동기 계산식 추천을 확인한다."""
 from copy import deepcopy
 import json
 from pathlib import Path
@@ -6,14 +6,14 @@ import unittest
 import zipfile
 from unittest.mock import patch
 
-from ai_service.music.e5 import E5MusicRecommender
+from ai_service.services.music import E5MusicRecommender
 
 from fastapi.testclient import TestClient
 import httpx
 
 from ai_service.core.config import Settings
 from ai_service.main import create_app
-from ai_service.matching.backend import BACKEND_MATCHING_EXAMPLE
+from ai_service.api.examples.matching import BACKEND_MATCHING_EXAMPLE
 
 PATH='/api/ai/v1/matching-requests'
 HEADERS={'Authorization':'Bearer test-only'}

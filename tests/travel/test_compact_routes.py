@@ -1,3 +1,4 @@
+"""일정 응답의 간결한 경로 형식과 이동 경로·숙소 연결 처리를 검증한다."""
 import unittest
 
 import httpx
@@ -6,9 +7,9 @@ from fastapi.testclient import TestClient
 from ai_service.core.config import Settings
 from ai_service.core.errors import GenerationFailed, MusicRecommendationFailed
 from ai_service.main import create_app
-from ai_service.travel.pipeline import generate_plan, recommend_accommodations
-from ai_service.travel.routing import KakaoRoutes
-from ai_service.music.schemas import (
+from ai_service.services.travel.pipeline import generate_plan, recommend_accommodations
+from ai_service.clients.kakao_routes import KakaoRoutes
+from ai_service.schemas.music import (
     MusicRecommendation
 )
 from tests.travel.test_day_transport import places, request, selection, transit_payload, http_request

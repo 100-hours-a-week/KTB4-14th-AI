@@ -5,11 +5,11 @@ import httpx
 from fastapi import FastAPI
 
 from ai_service.core.config import Settings
-from ai_service.music.e5 import E5MusicRecommender
-from ai_service.music.youtube import YouTubeMusic
-from ai_service.travel.model import OpenAIPlanner
-from ai_service.travel.places import KakaoPlaces
-from ai_service.travel.routing import KakaoRoutes
+from ai_service.services.music import E5MusicRecommender
+from ai_service.clients.youtube import YouTubeMusic
+from ai_service.planners.travel import OpenAIPlanner
+from ai_service.clients.kakao_places import KakaoPlaces
+from ai_service.clients.kakao_routes import KakaoRoutes
 from ai_service.jobs.service import make_job_service
 
 

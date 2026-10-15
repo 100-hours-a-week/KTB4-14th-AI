@@ -1,3 +1,4 @@
+"""일정 생성의 백엔드 JSON·SSE 계약과 단계 이벤트·최종 결과·실패 처리를 검증한다."""
 import json
 import unittest
 from unittest.mock import AsyncMock, patch

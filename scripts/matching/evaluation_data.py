@@ -1,14 +1,14 @@
-"""Offline development DB snapshot, converted to the public backend DTO.
+"""개발 DB를 읽기 전용으로 조회해 백엔드 연동 DTO로 변환한다.
 
-This module is never imported by the API or queue worker.
+API 서버와 큐 워커에서는 이 모듈을 가져오지 않는다.
 """
 from pathlib import Path
 
 from dotenv import dotenv_values
 import pymysql
 
-from ai_service.matching.backend import BackendMatchingRequest
-from ai_service.matching.dev import VERSION
+from ai_service.schemas.matching import BackendMatchingRequest
+from scripts.matching.dataset import VERSION
 
 
 def load_snapshot(env_path: Path):

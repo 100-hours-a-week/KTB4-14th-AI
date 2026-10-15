@@ -10,7 +10,7 @@ from ai_service.core.config import Settings
 from ai_service.core.diagnostics import failure
 from ai_service.core.errors import ServiceUnavailable
 from ai_service.main import create_app
-from ai_service.matching.backend import BACKEND_MATCHING_EXAMPLE
+from ai_service.api.examples.matching import BACKEND_MATCHING_EXAMPLE
 
 PATH = '/api/ai/v1/matching-requests'
 HEADERS = {'Authorization': 'Bearer test-only'}

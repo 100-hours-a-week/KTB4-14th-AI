@@ -1,3 +1,4 @@
+# Docker 이미지 빌드에서 제외할 로컬 설정·캐시·개발 파일을 지정한다.
 # git
 .git
 .gitignore

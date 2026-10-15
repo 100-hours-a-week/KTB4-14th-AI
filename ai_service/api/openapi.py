@@ -2,7 +2,8 @@
 from copy import deepcopy
 from fastapi import FastAPI
 
-from ai_service.api.examples import MUSIC_RESPONSE_EXAMPLES, ROUTE_RESPONSE_EXAMPLE
+from ai_service.api.examples.music import MUSIC_RESPONSE_EXAMPLES
+from ai_service.api.examples.travel import ROUTE_RESPONSE_EXAMPLE
 from ai_service.api.responses import ITINERARY_RESPONSES
 
 

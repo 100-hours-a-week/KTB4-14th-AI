@@ -70,7 +70,7 @@ INFO:     Uvicorn running on http://127.0.0.1:8000
 
 ## 식당 영업시간 확인
 
-카카오 장소 검색에는 영업시간 필드가 없습니다. 제주 식당 다섯 곳은 [확인한 영업시간 데이터](ai_service/travel/data/restaurant_hours.jeju.json)에 포함되어 제주 일정 생성 시 자동 적용됩니다. 네이버 지도에서 **장소명과 주소를 함께 대조한 뒤** 카카오 장소 ID에 연결했습니다. 라스트오더가 있는 곳은 영업시간 종료보다 앞선 라스트오더 시각까지 방문이 끝나도록 보수적으로 입력했습니다. 예시 파일의 ID와 시간은 실제 장소 데이터가 아닙니다.
+카카오 장소 검색에는 영업시간 필드가 없습니다. 제주 식당 다섯 곳은 [확인한 영업시간 데이터](ai_service/data/travel/restaurant_hours.jeju.json)에 포함되어 제주 일정 생성 시 자동 적용됩니다. 네이버 지도에서 **장소명과 주소를 함께 대조한 뒤** 카카오 장소 ID에 연결했습니다. 라스트오더가 있는 곳은 영업시간 종료보다 앞선 라스트오더 시각까지 방문이 끝나도록 보수적으로 입력했습니다. 예시 파일의 ID와 시간은 실제 장소 데이터가 아닙니다.
 
 다른 지역에 적용하거나 제주 식당 목록을 늘리려면 `docs/travel/restaurant_hours.json.example` 형식의 JSON을 만들고 운영 서버의 `.env`에 `RESTAURANT_HOURS_FILE`을 그 파일의 절대 경로로 설정하세요. 파일을 설정하면 기록이 없는 선택 식당은 후보에서 빠지고, 필수 식당의 시간이 없으면 422로 중단합니다. 일정 생성은 식당 체류 **시작부터 끝까지** 영업시간 안에 들어가도록 기다리거나 다른 식당으로 교체하며, 실제 이동 경로 반영 후 다시 확인합니다. 맞는 식당이 없으면 방문을 제외하고, 필수 방문 및 최소 일정 조건 때문에 제외할 수 없다면 422를 반환합니다. 제주 외 지역은 별도 파일을 설정하지 않으면 기존 동작이며 영업시간이 확인된 것으로 간주하지 않습니다. 네이버 지도 정보 자체가 바뀌거나 공휴일 임시휴무가 생길 수 있으므로 운영 데이터는 주기적으로 갱신해야 합니다.
 
@@ -105,7 +105,7 @@ INFO:     Uvicorn running on http://127.0.0.1:8000
 성별·속도·테마 등 필수 값이 없는 후보는 요청 전체를 400으로 거절합니다.
 속도가 양극단인 `RELAXED ↔ PACKED` 후보는 점수 계산 전에 제외합니다.
 
-개발 DB를 사용하는 오프라인 평가는 [개발 DB 문서](docs/matching/mysql.md)를 참고하세요. 개발 DB의 초기 프로필은 `ai_service/matching/data/matching_seed_profiles.json`에 보관합니다. 실제 사용자 인증과 DB 요청 저장은 백엔드에서 처리합니다.
+개발 DB를 사용하는 오프라인 평가는 [개발 DB 문서](docs/matching/mysql.md)를 참고하세요. 개발 DB의 초기 프로필은 `ai_service/data/matching/matching_seed_profiles.json`에 보관합니다. 실제 사용자 인증과 DB 요청 저장은 백엔드에서 처리합니다.
 
 ```bash
 ./.venv/bin/python -m unittest discover -s tests/matching -t . -v
@@ -174,13 +174,15 @@ ROUTE_OPTIMIZE_DONE → complete
 | `ai_service/core/` | 공통 설정·인증·오류·로그·앱 수명 관리 |
 | `ai_service/api/routes/` | 일정·음악·매칭·큐·상태 확인 HTTP 진입점 |
 | `ai_service/api/` | 공통 요청 처리·Swagger·응답 정의·예시 |
-| `ai_service/travel/` | 일정 생성·장소·숙소·경로·SSE |
-| `ai_service/music/` | E5 음악 추천·YouTube 조회 |
-| `ai_service/matching/` | 동행자 추천·백엔드 계약 |
+| `ai_service/schemas/` | 여행·음악·매칭·큐 요청과 응답 모델 |
+| `ai_service/prompts/` | 일정·음악 생성 프롬프트 |
+| `ai_service/planners/` | 모델 요청 구성·출력 검증 |
+| `ai_service/clients/` | OpenAI·카카오·YouTube 외부 API 연동 |
+| `ai_service/services/` | 여행 생성·음악 추천·매칭 처리 |
 | `ai_service/jobs/` | 작업 서비스·Redis 저장·Celery 워커 |
 | `ai_service/embeddings/` | 음악 추천의 E5 ONNX 추론 |
-| `ai_service/matching/data/` | 매칭 목데이터·개발 DB SQL·카탈로그 |
-| `ai_service/travel/data/` | 확인한 식당 영업시간 데이터 |
+| `ai_service/data/matching/` | 매칭 목데이터·개발 DB SQL·카탈로그 |
+| `ai_service/data/travel/` | 확인한 식당 영업시간 데이터 |
 | `scripts/matching/` | DB 준비·평가·백엔드 연동 검증 도구 |
 | `scripts/models/` | 고정 모델 다운로드·체크섬 검증 |
 | `tests/` | `core`, `travel`, `music`, `matching`, `jobs`별 회귀 테스트 |
@@ -193,18 +195,22 @@ API 진입점은 `ai_service/main.py`이며 실행 명령은 `ai_service.main:ap
 
 | 파일 | 역할 |
 | --- | --- |
-| `ai_service/travel/schemas.py` | 일정 요청·응답·내부 데이터 계약 |
-| `ai_service/music/schemas.py` | 별도 음악 요청·응답 계약 |
-| `ai_service/matching/backend.py` | 매칭 조건·후보·추천 결과 계약 |
+| `ai_service/schemas/travel.py` | 일정 요청·응답·내부 데이터 계약 |
+| `ai_service/schemas/music.py` | 별도 음악 요청·응답 계약 |
+| `ai_service/schemas/matching.py` | 매칭 조건·후보·추천 결과 계약 |
 | `ai_service/main.py` | 앱 조립·라우터 등록 |
 | `ai_service/api/routes/` | 기능별 URL·HTTP 요청 및 응답 |
 | `ai_service/core/handlers.py` | 기존 JSON·큐 오류 응답 |
-| `ai_service/travel/streaming.py` | SSE 하트비트·제한 시간·오류·연결 종료 처리 |
-| `ai_service/travel/backend_contract.py` | 백엔드 단계 이벤트·저장용 결과 변환 |
-| `ai_service/travel/pipeline.py` | 장소·숙소·경로·음악 공통 생성 흐름 |
-| `ai_service/music/e5.py` | 별도 음악 API의 YouTube 후보 선택·E5 정렬 |
+| `ai_service/services/travel/streaming.py` | SSE 하트비트·제한 시간·오류·연결 종료 처리 |
+| `ai_service/services/travel/backend_contract.py` | 백엔드 단계 이벤트·저장용 결과 변환 |
+| `ai_service/services/travel/pipeline.py` | 장소·숙소·경로·음악 공통 생성 흐름 |
+| `ai_service/services/music.py` | 별도 음악 API의 YouTube 후보 선택·E5 정렬 |
 | `ai_service/embeddings/e5.py` | 공통 모델 로드·평균 풀링·정규화 |
-| `ai_service/api/examples.py` | Swagger 요청 예시 |
+| `ai_service/api/examples/` | 여행·음악·매칭별 Swagger 요청·응답 예시 |
+| `ai_service/prompts/travel.py` | 일정 생성 지시문·인원별 조건·재시도 문구 |
+| `ai_service/prompts/music.py` | 일정 생성 중 음악 추천 지시문·재시도 문구 |
+| `ai_service/planners/travel.py` | 프롬프트·구조화 출력으로 모델 요청 조율 |
+| `ai_service/services/matching.py` | 매칭 필터·점수 계산·정렬·추천 |
 
 [복사용 여행 요청](../문서/참고자료/여행일정생성요청.json) · [백엔드 DTO 요청](../문서/참고자료/백엔드_여행일정생성요청.json) · [현재 API 규격](../문서/API_TERMS.md) · [백엔드에 전달할 사항](../문서/백엔드_AI_연동_반영사항.md)
 

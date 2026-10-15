@@ -1,6 +1,6 @@
-"""Evaluate the fixed theme/pace policy against synthetic development labels.
+"""고정된 테마·속도 계산 규칙을 합성 개발 데이터의 정답과 비교해 평가한다.
 
-Read-only DB access; no model loading, weight selection or .env changes.
+DB는 읽기 전용으로 조회하며 모델 로드·가중치 선택·.env 수정은 수행하지 않는다.
 """
 import argparse
 import csv
@@ -17,8 +17,8 @@ ROOT = Path(__file__).resolve().parents[2]
 if __package__ in (None, ''):
     sys.path.insert(0, str(ROOT))
 
-from ai_service.matching.scoring import is_pace_compatible
-from ai_service.matching.service import RANKING_VERSION, rank_candidates
+from ai_service.services.matching import is_pace_compatible
+from ai_service.services.matching import RANKING_VERSION, rank_candidates
 from scripts.matching.evaluation_data import load_snapshot, backend_input
 
 

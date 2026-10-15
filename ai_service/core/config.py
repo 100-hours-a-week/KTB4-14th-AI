@@ -1,3 +1,4 @@
+"""환경변수와 .env에서 외부 API·모델·서버·큐 설정을 불러온다."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field

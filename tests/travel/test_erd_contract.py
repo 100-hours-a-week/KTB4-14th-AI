@@ -1,16 +1,16 @@
-"""Regression checks against AUDIGO_최종 (2).xlsx, without live API calls."""
+"""실시간 API 호출 없이 AUDIGO_최종 (2).xlsx 기준의 계약을 검증한다."""
 import unittest
 
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from ai_service.core.config import Settings
-from ai_service.travel.features import make_itinerary_response, schedule_selection, validate_itinerary
+from ai_service.services.travel.scheduling import make_itinerary_response, schedule_selection, validate_itinerary
 from ai_service.main import create_app
-from ai_service.core.schemas import (
+from ai_service.schemas.common import (
     Duration
 )
-from ai_service.travel.schemas import (
+from ai_service.schemas.travel import (
     ItineraryRequest, ModelItinerary, ModelSelection, Preference
 )
 from tests.travel.test_day_transport import places, request, selection, http_request

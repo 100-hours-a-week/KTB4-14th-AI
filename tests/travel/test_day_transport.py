@@ -1,3 +1,4 @@
+"""날짜별 이동수단 요청과 장소 간 이동시간·경로 처리를 검증한다."""
 from datetime import datetime
 import unittest
 
@@ -5,17 +6,17 @@ import httpx
 
 from ai_service.core.config import Settings
 from ai_service.core.errors import GenerationFailed
-from ai_service.travel.features import build_context, schedule_selection, validate_itinerary
-from ai_service.travel.pipeline import connect_routes
-from ai_service.travel.places import travel_minutes
-from ai_service.travel.routing import KakaoRoutes
-from ai_service.travel.schemas import (
+from ai_service.services.travel.scheduling import build_context, schedule_selection, validate_itinerary
+from ai_service.services.travel.pipeline import connect_routes
+from ai_service.clients.kakao_places import travel_minutes
+from ai_service.clients.kakao_routes import KakaoRoutes
+from ai_service.schemas.travel import (
     ItineraryRequest, ModelSelection, Place
 )
-from ai_service.core.schemas import (
+from ai_service.schemas.common import (
     KST
 )
-from ai_service.travel.transport import resolve_day_transports
+from ai_service.services.travel.transport import resolve_day_transports
 
 
 EXTRA = "이동 시간이 너무 길지 않게 여유로운 일정으로 추천해주세요. 또한 첫날에는 자동차를 이용할거고 둘째날에는 버스를 이용할거라서 첫날에는 대중교통을 추천해주지 않아도 됩니다."

@@ -1,4 +1,4 @@
-"""Night visit boundaries apply to planning, both schedulers and HTTP output."""
+"""플래너·두 일정 배치 처리·HTTP 응답에 야간 방문 시간 제한이 적용되는지 확인한다."""
 from datetime import datetime
 import unittest
 from unittest.mock import Mock
@@ -8,14 +8,14 @@ from fastapi.testclient import TestClient
 
 from ai_service.core.config import Settings
 from ai_service.core.errors import GenerationFailed, InvalidModelOutput
-from ai_service.travel.features import day_windows, schedule_selection, validate_itinerary
+from ai_service.services.travel.scheduling import day_windows, schedule_selection, validate_itinerary
 from ai_service.main import create_app
-from ai_service.travel.pipeline import generate_plan
-from ai_service.travel.routing import KakaoRoutes, schedule_with_routes
-from ai_service.core.schemas import (
+from ai_service.services.travel.pipeline import generate_plan
+from ai_service.clients.kakao_routes import KakaoRoutes, schedule_with_routes
+from ai_service.schemas.common import (
     KST
 )
-from ai_service.travel.schemas import (
+from ai_service.schemas.travel import (
     ModelSelection
 )
 from tests.travel.test_compact_routes import PlaceClient, Planner, all_keys
@@ -66,7 +66,7 @@ class NightScheduleTests(unittest.IsolatedAsyncioTestCase):
 
     def test_night_boundaries_use_korean_local_time(self):
         body = night_request()
-        from ai_service.core.schemas import Duration
+        from ai_service.schemas.common import Duration
         body.duration = Duration(arrival_datetime='2026-09-19T09:00:00Z',
                                  departure_datetime='2026-09-19T14:59:00Z')
         self.assertEqual(day_windows(body)[0]['start'], '18:45')

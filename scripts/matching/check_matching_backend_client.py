@@ -1,7 +1,7 @@
-"""Run the unchanged backend Java client against a temporary real AI HTTP server.
+"""임시 AI HTTP 서버에 기존 백엔드 Java 클라이언트를 연결해 검증한다.
 
-Requires a JDK and the backend's dependency JARs already in Gradle's local cache.
-No Spring application, backend DB, Redis or paid provider is started.
+JDK와 Gradle 로컬 캐시에 저장된 백엔드 의존성 JAR 파일이 필요하다.
+Spring 애플리케이션·백엔드 DB·Redis·유료 외부 API는 실행하지 않는다.
 """
 import argparse
 import json

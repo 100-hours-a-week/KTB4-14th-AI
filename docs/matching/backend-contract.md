@@ -84,10 +84,9 @@ ID만 전달하는 요청과 이전 평면 요청은 HTTP 400 입력 오류를 �
 
 ## 구현 위치
 
-- ai_service/matching/backend.py: 백엔드 요청·응답 DTO 스키마.
+- ai_service/schemas/matching.py: 백엔드 요청·응답 DTO 스키마.
 - ai_service/api/routes/matching.py: 백엔드 DTO를 받는 동기 추천 경로.
-- ai_service/matching/scoring.py: 테마 80점·속도 20점, 양극단 제외, 정수 반올림.
-- ai_service/matching/service.py: 본인·성별 제외, 점수·닉네임·ID 정렬, limit 적용.
+- ai_service/services/matching.py: 본인·성별·속도 필터, 테마 80점·속도 20점 계산, 정렬·limit 적용.
 
 ## 검증과 재현
 

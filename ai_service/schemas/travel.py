@@ -1,0 +1,369 @@
+"""여행 생성의 요청·응답·경로·모델 출력 스키마."""
+from __future__ import annotations
+from datetime import date, datetime
+from typing import Literal
+from pydantic import Field, PrivateAttr, model_serializer, model_validator
+from ai_service.schemas.common import Duration, NonEmpty, PACE_ALIASES, Region, StrictModel, TRANSPORT_ALIASES
+from ai_service.schemas.music import MusicRecommendation
+
+
+Category = Literal["관광", "식당", "숙소"]
+
+
+class Preference(StrictModel):
+    pace_type: NonEmpty
+    transport_type: NonEmpty
+    budget_min: int | None = Field(default=None, ge=0)
+    budget_max: int | None = Field(default=None, ge=0)
+    budget_type: str = Field(
+        default="KRW", pattern=r"^[A-Z]{3}$",
+        description="스프레드시트 기준 화폐 단위. 요청·응답 모두 budget_type 사용",
+    )
+    distance_preference: int | None = Field(default=None, ge=0, le=100)
+    themes: list[NonEmpty] = Field(default_factory=list, max_length=10)
+    foods: list[NonEmpty] = Field(default_factory=list, max_length=10)
+    extra_request: str | None = Field(default=None, max_length=2000)
+
+    @model_validator(mode="after")
+    def validate_preferences(self):
+        if self.pace_type not in PACE_ALIASES:
+            raise ValueError("unsupported pace_type")
+        if self.transport_type not in TRANSPORT_ALIASES:
+            raise ValueError("unsupported transport_type")
+        # 입력 별칭은 받되 응답에는 ERD의 표준 enum 값을 사용한다.
+        self.pace_type = PACE_ALIASES[self.pace_type]
+        self.transport_type = TRANSPORT_ALIASES[self.transport_type]
+        if self.budget_min is not None and self.budget_max is not None:
+            if self.budget_min > self.budget_max:
+                raise ValueError("budget_max must be at least budget_min")
+        return self
+
+
+class RequiredPlace(StrictModel):
+    provider: Literal["KAKAO"]
+    provider_place_id: NonEmpty
+    place_name: NonEmpty
+    address: str = Field(default="", max_length=500)
+    road_address: str = Field(default="", max_length=500)
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    category: str = Field(default="", max_length=500)
+    order: int = Field(ge=1)
+
+
+class ItineraryRequest(StrictModel):
+    """두 HTTP 요청 형식을 변환한 뒤 사용하는 공통 내부 생성 조건."""
+
+    generation_job_id: int | None = Field(default=None, gt=0)
+    travel_plan_id: int | None = Field(default=None, gt=0)
+    region: Region
+    duration: Duration
+    headcount: int = Field(ge=1, le=30)
+    companion_type: NonEmpty
+    preference: Preference
+    required_places: list[RequiredPlace] = Field(default_factory=list, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_required_places(self):
+        ids = [p.provider_place_id for p in self.required_places]
+        orders = [p.order for p in self.required_places]
+        if len(set(ids)) != len(ids) or len(set(orders)) != len(orders):
+            raise ValueError("required_places IDs and orders must be unique")
+        return self
+
+
+class LegacyGenerationPreference(Preference):
+    budget_type: str = Field(default="KRW", pattern=r"^[A-Z]{3}$")
+
+
+class LegacyGenerationRequest(StrictModel):
+    """백엔드의 평면 DTO와 함께 받는 사용자 중첩 요청 형식."""
+
+    generation_job_id: int = Field(gt=0)
+    region: Region
+    duration: Duration
+    headcount: int = Field(ge=1, le=30)
+    companion_type: NonEmpty
+    preference: LegacyGenerationPreference
+    required_places: list[RequiredPlace] = Field(default_factory=list, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_required_places(self):
+        ids = [p.provider_place_id for p in self.required_places]
+        orders = [p.order for p in self.required_places]
+        if len(set(ids)) != len(ids) or len(set(orders)) != len(orders):
+            raise ValueError("required_places IDs and orders must be unique")
+        return self
+
+    def generation_context(self) -> ItineraryRequest:
+        # 작업 ID를 여행 ID로 바꾸지 않고 원래 요청 식별자를 유지한다.
+        return ItineraryRequest.model_validate(self.model_dump(by_alias=False))
+
+
+class TravelGenerationPreference(Preference):
+    budget_type: str = Field(pattern=r"^[A-Z]{3}$")
+    distance_preference: int = Field(ge=0, le=100)
+    themes: list[NonEmpty] = Field(max_length=3)
+
+
+class BackendPlaceContext(StrictModel):
+    provider: Literal["KAKAO"]
+    provider_place_id: NonEmpty
+    place_name: NonEmpty | None = None
+    address: str | None = Field(default=None, max_length=500)
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+    place_type: Literal["TOURISM", "RESTAURANT", "ACCOMMODATION"] = "TOURISM"
+    order: int | None = Field(default=None, ge=1)
+
+
+class TravelGenerationRequest(Duration):
+    """feature-travel의 AiTravelGenerationRequest와 맞춘 백엔드 요청 형식."""
+
+    travel_plan_id: int = Field(gt=0)
+    region_id: int = Field(gt=0)
+    region_name: NonEmpty
+    headcount: int = Field(ge=1, le=30)
+    companion_type: NonEmpty
+    preference: TravelGenerationPreference
+    required_places: list[BackendPlaceContext] = Field(default_factory=list, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_required_places(self):
+        ids = [p.provider_place_id for p in self.required_places]
+        orders = [p.order if p.order is not None else i for i, p in enumerate(self.required_places, 1)]
+        if len(set(ids)) != len(ids) or len(set(orders)) != len(orders):
+            raise ValueError("required_places IDs and orders must be unique")
+        return self
+
+    def generation_context(self) -> ItineraryRequest:
+        """필수 장소의 상세값을 확인한 뒤 내부 공통 요청으로 변환한다."""
+        from ai_service.core.errors import GenerationFailed
+
+        places = []
+        for index, place in enumerate(self.required_places, 1):
+            if place.place_name is None or place.latitude is None or place.longitude is None:
+                raise GenerationFailed("필수 장소의 장소명·위도·경도가 없습니다. 백엔드에서 재생성 장소 상세를 복구해 전달해 주세요.", reason="required_place_details_missing")
+            places.append(RequiredPlace(
+                provider=place.provider, provider_place_id=place.provider_place_id,
+                place_name=place.place_name, address=place.address or "",
+                latitude=place.latitude, longitude=place.longitude,
+                category={"TOURISM": "관광", "RESTAURANT": "식당", "ACCOMMODATION": "숙소"}[place.place_type],
+                order=place.order if place.order is not None else index,
+            ))
+        return ItineraryRequest(
+            travel_plan_id=self.travel_plan_id,
+            region=Region(region_id=self.region_id, full_name=self.region_name),
+            duration=Duration(arrival_datetime=self.arrival_datetime, departure_datetime=self.departure_datetime),
+            headcount=self.headcount,
+            companion_type=self.companion_type,
+            preference=self.preference,
+            required_places=places,
+        )
+
+
+class PlaceResponse(StrictModel):
+    provider: Literal["KAKAO"] = "KAKAO"
+    provider_place_id: NonEmpty
+    place_name: NonEmpty
+    address: NonEmpty
+    road_address: str = ""
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    category: Category
+
+
+class Place(PlaceResponse):
+    # 제공자 메타데이터는 후보 선택에만 쓰고 공개 응답에는 넣지 않는다.
+    source_category: str
+    is_required: bool = False
+    # 영업시간은 일정 검증용 내부 데이터이며 Spring 응답에는 직렬화하지 않는다.
+    _restaurant_hours: object = PrivateAttr(default=None)
+
+
+class SelectionItem(StrictModel):
+    provider_place_id: str
+
+
+class SelectionDay(StrictModel):
+    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    items: list[SelectionItem] = Field(max_length=10)
+
+
+class ModelSelection(StrictModel):
+    title: str = Field(min_length=1, max_length=50)
+    days: list[SelectionDay] = Field(min_length=1, max_length=8)
+
+
+class ModelItem(StrictModel):
+    provider_place_id: str
+    start_time: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    stay_minutes: int = Field(gt=0, le=1440)
+
+
+class ModelDay(StrictModel):
+    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    items: list[ModelItem] = Field(max_length=10)
+
+
+class ModelItinerary(StrictModel):
+    title: str = Field(min_length=1, max_length=50)
+    days: list[ModelDay] = Field(min_length=1, max_length=8)
+
+
+class Coordinate(StrictModel):
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+
+
+class RouteStop(StrictModel):
+    name: str
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+    station_id: str | None = None
+    # 정류장 번호는 확인된 표시값이며 제공자 내부 ID가 아니다.
+    station_number: str | None = Field(default=None, min_length=1, max_length=32)
+
+
+class WalkingInstruction(StrictModel):
+    description: str
+    distance_meter: int = Field(ge=0)
+    path: list[Coordinate] = Field(
+        default_factory=list, description="이 도보 안내에 해당하는 경로 부분의 좌표"
+    )
+
+
+class RouteVehicle(StrictModel):
+    name: str
+    type: str
+
+
+class RouteLeg(StrictModel):
+    mode: Literal[
+        "WALK", "BUS", "SUBWAY", "EXPRESSBUS", "TRAIN", "AIRPLANE", "FERRY", "CAR"
+    ]
+    duration_seconds: int = Field(ge=0)
+    distance_meter: int = Field(ge=0)
+    start: RouteStop
+    end: RouteStop
+    departure_datetime: datetime
+    arrival_datetime: datetime
+    route_name: str | None = None
+    route_id: str | None = None
+    bus_number: str | None = None
+    stops: list[RouteStop] = Field(default_factory=list)
+    path: list[Coordinate] = Field(
+        default_factory=list,
+        description="이 이동 구간을 지도에 선으로 그리는 순서 있는 좌표. 방문 장소 목록이 아님",
+    )
+    instructions: list[WalkingInstruction] = Field(default_factory=list)
+    vehicles: list[RouteVehicle] = Field(default_factory=list)
+
+
+class RouteDetails(StrictModel):
+    transport_type: str
+    total_fare_amount: int | None = Field(default=None, ge=0, strict=True)
+    duration_minutes: int = Field(ge=0)
+    distance_meter: int = Field(ge=0)
+    is_estimated: bool = Field(
+        default=True,
+        description="서버 좌표 기반 추정이면 true, 카카오 길찾기 결과이면 false. 실제 도착 시각 보증이 아님",
+    )
+    provider: Literal["KAKAO", "GEOGRAPHIC_ESTIMATE"] = "GEOGRAPHIC_ESTIMATE"
+    map_url: str | None = None
+    departure_datetime: datetime | None = None
+    arrival_datetime: datetime | None = None
+    duration_seconds: int | None = Field(default=None, ge=0)
+    transit_available: bool | None = None
+    walking_fallback: bool = False
+    message: str | None = None
+    legs: list[RouteLeg] = Field(default_factory=list)
+
+
+class TransitStopSummary(StrictModel):
+    name: NonEmpty
+    station_number: str | None = Field(
+        default=None, min_length=1, max_length=32,
+        description="정류장·역 표시 번호. 앞자리 0을 유지하는 문자열. 별도 정류장 데이터로 확인한 경우만 제공하며 현재 카카오 단독 조회는 null. 내부 station_id·장소 ID·버스 번호와 다름",
+    )
+
+
+class TransitLegSummary(StrictModel):
+    mode: Literal["WALK", "BUS", "SUBWAY", "TRAIN", "EXPRESSBUS", "AIRPLANE", "FERRY"]
+    line_name: str | None = Field(default=None, description="노선명. 여러 개면 쉼표로 구분, 없으면 null")
+    vehicle_number: str | None = Field(default=None, description="버스 번호. 여러 개면 쉼표로 구분, 없으면 null")
+    start: TransitStopSummary
+    end: TransitStopSummary
+
+
+class RouteSummary(StrictModel):
+    """상세 좌표를 제외한 공개 경로 응답 형식."""
+
+    transport_type: str
+    duration_minutes: int = Field(ge=0)
+    distance_meter: int = Field(ge=0)
+    line_name: str | None = Field(default=None, description="이동 순서의 중복 없는 노선명. 여러 개면 쉼표로 구분, 없으면 null")
+    vehicle_number: str | None = Field(default=None, description="이동 순서의 중복 없는 버스 번호. 여러 개면 쉼표로 구분, 없으면 null")
+    total_fare_amount: int | None = Field(
+        default=None, ge=0, strict=True,
+        description="선택한 카카오 경로 전체 요금(원). 미확인·범위만 제공되면 null, 도보 0, 자동차 null. 구간 합산이나 별도 환승 할인 계산 없음",
+    )
+    legs: list[TransitLegSummary] = Field(default_factory=list, description="도보·탑승·환승을 포함한 이동 순서의 구간 안내. 상세 좌표와 전체 정류장 목록 제외")
+
+
+class ItineraryItem(PlaceResponse):
+    sequence: int
+    item_type: Literal["TOUR", "RESTAURANT", "ACCOMMODATION"]
+    start_time: str
+    end_time: str
+    route_from_previous: RouteSummary | None = Field(
+        default=None,
+        description="이전 방문 항목에서 오는 이동수단·시간·거리·대중교통 탑승 안내. 여행 첫 장소는 null. 다음날 첫 항목은 전날 마지막 항목에서 출발. CAR는 좌표 기반 추정치",
+    )
+
+
+class ItineraryDay(StrictModel):
+    day_number: int
+    travel_date: date
+    items: list[ItineraryItem]
+
+
+class RequiredPlaceResponse(StrictModel):
+    provider: str
+    provider_place_id: str
+    place_name: str
+    address: str
+    road_address: str
+    latitude: float
+    longitude: float
+    category: str
+    order: int
+
+
+class ItineraryResponse(StrictModel):
+    generation_job_id: int | None = None
+    travel_plan_id: int | None = None
+    region: Region
+    duration: Duration
+    headcount: int
+    companion_type: str
+    preference: Preference
+    required_places: list[RequiredPlaceResponse]
+    title: str = Field(min_length=1, max_length=50)
+    days: list[ItineraryDay]
+
+    @model_serializer(mode="wrap")
+    def serialize_identity(self, handler):
+        data = handler(self)
+        for key in ("generation_job_id", "travel_plan_id"):
+            if data.get(key) is None:
+                data.pop(key, None)
+        return data
+
+
+class RoutesResult(StrictModel):
+    itinerary: ItineraryResponse
+
+
+class GenerationResult(RoutesResult):
+    music: MusicRecommendation

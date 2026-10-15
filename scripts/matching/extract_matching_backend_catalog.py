@@ -1,4 +1,4 @@
-"""Extract enum values and region rows from the backend source export."""
+"""내보낸 백엔드 소스에서 열거형 값과 지역 데이터를 추출한다."""
 import argparse
 import hashlib
 import json
@@ -43,7 +43,7 @@ def extract(archive_path):
 if __name__=='__main__':
     parser=argparse.ArgumentParser()
     parser.add_argument('--backend-zip',type=Path,required=True)
-    parser.add_argument('--output',type=Path,default=ROOT/'ai_service/matching/data/matching_backend_catalog.json')
+    parser.add_argument('--output',type=Path,default=ROOT/'ai_service/data/matching/matching_backend_catalog.json')
     args=parser.parse_args()
     data=extract(args.backend_zip)
     args.output.write_text(json.dumps(data,ensure_ascii=False,indent=2)+'\n')

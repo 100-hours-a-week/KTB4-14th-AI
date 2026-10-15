@@ -1,4 +1,5 @@
 # syntax=docker/dockerfile:1
+# AI 서버 실행 환경과 E5 모델을 포함한 배포 이미지를 빌드한다.
 
 FROM python:3.12-slim AS builder
 WORKDIR /app

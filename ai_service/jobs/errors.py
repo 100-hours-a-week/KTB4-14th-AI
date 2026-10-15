@@ -1,5 +1,6 @@
+"""큐 작업과 매칭 API의 오류를 공통 응답 형식으로 변환한다."""
 from ai_service.core.errors import ApiError
-from ai_service.jobs.schemas import JobError, JobErrorResponse
+from ai_service.schemas.jobs import JobError, JobErrorResponse
 
 
 class JobApiError(ApiError):

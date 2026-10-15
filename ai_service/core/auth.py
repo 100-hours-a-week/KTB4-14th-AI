@@ -1,3 +1,4 @@
+"""백엔드와 AI 서버 사이의 서비스 Bearer 토큰 인증을 처리한다."""
 from __future__ import annotations
 
 import hmac

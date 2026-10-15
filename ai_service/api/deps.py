@@ -3,8 +3,8 @@ from typing import Annotated
 from fastapi import Header, Request
 from ai_service.core.config import Settings
 from ai_service.core.errors import ServiceUnavailable
-from ai_service.travel.schemas import ItineraryRequest, LegacyGenerationRequest, TravelGenerationRequest
-from ai_service.travel.transport import resolve_day_transports
+from ai_service.schemas.travel import ItineraryRequest, LegacyGenerationRequest, TravelGenerationRequest
+from ai_service.services.travel.transport import resolve_day_transports
 
 
 def prepare_generation(body: LegacyGenerationRequest | TravelGenerationRequest, request: Request, settings: Settings) -> ItineraryRequest:

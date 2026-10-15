@@ -1,13 +1,9 @@
 """백엔드 동행자 후보 추천 API."""
 from typing import Annotated
 from fastapi import APIRouter, Body
-from ai_service.matching.backend import (
-    BackendMatchingRequest,
-    BackendMatchingResponse,
-    BACKEND_MATCHING_EXAMPLE,
-)
-from ai_service.matching.service import recommend
-from ai_service.matching.examples import MATCHING_RESPONSES
+from ai_service.schemas.matching import BackendMatchingRequest, BackendMatchingResponse
+from ai_service.api.examples.matching import BACKEND_MATCHING_EXAMPLE, MATCHING_RESPONSES
+from ai_service.services.matching import recommend
 
 
 def router(settings):

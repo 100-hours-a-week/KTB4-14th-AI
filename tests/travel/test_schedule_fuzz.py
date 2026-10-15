@@ -1,4 +1,4 @@
-"""Deterministic schedule stress cases without OpenAI or Kakao network calls."""
+"""OpenAI·카카오 네트워크 호출 없이 고정된 조건으로 일정 생성 부하 검사를 재현한다."""
 
 from collections import Counter
 from datetime import datetime, timedelta
@@ -8,13 +8,13 @@ import unittest
 from unittest.mock import AsyncMock
 
 from ai_service.core.errors import GenerationFailed, InvalidModelOutput
-from ai_service.travel.features import (
+from ai_service.services.travel.scheduling import (
     complete_selection,
     schedule_selection,
     validate_generation_window,
     validate_itinerary,
 )
-from ai_service.travel.pipeline import (
+from ai_service.services.travel.pipeline import (
     fallback_short_single_day,
     fallback_multi_day,
     recommend_accommodations,
@@ -22,10 +22,10 @@ from ai_service.travel.pipeline import (
     trim_places_to_time,
     validate_places_selection,
 )
-from ai_service.core.schemas import (
+from ai_service.schemas.common import (
     KST
 )
-from ai_service.travel.schemas import (
+from ai_service.schemas.travel import (
     ModelSelection, RequiredPlace
 )
 from tests.travel.test_day_transport import places, request

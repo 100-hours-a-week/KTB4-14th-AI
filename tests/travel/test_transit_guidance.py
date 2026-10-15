@@ -1,3 +1,4 @@
+"""대중교통의 정류장·노선·도보·환승 정보가 공개 응답에 올바르게 포함되는지 검증한다."""
 import unittest
 from datetime import datetime
 
@@ -5,8 +6,8 @@ import httpx
 
 from ai_service.core.config import Settings
 from ai_service.core.errors import RoutingUnavailable
-from ai_service.travel.routing import KakaoRoutes, summarize_route
-from ai_service.core.schemas import KST
+from ai_service.clients.kakao_routes import KakaoRoutes, summarize_route
+from ai_service.schemas.common import KST
 from tests.travel.test_compact_routes import all_keys
 from tests.travel.test_day_transport import places, transit_payload
 

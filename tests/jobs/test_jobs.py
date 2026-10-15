@@ -1,4 +1,4 @@
-"""HTTP contracts, Redis atomicity, retries, recovery and existing pipeline reuse."""
+"""HTTP 계약·Redis 원자성·재시도·복구·기존 파이프라인 재사용을 검증한다."""
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 import json

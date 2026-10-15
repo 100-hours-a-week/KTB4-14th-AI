@@ -5,12 +5,12 @@ from fastapi import APIRouter, Body, Request
 from fastapi.responses import StreamingResponse
 
 from ai_service.api.deps import prepare_generation
-from ai_service.api.examples import GENERATION_REQUEST_EXAMPLES
+from ai_service.api.examples.travel import GENERATION_REQUEST_EXAMPLES
 from ai_service.api.responses import ITINERARY_RESPONSES
 from ai_service.core.errors import ServiceUnavailable
-from ai_service.travel.schemas import ItineraryResponse, LegacyGenerationRequest, TravelGenerationRequest
-from ai_service.travel.pipeline import generate_plan
-from ai_service.travel.backend_contract import stream_backend_generation
+from ai_service.schemas.travel import ItineraryResponse, LegacyGenerationRequest, TravelGenerationRequest
+from ai_service.services.travel.pipeline import generate_plan
+from ai_service.services.travel.backend_contract import stream_backend_generation
 
 
 def router(settings):

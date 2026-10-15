@@ -1,10 +1,11 @@
-"""Arithmetic scores, filters and stable ranking for matching."""
+"""매칭 계산식 점수·필터·일관된 정렬 순서를 검증한다."""
 from copy import deepcopy
 import unittest
 
-from ai_service.matching.backend import BACKEND_MATCHING_EXAMPLE, BackendMatchingRequest
-from ai_service.matching.scoring import match_rate
-from ai_service.matching.service import recommend
+from ai_service.api.examples.matching import BACKEND_MATCHING_EXAMPLE
+from ai_service.schemas.matching import BackendMatchingRequest
+from ai_service.services.matching import match_rate
+from ai_service.services.matching import recommend
 
 
 class MatchingScoringTests(unittest.TestCase):

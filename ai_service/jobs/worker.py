@@ -1,4 +1,4 @@
-"""Celery executes existing AI services; Redis controls leases and retries."""
+"""Celery가 기존 AI 서비스를 실행하고 Redis가 실행 권한과 재시도를 관리한다."""
 import asyncio
 from contextlib import aclosing
 import time
@@ -8,17 +8,17 @@ from celery import Celery
 import httpx
 from redis.exceptions import RedisError
 
-from ai_service.travel.backend_contract import backend_result, STAGE_NAMES
+from ai_service.services.travel.backend_contract import backend_result, STAGE_NAMES
 from ai_service.core.config import Settings
 from ai_service.core.diagnostics import request_id as log_request_id, failure
 from ai_service.core.errors import ApiError, ServiceUnavailable
 from ai_service.jobs.errors import JobApiError
 from ai_service.jobs.store import RedisJobStore
-from ai_service.travel.model import OpenAIPlanner
-from ai_service.travel.pipeline import generation_stages
-from ai_service.travel.places import KakaoPlaces
-from ai_service.travel.routing import KakaoRoutes
-from ai_service.travel.schemas import (
+from ai_service.planners.travel import OpenAIPlanner
+from ai_service.services.travel.pipeline import generation_stages
+from ai_service.clients.kakao_places import KakaoPlaces
+from ai_service.clients.kakao_routes import KakaoRoutes
+from ai_service.schemas.travel import (
     ItineraryRequest
 )
 

@@ -1,3 +1,4 @@
+"""식당 영업시간의 적용·방문 가능 시간 검증·닫힌 식당 교체를 확인한다."""
 from datetime import datetime
 import json
 from pathlib import Path
@@ -8,12 +9,12 @@ import httpx
 
 from ai_service.core.config import Settings
 from ai_service.core.errors import GenerationFailed, InvalidModelOutput, ServiceUnavailable
-from ai_service.travel.features import make_itinerary_response, schedule_selection, validate_itinerary
-from ai_service.travel.pipeline import connect_routes, replace_closed_restaurant
-from ai_service.travel.places import KakaoPlaces
-from ai_service.travel.restaurant_hours import RestaurantHours, attach_verified_hours
-from ai_service.travel.routing import KakaoRoutes
-from ai_service.travel.schemas import (
+from ai_service.services.travel.scheduling import make_itinerary_response, schedule_selection, validate_itinerary
+from ai_service.services.travel.pipeline import connect_routes, replace_closed_restaurant
+from ai_service.clients.kakao_places import KakaoPlaces
+from ai_service.services.travel.restaurant_hours import RestaurantHours, attach_verified_hours
+from ai_service.clients.kakao_routes import KakaoRoutes
+from ai_service.schemas.travel import (
     ModelSelection
 )
 from tests.travel.test_day_transport import places, request, selection

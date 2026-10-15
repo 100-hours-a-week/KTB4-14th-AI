@@ -1,6 +1,6 @@
 """공통 오류와 일정 생성의 OpenAPI 응답 정의."""
-from ai_service.core.schemas import ErrorResponse
-from ai_service.api.examples import ITINERARY_RESPONSE_EXAMPLES
+from ai_service.schemas.common import ErrorResponse
+from ai_service.api.examples.travel import ITINERARY_RESPONSE_EXAMPLES
 
 ERROR_RESPONSES = {
     code: {"model": ErrorResponse, "description": description}

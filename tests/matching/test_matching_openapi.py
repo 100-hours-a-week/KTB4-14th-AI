@@ -1,3 +1,4 @@
+"""매칭 API의 경로·Swagger 스키마·요청과 오류 응답 예시를 검증한다."""
 import unittest
 from copy import deepcopy
 from unittest.mock import patch
@@ -6,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from ai_service.core.config import Settings
 from ai_service.main import create_app
-from ai_service.matching.backend import BACKEND_MATCHING_EXAMPLE
+from ai_service.api.examples.matching import BACKEND_MATCHING_EXAMPLE
 
 
 class MatchingOpenAPITests(unittest.TestCase):

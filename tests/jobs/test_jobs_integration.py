@@ -1,6 +1,7 @@
-"""Real Redis and Celery worker integration; providers are mocked, E5 is local.
+"""실제 Redis와 Celery 워커를 함께 검증한다. 외부 서비스는 대역으로, E5는 로컬에서 실행한다.
 
-Run with REDIS_SERVER=/path/to/redis-server. No existing Redis or paid API is used.
+REDIS_SERVER=/path/to/redis-server를 설정해 실행한다.
+기존 Redis 인스턴스와 유료 API는 사용하지 않는다.
 """
 import json
 import os

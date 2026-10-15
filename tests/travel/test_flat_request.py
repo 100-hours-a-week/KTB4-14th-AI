@@ -1,3 +1,4 @@
+"""백엔드 평면 DTO의 여행 요청 필드·검증·지역명 처리를 확인한다."""
 import copy
 import unicodedata
 import unittest
@@ -6,12 +7,12 @@ import httpx
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from ai_service.api.examples import ITINERARY_REQUEST_EXAMPLE
+from ai_service.api.examples.travel import ITINERARY_REQUEST_EXAMPLE
 from ai_service.core.config import Settings
 from ai_service.core.errors import GenerationFailed
 from ai_service.main import create_app
-from ai_service.travel.places import KakaoPlaces
-from ai_service.travel.schemas import (
+from ai_service.clients.kakao_places import KakaoPlaces
+from ai_service.schemas.travel import (
     TravelGenerationRequest
 )
 from tests.travel.test_day_transport import request

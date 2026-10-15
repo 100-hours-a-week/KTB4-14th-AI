@@ -3,17 +3,17 @@ from typing import Annotated
 from fastapi import APIRouter, Body, Request
 
 from ai_service.api.deps import IdempotencyKey
-from ai_service.api.examples import GENERATION_REQUEST_EXAMPLES
+from ai_service.api.examples.travel import GENERATION_REQUEST_EXAMPLES
 from ai_service.api.job_dispatch import call
 from ai_service.jobs.errors import JobApiError
-from ai_service.jobs.schemas import (
+from ai_service.schemas.jobs import (
     JobAccepted,
     JobErrorResponse,
     JobStatus,
 )
-from ai_service.travel.schemas import LegacyGenerationRequest, TravelGenerationRequest
-from ai_service.travel.features import validate_generation_window
-from ai_service.travel.transport import resolve_day_transports
+from ai_service.schemas.travel import LegacyGenerationRequest, TravelGenerationRequest
+from ai_service.services.travel.scheduling import validate_generation_window
+from ai_service.services.travel.transport import resolve_day_transports
 
 RESPONSES = {code: {'model': JobErrorResponse} for code in (400, 401, 409, 422, 500, 503)}
 

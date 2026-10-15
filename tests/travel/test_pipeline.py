@@ -1,9 +1,10 @@
+"""일정 생성 파이프라인의 사전 검사·단계별 실패·오류 로그를 검증한다."""
 import unittest
 from datetime import timedelta
 from unittest.mock import Mock, patch
 
 from ai_service.core.errors import GenerationFailed
-from ai_service.travel.pipeline import generate_plan
+from ai_service.services.travel.pipeline import generate_plan
 from tests.travel.test_day_transport import request
 
 
@@ -21,7 +22,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
     async def test_unexpected_error_logs_stage_without_secret(self):
         body = request(extra="")
         places, planner = Mock(), Mock()
-        with patch("ai_service.travel.pipeline.validate_generation_window", return_value=[]), self.assertLogs("uvicorn.error.audigo", level="ERROR") as logs:
+        with patch("ai_service.services.travel.pipeline.validate_generation_window", return_value=[]), self.assertLogs("uvicorn.error.audigo", level="ERROR") as logs:
             places.collect.side_effect = RuntimeError("secret-token-in-provider-url")
             with self.assertRaises(RuntimeError):
                 await generate_plan(body, places, planner)

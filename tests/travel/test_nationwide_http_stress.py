@@ -1,7 +1,7 @@
-"""1,000 reproducible itinerary POSTs across 17 Korean regions.
+"""전국 17개 지역의 일정 생성 POST 요청 1,000건을 재현한다.
 
-The region names and coordinates are test fixtures. Provider calls are blocked;
-this checks the API and scheduling pipeline, not nationwide live place coverage.
+지역명과 좌표는 테스트 데이터이며 외부 API 호출은 차단한다.
+API와 일정 배치 흐름을 검증하며 전국의 실제 장소 검색 범위를 확인하는 검사는 아니다.
 """
 
 from collections import Counter
@@ -18,10 +18,10 @@ from fastapi.testclient import TestClient
 
 from ai_service.core.config import Settings
 from ai_service.main import create_app
-from ai_service.travel.schemas import (
+from ai_service.schemas.travel import (
     ModelSelection, Place
 )
-from ai_service.music.schemas import (
+from ai_service.schemas.music import (
     MusicRecommendation
 )
 

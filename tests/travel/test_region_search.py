@@ -1,4 +1,4 @@
-"""Regression for decomposed Hangul in the user's Busan request."""
+"""부산 요청의 분리된 한글 자모가 지역 검색에서 정상 처리되는지 확인한다."""
 import unittest
 import unicodedata
 
@@ -7,11 +7,11 @@ from pydantic import ValidationError
 
 from ai_service.core.config import Settings
 from ai_service.core.errors import GenerationFailed, ServiceUnavailable
-from ai_service.travel.places import KakaoPlaces, in_region
-from ai_service.travel.schemas import (
+from ai_service.clients.kakao_places import KakaoPlaces, in_region
+from ai_service.schemas.travel import (
     ItineraryRequest
 )
-from ai_service.core.schemas import (
+from ai_service.schemas.common import (
     Region
 )
 

@@ -1,7 +1,7 @@
-"""Recover this Mac's Oracle-installed MySQL root account using --init-file.
+"""이 Mac에 Oracle 설치 방식으로 설치된 MySQL의 root 계정을 --init-file로 복구한다.
 
-Run interactively with sudo. Keeps the existing data directory and launchd
-configuration. Does not enable skip-grant-tables or change password policies.
+터미널에서 sudo로 직접 실행한다. 기존 데이터 디렉터리와 launchd 설정은 유지한다.
+skip-grant-tables를 활성화하거나 비밀번호 정책을 변경하지 않는다.
 """
 import getpass
 import os

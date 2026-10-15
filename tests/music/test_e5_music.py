@@ -9,14 +9,14 @@ import numpy as np
 from ai_service.embeddings.e5 import (
     E5Encoder
 )
-from ai_service.music.e5 import (
+from ai_service.services.music import (
     E5MusicRecommender, mentioned_seasons, parse_candidate, query_text, search_queries, season_for_month
 )
 from ai_service.core.errors import MusicRecommendationFailed, ServiceUnavailable
-from ai_service.music.schemas import (
+from ai_service.schemas.music import (
     MusicRecommendation, MusicRequest
 )
-from ai_service.api.examples import MUSIC_REQUEST_EXAMPLE
+from ai_service.api.examples.music import MUSIC_REQUEST_EXAMPLE
 
 
 REQUEST = MusicRequest.model_validate(MUSIC_REQUEST_EXAMPLE)

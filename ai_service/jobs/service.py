@@ -1,6 +1,6 @@
 """작업 접수·내구성 있는 발행·결과 조회 서비스."""
 from ai_service.jobs.errors import JobApiError
-from ai_service.jobs.schemas import JobAccepted
+from ai_service.schemas.jobs import JobAccepted
 from ai_service.jobs.store import RedisJobStore
 from ai_service.jobs.worker import create_celery_app, publish
 from ai_service.core.diagnostics import failure

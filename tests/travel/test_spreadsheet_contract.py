@@ -1,3 +1,4 @@
+"""여행·음악 API의 요청·응답·Swagger 예시가 스프레드시트 계약과 일치하는지 검증한다."""
 import copy
 import json
 import unittest
@@ -6,14 +7,15 @@ from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from ai_service.api.examples import ITINERARY_REQUEST_EXAMPLE, MUSIC_REQUEST_EXAMPLE, LEGACY_ITINERARY_REQUEST_EXAMPLE
+from ai_service.api.examples.travel import ITINERARY_REQUEST_EXAMPLE, LEGACY_ITINERARY_REQUEST_EXAMPLE
+from ai_service.api.examples.music import MUSIC_REQUEST_EXAMPLE
 from ai_service.core.config import Settings
 from ai_service.main import create_app
 from ai_service.core.errors import MusicRecommendationFailed, ServiceUnavailable
-from ai_service.travel.schemas import (
+from ai_service.schemas.travel import (
     GenerationResult, ItineraryRequest, ItineraryResponse, TravelGenerationRequest, LegacyGenerationRequest
 )
-from ai_service.music.schemas import (
+from ai_service.schemas.music import (
     MusicRecommendation, MusicRequest
 )
 
@@ -112,7 +114,7 @@ class SpreadsheetContractTests(unittest.TestCase):
             schema.model_validate(value)
 
     def test_itinerary_swagger_has_concrete_success_and_error_examples(self):
-        from ai_service.api.examples import ITINERARY_RESPONSE_EXAMPLES
+        from ai_service.api.examples.travel import ITINERARY_RESPONSE_EXAMPLES
         with TestClient(create_app(settings=Settings())) as client:
             spec = client.get('/openapi.json').json()
         for path in ('/internal/ai/itineraries/generate',):

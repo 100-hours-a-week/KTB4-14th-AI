@@ -1,4 +1,4 @@
-"""Create and seed a separate local development DB; never drop existing data."""
+"""별도 로컬 개발 DB를 생성하고 초기 데이터를 넣는다. 기존 데이터는 삭제하지 않는다."""
 import argparse
 import getpass
 import json
@@ -16,8 +16,8 @@ ROOT = Path(__file__).resolve().parents[2]
 if __package__ in (None, ""):
     sys.path.insert(0, str(ROOT))
 
-from ai_service.matching.dev import DATA_DIR, VERSION, SEED, make_dataset, insert_dataset
-from ai_service.matching.catalog import REGIONS
+from scripts.matching.dataset import DATA_DIR, VERSION, SEED, make_dataset, insert_dataset
+from scripts.matching.catalog import REGIONS
 
 LOCAL_ENV = ROOT / '.env.matching-dev'
 BUSINESS = ['regions','users','matching_profiles','matching_profile_themes',

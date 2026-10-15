@@ -1,14 +1,15 @@
+"""사용자 중첩 여행 요청의 변환·식별자 유지·응답·오류 처리를 검증한다."""
 import copy
 import unittest
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
-from ai_service.api.examples import LEGACY_ITINERARY_REQUEST_EXAMPLE as EXAMPLE
+from ai_service.api.examples.travel import LEGACY_ITINERARY_REQUEST_EXAMPLE as EXAMPLE
 from ai_service.core.config import Settings
 from ai_service.core.errors import GenerationFailed
 from ai_service.main import create_app
-from ai_service.travel.schemas import (
+from ai_service.schemas.travel import (
     GenerationResult, ItineraryResponse, LegacyGenerationRequest
 )
 

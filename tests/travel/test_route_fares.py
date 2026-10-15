@@ -1,4 +1,4 @@
-"""Transit wire contract, provider fares and ordered walk/transfer regressions."""
+"""대중교통 응답 계약·조회된 요금·도보 및 환승 구간 순서를 검증한다."""
 import json
 import math
 import unittest
@@ -7,14 +7,14 @@ from datetime import datetime
 import httpx
 from fastapi.testclient import TestClient
 
-from ai_service.api.examples import ROUTE_RESPONSE_EXAMPLE
+from ai_service.api.examples.travel import ROUTE_RESPONSE_EXAMPLE
 from ai_service.core.config import Settings
 from ai_service.main import create_app
-from ai_service.travel.routing import KakaoRoutes, summarize_route
-from ai_service.core.schemas import (
+from ai_service.clients.kakao_routes import KakaoRoutes, summarize_route
+from ai_service.schemas.common import (
     KST
 )
-from ai_service.travel.schemas import (
+from ai_service.schemas.travel import (
     RouteSummary
 )
 from tests.travel.test_day_transport import places, transit_payload

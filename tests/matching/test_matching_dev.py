@@ -1,13 +1,14 @@
-"""Synthetic data reproducibility and the actual ranking policy's boundaries."""
+"""합성 데이터의 재현성과 실제 추천 규칙의 경계 조건을 검증한다."""
 from collections import Counter
 import json
 from pathlib import Path
 import unittest
 
 
-from ai_service.matching.backend import BACKEND_MATCHING_EXAMPLE, BackendMatchingRequest
-from ai_service.matching.service import rank_candidates
-from ai_service.matching.dev import DATA_DIR, eligible_profile, make_dataset
+from ai_service.api.examples.matching import BACKEND_MATCHING_EXAMPLE
+from ai_service.schemas.matching import BackendMatchingRequest
+from ai_service.services.matching import rank_candidates
+from scripts.matching.dataset import DATA_DIR, eligible_profile, make_dataset
 from scripts.matching.evaluate_matching_dev import metrics
 
 
@@ -18,7 +19,7 @@ class MatchingDatasetTests(unittest.TestCase):
 
     def test_catalog_exactly_matches_supplied_backend_enums_and_region_seed(self):
         import zipfile, re
-        from ai_service.matching.catalog import CATALOG, THEMES, PACES, GENDERS, REGIONS
+        from scripts.matching.catalog import CATALOG, THEMES, PACES, GENDERS, REGIONS
         self.assertEqual(THEMES,('NATURE','FOOD','CULTURE','REST','SNS','ACTIVITY'))
         self.assertEqual(PACES,('RELAXED','BALANCED','PACKED'))
         self.assertEqual(GENDERS,('FEMALE','MALE'))
@@ -38,7 +39,7 @@ class MatchingDatasetTests(unittest.TestCase):
                     self.assertEqual(parsed,CATALOG[key])
 
     def test_reproducible_data_uses_only_backend_profile_and_request_fields(self):
-        from ai_service.matching.catalog import THEMES, PACES, GENDERS, PREFERRED_GENDERS
+        from scripts.matching.catalog import THEMES, PACES, GENDERS, PREFERRED_GENDERS
         repeated,fingerprint=make_dataset()
         self.assertEqual(fingerprint,self.fingerprint)
         self.assertEqual(repeated,self.data)
