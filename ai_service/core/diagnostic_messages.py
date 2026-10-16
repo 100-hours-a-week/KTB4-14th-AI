@@ -57,7 +57,7 @@ CODES = {
     'QUEUE_UNAVAILABLE': ('일정 작업 큐를 사용할 수 없습니다.', '큐 설정이 없거나 Redis 연결에 실패했습니다.', 'JOBS_REDIS_URL, Redis·Celery worker·beat 상태를 확인하세요.'),
     'PROVIDER_KEYS_MISSING': REASONS['provider_keys_missing'],
     'JOB_NOT_FOUND': ('일정 작업을 찾지 못했습니다.', '작업이 없거나 결과 보관 기간이 만료됐습니다.', 'job_id와 작업 보관 기간을 확인하세요.'),
-    'NOT_FOUND': ('요청한 API 경로가 없습니다.', '등록되지 않은 URL 또는 HTTP 경로로 요청했습니다.', '배포한 API 경로와 백엔드 호출 URL을 확인하세요. 현재 매칭 경로는 /api/ai/v1/matching-requests입니다.'),
+    'NOT_FOUND': ('요청한 API 경로가 없습니다.', '등록되지 않은 URL 또는 HTTP 경로로 요청했습니다.', '배포한 API 경로와 백엔드 호출 URL을 확인하세요. 현재 매칭 경로는 /api/ai/v1/matches/candidates입니다.'),
     'IDEMPOTENCY_CONFLICT': ('중복 요청 키의 입력이 충돌합니다.', '동일한 Idempotency-Key에 다른 요청 내용이 전달됐습니다.', '같은 작업은 같은 입력을 보내고 새 생성 작업은 새 키를 사용하세요.'),
     'UNSUPPORTED_JOB_TYPE': ('지원하지 않는 작업 유형입니다.', '현재 워커는 일정 생성 큐 작업만 처리합니다.', '작업 유형을 확인하세요. 동행자 추천은 동기 API로 호출하세요.'),
     'JOB_TIMEOUT': ('일정 큐 작업 제한 시간을 초과했습니다.', '워커의 전체 처리 제한 시간이 지났습니다.', '같은 job_id·request_id로 마지막 단계와 외부 API 지연을 확인하세요.'),

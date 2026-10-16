@@ -43,8 +43,11 @@ class MatchingScoringTests(unittest.TestCase):
         self.assertEqual(result.model_dump(),{'candidates':[
             {'user_id':6,'match_rate':90},{'user_id':7,'match_rate':90},{'user_id':5,'match_rate':90}], 'count':3})
 
-    def test_budget_is_validation_only_and_does_not_change_recommendations(self):
+    def test_missing_candidate_budgets_keep_existing_scores(self):
         body=deepcopy(BACKEND_MATCHING_EXAMPLE)
+        for candidate in body['candidates']:
+            candidate.pop('budget_min',None)
+            candidate.pop('budget_max',None)
         original=recommend(BackendMatchingRequest.model_validate(body))
         for budgets in ((None,None),(0,3000000),(2000000,3000000)):
             body['request']['budget_min'],body['request']['budget_max']=budgets

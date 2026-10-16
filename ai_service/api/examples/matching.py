@@ -7,9 +7,27 @@ BACKEND_MATCHING_EXAMPLE={
                'theme':['NATURE','FOOD'],'pace':'BALANCED','budget_min':100000,'budget_max':800000},
     'candidates':[
         {'user_id':22,'nickname':'매칭후보A','profile_image_url':None,'gender':'MALE','theme':['CULTURE','SNS'],'pace':'RELAXED'},
-        {'user_id':23,'nickname':'매칭후보B','profile_image_url':None,'gender':'FEMALE','theme':['NATURE','FOOD'],'pace':'BALANCED'},
+        {'user_id':23,'nickname':'매칭후보B','profile_image_url':None,'gender':'FEMALE','theme':['NATURE','FOOD'],'pace':'BALANCED',
+         'budget_min':100000,'budget_max':800000},
     ],
     'limit':3,
+}
+
+
+BUDGET_MATCHING_EXAMPLE = {
+    'request': {**BACKEND_MATCHING_EXAMPLE['request']},
+    'candidates': [
+        {'user_id':uid,'nickname':f'예산후보{uid}','gender':'FEMALE',
+         'theme':['NATURE','FOOD'],'pace':'BALANCED','budget_min':low,'budget_max':high}
+        for uid,low,high in [(23,100000,800000),(24,450000,1150000),(25,900000,1600000)]
+    ],
+    'limit': 3,
+}
+
+
+MATCHING_REQUEST_EXAMPLES = {
+    'backend': {'summary': '여성 선호 → 남성 22 제외·여성 23 추천', 'value': BACKEND_MATCHING_EXAMPLE},
+    'budget': {'summary': '같은 테마·속도에서 예산에 따라 100·98·95점', 'value': BUDGET_MATCHING_EXAMPLE},
 }
 
 
@@ -35,6 +53,9 @@ MATCHING_RESPONSES = {
                     {'user_id': 24, 'match_rate': 90}, {'user_id': 25, 'match_rate': 60}], 'count': 3}},
             'empty': {'summary': '추천할 후보 없음 (정상 응답)',
                 'value': {'candidates': [], 'count': 0}},
+            'budget_adjusted': {'summary': '예산 요청 예시의 결과 (예산 영향 최대 5점)',
+                'value': {'candidates': [{'user_id':23,'match_rate':100},
+                    {'user_id':24,'match_rate':98},{'user_id':25,'match_rate':95}], 'count':3}},
         }}},
     },
     400: {

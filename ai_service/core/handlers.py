@@ -45,7 +45,7 @@ def register_exception_handlers(app: FastAPI):
         errors = exc.errors()
         record('request_invalid',level=logging.WARNING,http_status=400,code='INVALID_REQUEST',
                **failure_description('INVALID_REQUEST'), **request_log_context(request),
-               errors=validation_details(errors,matching=request.url.path=='/api/ai/v1/matching-requests'))
+               errors=validation_details(errors,matching=request.url.path=='/api/ai/v1/matches/candidates'))
         if is_job_request(request):
             return JSONResponse(status_code=400, content=job_error_response(
                 request, 'INVALID_REQUEST', '입력값을 확인해 주세요.', details=[{

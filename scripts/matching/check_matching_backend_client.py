@@ -24,6 +24,7 @@ if __package__ in (None, ""):
 
 from ai_service.core.config import Settings
 from ai_service.main import create_app
+from ai_service.services.matching import RANKING_VERSION
 
 SOURCES=[
  'domain/user/entity/User.java','domain/travel/entity/TravelPaceType.java','domain/travel/entity/TravelThemeType.java',
@@ -63,7 +64,7 @@ public class BackendMatchingSmoke {
  }
  public static void main(String[] args) {
    var props=new AiServerProperties(args[0],null,"contract-smoke-only",5,30,30);
-   var client=new DefaultMatchingAiClient(RestClient.builder(),props,new MatchingAiProperties("/api/ai/v1/matching-requests",false,3));
+   var client=new DefaultMatchingAiClient(RestClient.builder(),props,new MatchingAiProperties("/api/ai/v1/matches/candidates",false,3));
    var condition=new MatchingCandidateAiRequest.RequestPayload(10L,1L,PreferredCompanionGender.FEMALE,
      List.of(TravelThemeType.NATURE,TravelThemeType.FOOD),TravelPaceType.BALANCED,100000,800000);
    var response=client.getCandidates(new MatchingCandidateAiRequest(condition,List.of(
@@ -130,7 +131,7 @@ def run(source,cache,output):
             if result.returncode:raise RuntimeError('Backend client HTTP test failed:\n'+result.stderr+'\n'+result.stdout)
             if len(captured)!=3 or any(r['http_status']!=200 for r in captured):raise RuntimeError('Expected three final HTTP 200 responses')
             report={'backend_commit':commit,'unchanged_backend_java_client':True,'real_http':True,
-                    'ranking_version':'theme-pace-v1','matching_path':'/api/ai/v1/matching-requests','local_e5':False,'database_required':False,'redis_required':False,
+                    'ranking_version':RANKING_VERSION,'matching_path':'/api/ai/v1/matches/candidates','local_e5':False,'database_required':False,'redis_required':False,
                     'cases':captured,'java_result':result.stdout.strip(),
                     'scope':'Original Java client/DTO HTTP integration; full Spring application and production deployment not started'}
             output.parent.mkdir(parents=True,exist_ok=True)
@@ -144,6 +145,6 @@ if __name__=='__main__':
     parser=argparse.ArgumentParser()
     parser.add_argument('--backend-source',type=Path,required=True)
     parser.add_argument('--gradle-cache',type=Path,default=Path.home()/'.gradle/caches/modules-2/files-2.1')
-    parser.add_argument('--output',type=Path,default=ROOT/'artifacts/matching/theme-pace-v1/backend-client-smoke.json')
+    parser.add_argument('--output',type=Path,default=ROOT/'artifacts'/'matching'/RANKING_VERSION/'backend-client-smoke.json')
     args=parser.parse_args()
     run(args.backend_source,args.gradle_cache,args.output)

@@ -1,7 +1,7 @@
 # 동행자 매칭 개발 DB와 오프라인 평가
 
 운영 AI 서버는 MySQL에 접속하지 않습니다. 백엔드가 조건과 후보를 조회해서
-`POST /api/ai/v1/matching-requests`에 `{request,candidates}`를 전달합니다.
+`POST /api/ai/v1/matches/candidates`에 `{request,candidates}`를 전달합니다.
 [백엔드 호출 계약](backend-contract.md)에 따라 동기 HTTP 200 결과를 반환합니다.
 ID 요청, 평면 매칭 요청, 매칭 큐 및 직접 DB 조회 API는 제공하지 않습니다.
 
@@ -10,7 +10,7 @@ ID 요청, 평면 매칭 요청, 매칭 큐 및 직접 DB 조회 API는 제공�
 개발 DB `audigo_matching_backend_dev`에는 합성 사용자·프로필·요청 각각 1,000건과
 백엔드 기준 지역 245건을 준비합니다. 지역은 현재 매칭 조건에 사용하지 않습니다.
 테마는 NATURE/FOOD/CULTURE/REST/SNS/ACTIVITY, 속도는 RELAXED/BALANCED/PACKED입니다.
-후보 프로필에는 예산·자기소개·여행 ID가 없습니다. 요청 예산을 후보와 비교하지 않습니다.
+후보 프로필에는 예산·자기소개·여행 ID가 없습니다. 기존 개발 DB에는 후보 예산이 없어 예산 비교를 생략합니다. AI는 후보별 선택 예산이 전달되면 최대 5점 감점을 지원합니다.
 
 기준값은 `ai_service/data/matching/matching_backend_catalog.json`,
 DB 구조는 `ai_service/data/matching/matching_dev_schema.sql`,
@@ -37,13 +37,13 @@ BE가 완전한 프로필을 공급하는 동작을 재현하므로 불완전한
 기존 DB 평가 정답의 후보 집합에도 `RELAXED ↔ PACKED` 제외 정책을 적용합니다.
 평가 정답은 AI 입력에 포함하지 않습니다. PyMySQL은 개발 의존성에만 포함됩니다.
 
-고정된 테마 80점·속도 20점 계산식으로 DEV 600건·TEST 300건·EDGE 100건을 평가합니다.
-가중치나 모델을 선택하지 않습니다.
+고정된 테마 80점·속도 20점 계산식과 후보 예산이 있을 때 최대 5점 감점으로 DEV 600건·TEST 300건·EDGE 100건을 평가합니다.
+가중치나 모델을 선택하지 않습니다. 기존 DB 기반 평가는 후보 예산이 없어 예산 감점의 품질을 측정하지 않으며, 예산 동작은 별도 회귀 테스트로 검증합니다.
 DEV와 TEST의 요청자는 겹치지 않습니다. 합성 규칙 정답에 대한 Hit@3와 NDCG@3,
 필수 조건 위반·적격 후보 누락을 기록합니다. 실제 사용자 수락률이나 성사율은 측정하지 않습니다.
 `--output`으로 별도 결과 폴더를 지정할 수 있습니다.
 
-계산식 평가 결과는 `artifacts/matching/theme-pace-v1/`에 저장합니다.
+계산식 평가 결과는 `artifacts/matching/theme-pace-budget-v2/`에 저장합니다.
 기존 `artifacts/matching/`의 E5 평가 결과는 이전 실행 기록으로 보존합니다.
 
 ## 검증

@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from ai_service.core.config import Settings
 from ai_service.main import create_app
-from ai_service.api.examples.matching import BACKEND_MATCHING_EXAMPLE
+from ai_service.api.examples.matching import BACKEND_MATCHING_EXAMPLE, BUDGET_MATCHING_EXAMPLE
 
 
 class MatchingOpenAPITests(unittest.TestCase):
@@ -15,14 +15,14 @@ class MatchingOpenAPITests(unittest.TestCase):
         self.app = create_app(settings=Settings())
         with TestClient(self.app) as client:
             self.spec = client.get("/openapi.json").json()
-        self.operation = self.spec["paths"]["/api/ai/v1/matching-requests"]["post"]
+        self.operation = self.spec["paths"]["/api/ai/v1/matches/candidates"]["post"]
 
     def test_backend_matching_uses_new_path_and_old_paths_are_removed(self):
         self.assertFalse(any(route.path == "/matching-requests" for route in self.app.routes))
         self.assertNotIn("/internal/ai/matching/recommend", self.spec["paths"])
         self.assertNotIn("/matching-requests", self.spec["paths"])
-        self.assertNotIn("/api/ai/v1/matches/candidates", self.spec["paths"])
-        self.assertEqual(self.operation["operationId"], "matching_candidates_api_ai_v1_matching_requests_post")
+        self.assertNotIn("/api/ai/v1/matching-requests", self.spec["paths"])
+        self.assertEqual(self.operation["operationId"], "matching_candidates_api_ai_v1_matches_candidates_post")
         self.assertEqual(self.operation["tags"], ["V2"])
 
     def test_single_bearer_scheme_is_used(self):
@@ -31,7 +31,7 @@ class MatchingOpenAPITests(unittest.TestCase):
 
     def test_previous_paths_return_404_and_have_no_runtime_services(self):
         with TestClient(self.app) as client:
-            for path in ("/matching-requests", "/api/ai/v1/matches/candidates"):
+            for path in ("/matching-requests", "/api/ai/v1/matching-requests"):
                 for headers in ({}, {"Authorization": "Bearer test-only"}):
                     response = client.post(path, json={}, headers=headers)
                     self.assertEqual(response.status_code, 404)
@@ -50,7 +50,7 @@ class MatchingOpenAPITests(unittest.TestCase):
                 self.assertEqual(response.json(), {"message": "not_found", "data": None})
 
     def test_response_examples_match_actual_api_responses(self):
-        path = '/api/ai/v1/matching-requests'
+        path = '/api/ai/v1/matches/candidates'
         headers = {'Authorization': 'Bearer test-only'}
         app = create_app(settings=Settings(api_token='test-only'))
         with TestClient(app, raise_server_exceptions=False) as client:
@@ -66,6 +66,7 @@ class MatchingOpenAPITests(unittest.TestCase):
                 self.assertEqual(actual, expected)
 
             assert_example(client.post(path,json=BACKEND_MATCHING_EXAMPLE,headers=headers),200,'recommended')
+            assert_example(client.post(path,json=BUDGET_MATCHING_EXAMPLE,headers=headers),200,'budget_adjusted')
             body = deepcopy(BACKEND_MATCHING_EXAMPLE)
             body['candidates'] = [dict(user_id=uid,nickname=str(uid),gender='FEMALE',theme=themes,pace=pace)
                 for uid,themes,pace in [(23,['NATURE','FOOD'],'BALANCED'),

@@ -1,0 +1,52 @@
+{
+  "request": {
+    "matching_request_id": 10,
+    "user_id": 1,
+    "preferred_companion_gender": "FEMALE",
+    "theme": [
+      "NATURE",
+      "FOOD"
+    ],
+    "pace": "BALANCED",
+    "budget_min": 100000,
+    "budget_max": 3000000
+  },
+  "candidates": [
+    {
+      "user_id": 2,
+      "nickname": "목사용자2",
+      "gender": "FEMALE",
+      "theme": [
+        "NATURE",
+        "FOOD"
+      ],
+      "pace": "BALANCED",
+      "budget_min": 100000,
+      "budget_max": 3000000
+    },
+    {
+      "user_id": 3,
+      "nickname": "목사용자3",
+      "gender": "FEMALE",
+      "theme": [
+        "CULTURE"
+      ],
+      "pace": "PACKED",
+      "budget_min": 100000,
+      "budget_max": 3000000
+    },
+    {
+      "user_id": 4,
+      "nickname": "목사용자4",
+      "gender": "MALE",
+      "theme": [
+        "NATURE",
+        "FOOD"
+      ],
+      "pace": "BALANCED",
+      "budget_min": 100000,
+      "budget_max": 3000000
+    }
+  ],
+  "limit": 3
+}

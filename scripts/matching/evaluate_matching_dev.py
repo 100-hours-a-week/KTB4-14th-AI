@@ -98,7 +98,8 @@ def evaluate(*, output=None):
               and all(r['hard_condition_violations']==0 and r['missing_eligible_candidates']==0
                       and r['negative_correct']==r['negative_cases'] for r in results.values()))
     report = dict(dataset=dataset,ranking_version=RANKING_VERSION,e5_used=False,
-        score_formula='80 * theme_overlap / requested_theme_count + pace_points; round half up',
+        score_formula='80 * theme_overlap / requested_theme_count + pace_points - optional_budget_penalty; round half up',
+        budget_penalty_max=5,budget_evaluation_coverage='none: legacy development DB has no candidate budgets',
         pace_points={'same':20,'adjacent':10,'opposite':'excluded'},
         input_source='backend_dto_from_development_db',filter_policy='exclude_opposite_pace',
         label_source='synthetic_domain_rules',human_reviewed=False,real_user_acceptance_measured=False,
@@ -116,7 +117,8 @@ def evaluate(*, output=None):
     markdown=f'''# 동행자 계산식 매칭 개발 DB 평가
 
 - 추천 방식: `{RANKING_VERSION}` (E5 미사용)
-- 점수: 테마 일치 비율 × 80 + 속도 동일 20점 / 한 단계 차이 10점
+- 점수: 테마 일치 비율 × 80 + 속도 동일 20점 / 한 단계 차이 10점 - 예산 불일치 최대 5점
+- 기존 개발 DB에는 후보 예산이 없어 이 평가는 예산 감점 품질을 측정하지 않습니다.
 - 양극단 속도는 제외하며 점수는 반올림합니다.
 - 고정 계산식으로 DEV 600건·TEST 300건·EDGE 100건 평가 (가중치 선택 없음)
 - TEST Hit@3: {test['hits']}/{test['positive_cases']} ({test['hit_at_3']:.1%})

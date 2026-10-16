@@ -21,7 +21,7 @@ def configure_openapi(app: FastAPI):
             responses[str(code)]["content"]["application/json"] = deepcopy(response["content"]["application/json"])
         schema["components"]["schemas"]["RouteSummary"]["examples"] = [deepcopy(ROUTE_RESPONSE_EXAMPLE)]
         # Matching validation is handled as HTTP 400, including malformed JSON.
-        schema["paths"]["/api/ai/v1/matching-requests"]["post"]["responses"].pop("422", None)
+        schema["paths"]["/api/ai/v1/matches/candidates"]["post"]["responses"].pop("422", None)
         tags = schema.setdefault("tags", [])
         if not any(tag["name"] == "V2" for tag in tags):
             tags.append({"name": "V2"})

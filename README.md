@@ -98,7 +98,7 @@ INFO:     Uvicorn running on http://127.0.0.1:8000
 
 ### V2 동행자 후보 추천 명세
 
-백엔드 동행자 추천은 `POST /api/ai/v1/matching-requests`를 사용합니다. `/docs`의 V2에서 요청·후보를 전달하는 예시를 선택하고 기존 `HTTPBearer` 서비스 토큰을 입력하면, 테마·속도 계산식 추천 결과를 최종 JSON으로 반환합니다. 입력 `{request, candidates, limit}`와 응답 `{candidates, count}`는 [백엔드 연동 계약](docs/matching/backend-contract.md)을 참고하세요.
+백엔드 동행자 추천은 `POST /api/ai/v1/matches/candidates`를 사용합니다. `/docs`의 V2에서 요청·후보를 전달하는 예시를 선택하고 기존 `HTTPBearer` 서비스 토큰을 입력하면, 테마·속도 계산식 추천 결과를 최종 JSON으로 반환합니다. 입력 `{request, candidates, limit}`와 응답 `{candidates, count}`는 [백엔드 연동 계약](docs/matching/backend-contract.md)을 참고하세요.
 
 추천 수는 요청 본문의 `limit`으로 지정하며 생략하면 3명, 최대 3명입니다.
 후보 `nickname`은 필수로 최대 500자이며 `profile_image_url`은 선택입니다.
@@ -253,7 +253,7 @@ uv sync --frozen --extra dev
 
 Redis + Celery 일정 작업 접수 API `POST /api/ai/v1/itinerary-jobs`는
 202/job_id/status_url을 반환하며, `GET /api/ai/v1/jobs/{job_id}`에서 진행 단계와 완료 결과를 조회합니다.
-동행자 추천은 `POST /api/ai/v1/matching-requests`에서 `{request,candidates}`에 대해 200 최종 결과를 반환합니다.
+동행자 추천은 `POST /api/ai/v1/matches/candidates`에서 `{request,candidates}`에 대해 200 최종 결과를 반환합니다.
 ID만 보내거나 이전 평면 형식으로 보내면 400 입력 오류를 반환합니다.
 
 [큐 API 계약·중복 방지·재시도·실행·테스트 방법](docs/jobs/queue.md)을 확인하세요.
@@ -264,7 +264,7 @@ Docker 실행은 `docker compose -f compose.jobs.yml up --build -d`입니다.
 
 백엔드 매칭 테이블과 enum에 맞춘 개발 DB를 평가 도구에서 사용합니다.
 운영 AI 서버는 DB에 접속하지 않습니다. 백엔드가 DB에서 조건과 후보를 조회하고
-`POST /api/ai/v1/matching-requests`에 `{request,candidates}`를 전달합니다.
+`POST /api/ai/v1/matches/candidates`에 `{request,candidates}`를 전달합니다.
 AI는 동기 200 `{candidates:[{user_id,match_rate}],count}`를 반환합니다.
 
 개발 DB 생성과 평가에는 개발 의존성을 설치합니다. 기존 DB와 과거 평가 결과는 보존합니다.
@@ -276,9 +276,10 @@ uv sync --frozen --extra dev
 ```
 
 평가 도구가 개발 DB의 조건과 프로필을 동일한 백엔드 DTO로 변환합니다.
-후보 프로필에 예산이 없으므로 요청 예산을 순위 비교에 적용하지 않습니다.
 테마 일치 비율에 80점을 배정하고 속도가 같으면 20점, 한 단계 차이면 10점을 더합니다.
-계산식은 고정되며 모델·가중치 선택이 없습니다. 새 평가 결과는 `artifacts/matching/theme-pace-v1/`에 저장합니다.
+요청과 후보에 예산이 모두 있으면 예산 불일치로 최대 5점만 감점하고, 어느 한쪽 예산이 없으면 기존 점수를 유지합니다.
+현재 백엔드 후보 DTO·개발 DB에는 후보 예산이 없어 실제 예산 비교에는 백엔드의 후보 예산 전달이 필요합니다.
+계산식은 고정되며 모델·가중치 선택이 없습니다. 새 평가 결과는 `artifacts/matching/theme-pace-budget-v2/`에 저장합니다.
 평가 적중률은 합성 규칙 정답에 대한 수치이며 실제 사용자 매칭 성사율이 아닙니다.
 
 [백엔드 요청 계약](docs/matching/backend-contract.md) · [개발 DB와 평가](docs/matching/mysql.md).

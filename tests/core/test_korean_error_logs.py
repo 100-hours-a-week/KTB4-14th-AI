@@ -12,7 +12,7 @@ from ai_service.core.errors import ServiceUnavailable
 from ai_service.main import create_app
 from ai_service.api.examples.matching import BACKEND_MATCHING_EXAMPLE
 
-PATH = '/api/ai/v1/matching-requests'
+PATH = '/api/ai/v1/matches/candidates'
 HEADERS = {'Authorization': 'Bearer test-only'}
 
 

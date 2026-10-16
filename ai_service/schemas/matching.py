@@ -17,6 +17,13 @@ def unique_themes(values):
     return values
 
 
+def validate_budget_range(budget_min, budget_max):
+    if (budget_min is None) != (budget_max is None):
+        raise ValueError('Both budgets must be supplied or omitted')
+    if budget_min is not None and budget_min > budget_max:
+        raise ValueError('budget_min must not exceed budget_max')
+
+
 class BackendMatchingCondition(StrictModel):
     matching_request_id: Id
     user_id: Id
@@ -33,10 +40,7 @@ class BackendMatchingCondition(StrictModel):
 
     @model_validator(mode='after')
     def validate_budget(self):
-        if (self.budget_min is None) != (self.budget_max is None):
-            raise ValueError('Both budgets must be supplied or omitted')
-        if self.budget_min is not None and self.budget_min > self.budget_max:
-            raise ValueError('budget_min must not exceed budget_max')
+        validate_budget_range(self.budget_min, self.budget_max)
         return self
 
 
@@ -49,6 +53,15 @@ class BackendCandidateProfile(StrictModel):
     gender: Gender
     theme: list[Theme] = Field(min_length=1, max_length=4)
     pace: Pace
+    budget_min: Budget | None = Field(default=None,
+        description='후보의 최소 예산. 최대 예산과 함께 전달하며 둘 다 생략할 수 있습니다.')
+    budget_max: Budget | None = Field(default=None,
+        description='후보의 최대 예산. 요청 예산과 비교해 최대 5점만 감점하며 후보 제외에는 사용하지 않습니다.')
+
+    @model_validator(mode='after')
+    def validate_budget(self):
+        validate_budget_range(self.budget_min, self.budget_max)
+        return self
 
     @field_validator('nickname')
     @classmethod
@@ -80,7 +93,7 @@ class BackendMatchingRequest(StrictModel):
 class BackendRankedCandidate(StrictModel):
     user_id: Id
     match_rate: int = Field(ge=0, le=100, strict=True,
-        description='테마 일치 최대 80점 + 속도 일치 최대 20점. 성공 확률이 아닙니다.')
+        description='테마 최대 80점 + 속도 최대 20점에서 예산 불일치로 최대 5점 감점 후 반올림합니다. 요청·후보 어느 한쪽 예산이 없으면 감점하지 않습니다. 성공 확률이 아닙니다.')
 
 
 class BackendMatchingResponse(StrictModel):
