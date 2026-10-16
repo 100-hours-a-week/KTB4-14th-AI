@@ -1,0 +1,39 @@
+{
+  "database": "audigo_matching_backend_dev",
+  "schema": "matching-backend-v2",
+  "input": {
+    "matching_request_id": 201,
+    "requester_id": 201,
+    "limit": 3
+  },
+  "accepted_status": 202,
+  "status": "COMPLETED",
+  "result": {
+    "matching_request_id": 201,
+    "requester_id": 201,
+    "recommendations": [
+      {
+        "user_id": 1,
+        "score": 0.977409960318795,
+        "rank": 1
+      },
+      {
+        "user_id": 2,
+        "score": 0.977409960318795,
+        "rank": 2
+      },
+      {
+        "user_id": 4,
+        "score": 0.977409960318795,
+        "rank": 3
+      }
+    ],
+    "unapplied_conditions": [
+      "budget"
+    ]
+  },
+  "attempt": 1,
+  "local_e5": true,
+  "openai_key_configured": false,
+  "legacy_url_same_job": true
+}

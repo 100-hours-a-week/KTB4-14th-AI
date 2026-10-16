@@ -1,3 +1,4 @@
+# main 브랜치 반영 시 운영 배포를 실행하는 자동화 절차를 정의한다.
 name: AI Production CD
 
 on:

@@ -1,7 +1,11 @@
+# 비밀 설정·로컬 모델·캐시 등 Git에 저장하지 않을 파일을 지정한다.
 .env
+.env.matching-dev
+/artifacts/matching/*.csv
 restaurant_hours.json
 .venv/
 /model/
 __pycache__/
 *.pyc
 .pytest_cache/
+.DS_Store

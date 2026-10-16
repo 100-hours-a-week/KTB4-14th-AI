@@ -1,3 +1,4 @@
+# AI 서버 실행에 필요한 Python 패키지와 버전 범위를 정의한다.
 fastapi==0.117.1
 httpx==0.28.1
 numpy>=2.2,<3
@@ -7,3 +8,4 @@ python-dotenv==1.1.1
 tokenizers>=0.21,<1
 uvicorn[standard]==0.36.0
 yt-dlp==2026.8.19
+celery[redis]==5.6.3

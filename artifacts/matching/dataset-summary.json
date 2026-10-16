@@ -1,0 +1,21 @@
+{
+  "database": "audigo_matching_backend_dev",
+  "version": "matching-backend-v2",
+  "seed": 20261013,
+  "fingerprint": "decc9b92468abfb2d85923b3294e3b9df3841bff7078835c711891d4e0ea48b7",
+  "users": 1000,
+  "matching_profiles": 1000,
+  "matching_requests": 1000,
+  "regions": 245,
+  "dev_cases": 600,
+  "test_cases": 300,
+  "edge_cases": 100,
+  "created": true,
+  "backend_commit": "75d7772b03ecc265527e27c78863b0f457761841",
+  "human_reviewed": false,
+  "accounts": [
+    "audigo_ai_reader",
+    "audigo_app",
+    "audigo_seed"
+  ]
+}

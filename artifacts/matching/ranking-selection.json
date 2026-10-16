@@ -1,0 +1,15 @@
+{
+  "dataset": {
+    "fingerprint": "decc9b92468abfb2d85923b3294e3b9df3841bff7078835c711891d4e0ea48b7",
+    "seed": 20261013,
+    "version": "matching-backend-v2"
+  },
+  "frozen_at": "2026-10-13T04:30:41.368052+00:00",
+  "model_revision": "614241f622f53c4eeff9890bdc4f31cfecc418b3",
+  "selection_split": "DEV",
+  "weights": [
+    0.85,
+    0.1,
+    0.05
+  ]
+}

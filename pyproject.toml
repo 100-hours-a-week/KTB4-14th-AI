@@ -1,9 +1,11 @@
+# Python 프로젝트 정보·실행 및 개발 의존성·빌드·테스트 설정을 정의한다.
 [project]
 name = "audigo-ai-api"
 version = "0.1.0"
 description = "Audigo AI service API"
 requires-python = ">=3.11,<3.15"
 dependencies = [
+  "celery[redis]==5.6.3",
   "fastapi==0.117.1",
   "httpx==0.28.1",
   "numpy>=2.2,<3",
@@ -17,6 +19,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "pymysql[rsa]==1.1.2",
+  "fakeredis[lua]>=2.31,<3",
   "pytest==8.4.2",
 ]
 

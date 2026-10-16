@@ -1,3 +1,4 @@
+# ai-develop 대상 PR의 자동 검증 절차를 정의한다.
 name: AI PR CI
 
 on:

@@ -1,0 +1,141 @@
+{
+  "external_calls": false,
+  "mock_source_commit": "1c7155b01f78a930a86aef57aaf6446e087b3610",
+  "runtime_note": "Targeted checks use current AI virtual environment, not separately installed mockAI dependency versions.",
+  "checks": {
+    "/api/ai/v1/matches/candidates": 404,
+    "/internal/ai/music/recommend": 404,
+    "/api/ai/v1/traveler-match-jobs": 404,
+    "/api/ai/v1/itinerary-jobs/stream": 503,
+    "docs_without_credentials": 404,
+    "nested_request": 400,
+    "success": {
+      "status": 200,
+      "events": [
+        "PLACE_RECOMMEND_STARTED",
+        "PLACE_RECOMMEND_DONE",
+        "STAY_RECOMMEND_STARTED",
+        "STAY_RECOMMEND_DONE",
+        "ROUTE_OPTIMIZE_STARTED",
+        "ROUTE_OPTIMIZE_DONE",
+        "complete"
+      ],
+      "result_keys": [
+        "title",
+        "days"
+      ]
+    },
+    "current_route_schema": {
+      "accepted": false,
+      "errors": [
+        {
+          "loc": [
+            "legs",
+            0,
+            "line_name"
+          ],
+          "type": "string_type"
+        },
+        {
+          "loc": [
+            "legs",
+            0,
+            "vehicle_number"
+          ],
+          "type": "string_type"
+        },
+        {
+          "loc": [
+            "legs",
+            0,
+            "start"
+          ],
+          "type": "missing"
+        },
+        {
+          "loc": [
+            "legs",
+            0,
+            "end"
+          ],
+          "type": "missing"
+        },
+        {
+          "loc": [
+            "legs",
+            0,
+            "sequence"
+          ],
+          "type": "extra_forbidden"
+        },
+        {
+          "loc": [
+            "legs",
+            0,
+            "boarding_stop"
+          ],
+          "type": "extra_forbidden"
+        },
+        {
+          "loc": [
+            "legs",
+            0,
+            "alighting_stop"
+          ],
+          "type": "extra_forbidden"
+        },
+        {
+          "loc": [
+            "legs",
+            0,
+            "duration_minute"
+          ],
+          "type": "extra_forbidden"
+        },
+        {
+          "loc": [
+            "legs",
+            0,
+            "distance_meter"
+          ],
+          "type": "extra_forbidden"
+        }
+      ]
+    },
+    "night_extra_request": {
+      "status": 200,
+      "first_visit": "11:00"
+    },
+    "short_trip": {
+      "status": 200,
+      "events": [
+        {
+          "event": "PLACE_RECOMMEND_STARTED",
+          "data": {
+            "stage": "PLACE_RECOMMEND",
+            "status": "RUNNING"
+          }
+        },
+        {
+          "event": "error",
+          "data": {
+            "travel_plan_id": 10,
+            "stage": "PLACE_RECOMMEND",
+            "status": "FAILED",
+            "message": "ai_itinerary_generation_failed",
+            "data": {
+              "error_message": "여행 시간이 너무 짧습니다.",
+              "reason": "여행 시간이 너무 짧아 일정을 만들 수 없습니다. 도착·출발 시각을 확인해 주세요."
+            }
+          }
+        }
+      ]
+    },
+    "closed_restaurant": {
+      "estimated_plan_closed_count": 0,
+      "close_time": "13:00",
+      "returned_start": "13:30",
+      "returned_end": "14:30"
+    }
+  }
+}

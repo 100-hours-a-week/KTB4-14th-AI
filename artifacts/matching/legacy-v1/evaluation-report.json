@@ -1,0 +1,311 @@
+{
+  "dataset": {
+    "version": "matching-dev-v1",
+    "seed": 20261013,
+    "fingerprint": "8a4a90496a6d44c9b1067c72c73587ae3232ce1009c264c6e45dc5661d787e9d"
+  },
+  "target_hit_at_5": 0.9,
+  "target_met": true,
+  "label_source": "synthetic_domain_rules",
+  "human_reviewed": false,
+  "real_user_acceptance_measured": false,
+  "selection_sha256": "837266370d636dca3baf2c1b391240d0a2b49dffa69cc56fdbeedcb93fc58108",
+  "model_revision": "614241f622f53c4eeff9890bdc4f31cfecc418b3",
+  "selected_weights": [
+    0.85,
+    0.1,
+    0.05
+  ],
+  "dev_comparison": [
+    {
+      "weights": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "metrics": {
+        "positive_cases": 600,
+        "hit_at_5": 0.9783333333333334,
+        "hits": 587,
+        "ndcg_at_5": 0.9194913892365736,
+        "precision_at_5": 0.28833333333333333,
+        "hard_condition_violations": 0,
+        "missing_eligible_candidates": 0,
+        "negative_cases": 0,
+        "negative_correct": 0,
+        "candidate_counts": {
+          "min": 1,
+          "median": 45.0,
+          "max": 55,
+          "more_than_five": 599
+        },
+        "hit_at_5_wilson_95": [
+          0.9632853794080659,
+          0.9872950377079462
+        ]
+      }
+    },
+    {
+      "weights": [
+        0.85,
+        0.1,
+        0.05
+      ],
+      "metrics": {
+        "positive_cases": 600,
+        "hit_at_5": 1.0,
+        "hits": 600,
+        "ndcg_at_5": 0.9740492883084035,
+        "precision_at_5": 0.3,
+        "hard_condition_violations": 0,
+        "missing_eligible_candidates": 0,
+        "negative_cases": 0,
+        "negative_correct": 0,
+        "candidate_counts": {
+          "min": 1,
+          "median": 45.0,
+          "max": 55,
+          "more_than_five": 599
+        },
+        "hit_at_5_wilson_95": [
+          0.9936380666717896,
+          1.0000000000000002
+        ]
+      }
+    },
+    {
+      "weights": [
+        0.7,
+        0.2,
+        0.1
+      ],
+      "metrics": {
+        "positive_cases": 600,
+        "hit_at_5": 1.0,
+        "hits": 600,
+        "ndcg_at_5": 0.9740492883084035,
+        "precision_at_5": 0.3,
+        "hard_condition_violations": 0,
+        "missing_eligible_candidates": 0,
+        "negative_cases": 0,
+        "negative_correct": 0,
+        "candidate_counts": {
+          "min": 1,
+          "median": 45.0,
+          "max": 55,
+          "more_than_five": 599
+        },
+        "hit_at_5_wilson_95": [
+          0.9936380666717896,
+          1.0000000000000002
+        ]
+      }
+    },
+    {
+      "weights": [
+        0.5,
+        0.35,
+        0.15
+      ],
+      "metrics": {
+        "positive_cases": 600,
+        "hit_at_5": 1.0,
+        "hits": 600,
+        "ndcg_at_5": 0.9740492883084035,
+        "precision_at_5": 0.3,
+        "hard_condition_violations": 0,
+        "missing_eligible_candidates": 0,
+        "negative_cases": 0,
+        "negative_correct": 0,
+        "candidate_counts": {
+          "min": 1,
+          "median": 45.0,
+          "max": 55,
+          "more_than_five": 599
+        },
+        "hit_at_5_wilson_95": [
+          0.9936380666717896,
+          1.0000000000000002
+        ]
+      }
+    },
+    {
+      "weights": [
+        0.3,
+        0.5,
+        0.2
+      ],
+      "metrics": {
+        "positive_cases": 600,
+        "hit_at_5": 1.0,
+        "hits": 600,
+        "ndcg_at_5": 0.9740492883084035,
+        "precision_at_5": 0.3,
+        "hard_condition_violations": 0,
+        "missing_eligible_candidates": 0,
+        "negative_cases": 0,
+        "negative_correct": 0,
+        "candidate_counts": {
+          "min": 1,
+          "median": 45.0,
+          "max": 55,
+          "more_than_five": 599
+        },
+        "hit_at_5_wilson_95": [
+          0.9936380666717896,
+          1.0000000000000002
+        ]
+      }
+    }
+  ],
+  "test_baseline": {
+    "positive_cases": 300,
+    "hit_at_5": 0.9766666666666667,
+    "hits": 293,
+    "ndcg_at_5": 0.9155516618703977,
+    "precision_at_5": 0.27666666666666667,
+    "hard_condition_violations": 0,
+    "missing_eligible_candidates": 0,
+    "negative_cases": 0,
+    "negative_correct": 0,
+    "candidate_counts": {
+      "min": 7,
+      "median": 45.0,
+      "max": 56,
+      "more_than_five": 300
+    },
+    "hit_at_5_wilson_95": [
+      0.952627445667121,
+      0.9886524844017043
+    ]
+  },
+  "test_selected": {
+    "positive_cases": 300,
+    "hit_at_5": 1.0,
+    "hits": 300,
+    "ndcg_at_5": 0.9782817540210657,
+    "precision_at_5": 0.28800000000000003,
+    "hard_condition_violations": 0,
+    "missing_eligible_candidates": 0,
+    "negative_cases": 0,
+    "negative_correct": 0,
+    "candidate_counts": {
+      "min": 7,
+      "median": 45.0,
+      "max": 56,
+      "more_than_five": 300
+    },
+    "hit_at_5_wilson_95": [
+      0.9873565700022643,
+      0.9999999999999999
+    ]
+  },
+  "negative": {
+    "positive_cases": 0,
+    "hit_at_5": null,
+    "hits": 0,
+    "ndcg_at_5": null,
+    "precision_at_5": null,
+    "hard_condition_violations": 0,
+    "missing_eligible_candidates": 0,
+    "negative_cases": 100,
+    "negative_correct": 100,
+    "candidate_counts": null
+  },
+  "per_region": {
+    "1": {
+      "cases": 15,
+      "hits": 15,
+      "hit_at_5": 1.0
+    },
+    "2": {
+      "cases": 11,
+      "hits": 11,
+      "hit_at_5": 1.0
+    },
+    "3": {
+      "cases": 15,
+      "hits": 15,
+      "hit_at_5": 1.0
+    },
+    "4": {
+      "cases": 18,
+      "hits": 18,
+      "hit_at_5": 1.0
+    },
+    "5": {
+      "cases": 24,
+      "hits": 24,
+      "hit_at_5": 1.0
+    },
+    "6": {
+      "cases": 24,
+      "hits": 24,
+      "hit_at_5": 1.0
+    },
+    "7": {
+      "cases": 16,
+      "hits": 16,
+      "hit_at_5": 1.0
+    },
+    "8": {
+      "cases": 20,
+      "hits": 20,
+      "hit_at_5": 1.0
+    },
+    "9": {
+      "cases": 13,
+      "hits": 13,
+      "hit_at_5": 1.0
+    },
+    "10": {
+      "cases": 19,
+      "hits": 19,
+      "hit_at_5": 1.0
+    },
+    "11": {
+      "cases": 21,
+      "hits": 21,
+      "hit_at_5": 1.0
+    },
+    "12": {
+      "cases": 18,
+      "hits": 18,
+      "hit_at_5": 1.0
+    },
+    "13": {
+      "cases": 21,
+      "hits": 21,
+      "hit_at_5": 1.0
+    },
+    "14": {
+      "cases": 19,
+      "hits": 19,
+      "hit_at_5": 1.0
+    },
+    "15": {
+      "cases": 18,
+      "hits": 18,
+      "hit_at_5": 1.0
+    },
+    "16": {
+      "cases": 11,
+      "hits": 11,
+      "hit_at_5": 1.0
+    },
+    "17": {
+      "cases": 17,
+      "hits": 17,
+      "hit_at_5": 1.0
+    }
+  },
+  "evaluation_requests": 1000,
+  "unique_dev_requesters": 319,
+  "unique_test_requesters": 212,
+  "requester_overlap": 0,
+  "elapsed_seconds": 12.294,
+  "embedding_texts": 394,
+  "embedding_model_calls": 88,
+  "embedding_cache": "offline_exact_text",
+  "warning": "목데이터의 합성 규칙 정답에 대한 적중률이며 실제 사용자 수락률이나 인간 평가 결과가 아닙니다."
+}
