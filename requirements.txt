@@ -9,3 +9,4 @@ tokenizers>=0.21,<1
 uvicorn[standard]==0.36.0
 yt-dlp==2026.8.19
 celery[redis]==5.6.3
+boto3>=1.40,<2
