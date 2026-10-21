@@ -1,4 +1,4 @@
-"""독립 실행: python -m ai_service.sqs.worker. 기존 FastAPI/Celery 시작 경로와 분리."""
+"""독립 실행: python -m ai_service.sqs.worker. HTTP API와 분리된 SQS 일정 생성 워커."""
 import asyncio
 from contextlib import aclosing, suppress
 import hashlib

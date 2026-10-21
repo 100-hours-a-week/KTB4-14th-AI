@@ -75,7 +75,7 @@ class RedisTests(StoreChecks, unittest.TestCase):
         self.client = fakeredis.FakeRedis(decode_responses=True)
         self.store = RedisJobStore(self.client)
 
-    def test_redis_store_is_shared_between_worker_instances_and_isolated_from_celery(self):
+    def test_redis_store_is_shared_between_worker_instances_and_isolated_from_other_data(self):
         self.client.set("audigo:jobs:record:original", "unchanged")
         other = RedisJobStore(self.client)
         self.store.acquire(41, "hash", "first")

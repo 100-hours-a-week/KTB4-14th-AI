@@ -27,17 +27,13 @@ class Settings:
     routing_timeout_seconds: float = 10.0
     e5_model_dir: Path = Path(__file__).resolve().parents[2] / "model"
     restaurant_hours_file: Path | None = None
+    # SQS 중복 실행 방지 캐시용 선택 설정이며 작업 큐·상태 조회 저장소가 아니다.
     jobs_redis_url: str | None = field(default=None, repr=False)
-    celery_broker_url: str | None = field(default=None, repr=False)
     job_ttl_seconds: int = 86400
-    job_max_retries: int = 2
-    job_retry_delay_seconds: int = 5
 
     def __post_init__(self):
-        if self.job_ttl_seconds < 3600 or not 0 <= self.job_max_retries <= 10 or self.job_retry_delay_seconds < 1:
-            raise ValueError("Invalid job retention or retry settings")
-        if self.job_ttl_seconds <= (self.generation_timeout_seconds + 120) * (self.job_max_retries + 1):
-            raise ValueError("Job retention must exceed the bounded retry lifecycle")
+        if self.job_ttl_seconds < 3600 or self.job_ttl_seconds <= self.generation_timeout_seconds + 120:
+            raise ValueError("SQS 중복 처리 기록 보관 기간이 전체 생성 제한 시간보다 충분히 길어야 합니다.")
 
     @classmethod
     def from_env(cls, env_file: Path = ENV_FILE) -> "Settings":
@@ -55,8 +51,5 @@ class Settings:
             restaurant_hours_file=Path(values["RESTAURANT_HOURS_FILE"])
             if values.get("RESTAURANT_HOURS_FILE") else None,
             jobs_redis_url=values.get("JOBS_REDIS_URL") or values.get("REDIS_URL") or None,
-            celery_broker_url=values.get("CELERY_BROKER_URL") or values.get("REDIS_URL") or None,
             job_ttl_seconds=int(values.get("JOB_TTL_SECONDS", 86400)),
-            job_max_retries=int(values.get("JOB_MAX_RETRIES", 2)),
-            job_retry_delay_seconds=int(values.get("JOB_RETRY_DELAY_SECONDS", 5)),
         )

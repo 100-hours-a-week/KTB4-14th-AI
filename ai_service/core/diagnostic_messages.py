@@ -47,20 +47,16 @@ REASONS = {
     'transport_day_conflict': ('날짜별 이동수단 설정이 충돌합니다.', '같은 날짜에 서로 다른 이동수단이 지정됐습니다.', '날짜별 이동수단 지정이 중복되지 않도록 수정하세요.'),
     'transport_day_out_of_range': ('이동수단 지정 날짜가 여행 범위를 벗어났습니다.', '여행 기간 밖의 날짜에 이동수단이 지정됐습니다.', '이동수단 날짜를 여행 도착·출발 날짜 범위에 맞추세요.'),
     'transport_day_range_invalid': ('이동수단 날짜 범위가 올바르지 않습니다.', '날짜 범위의 시작·종료 설정을 사용할 수 없습니다.', '이동수단 날짜 범위와 여행 기간을 확인하세요.'),
-    'queue_publish_failed': ('일정 작업을 실행 큐에 전달하지 못했습니다.', '작업 전달 중 브로커 연결 또는 발행 오류가 발생했습니다.', 'Redis·Celery worker·beat 연결을 확인하세요. 전달 대기 기록을 통한 복구 대상입니다.'),
-    'job_storage_unavailable': ('일정 작업 저장소에 연결하지 못했습니다.', 'Redis 작업 상태를 읽거나 갱신하지 못했습니다.', 'JOBS_REDIS_URL과 Redis 연결·가용 상태를 확인하세요.'),
+    'job_storage_unavailable': ('일정 작업 저장소에 연결하지 못했습니다.', 'SQS 중복 처리 기록을 읽거나 갱신하지 못했습니다.', '선택 설정 JOBS_REDIS_URL과 Redis 연결·가용 상태를 확인하세요. SQS 작업 큐와는 별도 저장소입니다.'),
 }
 
 CODES = {
     'INVALID_REQUEST': ('요청 검증에 실패했습니다.', '요청 필드의 누락·자료형·허용 범위를 확인해야 합니다.', 'errors의 field·message_ko·action_ko를 보고 백엔드 요청 DTO를 수정하세요.'),
     'UNAUTHORIZED': REASONS['service_token_invalid'],
-    'QUEUE_UNAVAILABLE': ('일정 작업 큐를 사용할 수 없습니다.', '큐 설정이 없거나 Redis 연결에 실패했습니다.', 'JOBS_REDIS_URL, Redis·Celery worker·beat 상태를 확인하세요.'),
+    # 매칭 503의 기존 응답 코드 호환용이며 별도 큐 사용을 뜻하지 않는다.
+    'QUEUE_UNAVAILABLE': ('서비스 요청을 처리하지 못했습니다.', '서비스 인증 설정 또는 처리 조건을 확인해야 합니다.', 'reason과 서비스 토큰 설정을 확인하세요. 매칭은 동기 API입니다.'),
     'PROVIDER_KEYS_MISSING': REASONS['provider_keys_missing'],
-    'JOB_NOT_FOUND': ('일정 작업을 찾지 못했습니다.', '작업이 없거나 결과 보관 기간이 만료됐습니다.', 'job_id와 작업 보관 기간을 확인하세요.'),
     'NOT_FOUND': ('요청한 API 경로가 없습니다.', '등록되지 않은 URL 또는 HTTP 경로로 요청했습니다.', '배포한 API 경로와 백엔드 호출 URL을 확인하세요. 현재 매칭 경로는 /api/ai/v1/matches/candidates입니다.'),
-    'IDEMPOTENCY_CONFLICT': ('중복 요청 키의 입력이 충돌합니다.', '동일한 Idempotency-Key에 다른 요청 내용이 전달됐습니다.', '같은 작업은 같은 입력을 보내고 새 생성 작업은 새 키를 사용하세요.'),
-    'UNSUPPORTED_JOB_TYPE': ('지원하지 않는 작업 유형입니다.', '현재 워커는 일정 생성 큐 작업만 처리합니다.', '작업 유형을 확인하세요. 동행자 추천은 동기 API로 호출하세요.'),
-    'JOB_TIMEOUT': ('일정 큐 작업 제한 시간을 초과했습니다.', '워커의 전체 처리 제한 시간이 지났습니다.', '같은 job_id·request_id로 마지막 단계와 외부 API 지연을 확인하세요.'),
     'AI_ITINERARY_GENERATION_FAILED': ('요청 조건에 맞는 일정을 만들지 못했습니다.', '장소·시간·숙소·경로 조건 검증에 실패했습니다.', 'reason·detail과 단계 로그에서 실패한 조건을 확인하세요.'),
     'AI_MUSIC_RECOMMENDATION_FAILED': ('추천 가능한 음악을 선택하지 못했습니다.', '검색 또는 영상 검증 후 사용할 음악이 없습니다.', '음악 단계의 reason과 후보 검색·검증 결과를 확인하세요.'),
     'AI_SERVICE_UNAVAILABLE': ('추천 서비스 처리를 완료하지 못했습니다.', '외부 서비스·모델·연결 제한 시간에 문제가 발생했습니다.', 'reason과 단계 로그에서 실패한 제공자·설정·제한 시간을 확인하세요.'),

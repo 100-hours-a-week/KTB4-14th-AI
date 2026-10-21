@@ -1,0 +1,15 @@
+# HTTP API와 SQS 일정 생성 워커를 별도 프로세스로 실행하는 로컬 배포 예시.
+x-ai: &ai
+  build: .
+  image: audigo-ai:sqs
+  env_file: .env
+  restart: unless-stopped
+
+services:
+  api:
+    <<: *ai
+    ports: ["8000:8000"]
+  worker:
+    <<: *ai
+    entrypoint: [python, -m, ai_service.sqs.worker]
+    command: []

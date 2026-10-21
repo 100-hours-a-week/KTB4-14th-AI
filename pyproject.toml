@@ -6,7 +6,7 @@ description = "Audigo AI service API"
 requires-python = ">=3.11,<3.15"
 dependencies = [
   "boto3>=1.40,<2",
-  "celery[redis]==5.6.3",
+  "redis==6.4.0",
   "fastapi==0.117.1",
   "httpx==0.28.1",
   "numpy>=2.2,<3",

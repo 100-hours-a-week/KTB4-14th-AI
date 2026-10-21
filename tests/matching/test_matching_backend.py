@@ -30,7 +30,6 @@ class BackendMatchingTests(unittest.TestCase):
 
     def test_backend_document_request_returns_exact_final_dto_without_queue_db_or_openai(self):
         with TestClient(self.app()) as client:
-            client.app.state.jobs=None
             response=client.post(PATH,json=BACKEND_MATCHING_EXAMPLE,headers=HEADERS)
         self.assertEqual(response.status_code,200,response.text)
         self.assertEqual(response.json(),{'candidates':[{'user_id':23,'match_rate':100}],'count':1})
@@ -196,7 +195,6 @@ class BackendMatchingTests(unittest.TestCase):
 
     def test_id_and_flat_legacy_payloads_are_rejected_without_queue(self):
         with TestClient(self.app()) as client:
-            client.app.state.jobs=None
             for body in ({'matching_request_id':201,'requester_id':201,'limit':3},
                          {'requester_id':1,'preferred_companion_gender':'Female',
                           'themes':['nature'],'pace':'Balanced','candidates':[],'limit':3}):

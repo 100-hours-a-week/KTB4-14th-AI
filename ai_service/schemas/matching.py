@@ -99,3 +99,15 @@ class BackendRankedCandidate(StrictModel):
 class BackendMatchingResponse(StrictModel):
     candidates: list[BackendRankedCandidate]
     count: int = Field(ge=0, strict=True)
+
+
+class MatchingError(StrictModel):
+    code: str
+    message: str
+    retryable: bool = False
+    details: list[dict] = Field(default_factory=list)
+
+
+class MatchingErrorResponse(StrictModel):
+    error: MatchingError
+    request_id: str
