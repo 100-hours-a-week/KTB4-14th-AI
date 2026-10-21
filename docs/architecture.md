@@ -9,8 +9,7 @@ ai_service/
 │   ├── common.py               # 공통 모델·지역·기간·오류
 │   ├── travel.py               # 여행 요청·응답·장소·경로·모델 출력
 │   ├── music.py                # 음악 요청·응답·곡 정보·모델 출력
-│   ├── matching.py             # 매칭 조건·후보·요청·추천 응답
-│   └── jobs.py                 # 큐 접수·상태·오류 계약
+│   └── matching.py             # 매칭 조건·후보·요청·추천 및 오류 응답
 ├── prompts/
 │   ├── travel.py               # 일정 지시문·인원/단계 조건·재시도 문구
 │   └── music.py                # 일정 생성 중 음악 지시문·재시도 문구
@@ -33,17 +32,16 @@ ai_service/
 │   ├── kakao_routes.py         # 이동 경로 조회·경로 응답 변환
 │   └── youtube.py              # 곡 검색·공개 영상 검증
 ├── api/
-│   ├── routes/                 # travel·music·matching·jobs·system HTTP 진입점
+│   ├── routes/                 # travel·music·matching·system HTTP 진입점
 │   ├── examples/               # travel·music·matching Swagger 예시
 │   ├── deps.py                 # 요청 변환·사전 검사·공통 헤더
-│   ├── job_dispatch.py         # 큐 호출 변환
 │   ├── responses.py            # 공통 OpenAPI 응답
 │   ├── openapi.py              # Swagger 명세 설정
 │   └── swagger_ui.py           # 문서 화면
 ├── core/                       # 설정·인증·오류·로그·앱 시작/종료
 ├── embeddings/
 │   └── e5.py                   # 음악 추천 ONNX 모델 로드·추론
-├── jobs/                       # 큐 접수·Redis 상태·Celery 워커·재시도
+├── sqs/                        # SQS 수신·일정 생성·진행 및 결과 발행·중복 실행 방지
 └── data/
     ├── travel/                 # 확인한 식당 영업시간 JSON
     └── matching/               # 개발 DB SQL·기준값·목데이터
@@ -51,7 +49,7 @@ ai_service/
 scripts/
 ├── matching/                   # 개발용 DB 준비·합성 데이터·평가·연동 검증
 └── models/                     # 모델 다운로드·체크섬 검증
-tests/                          # core·travel·music·matching·jobs별 테스트
+tests/                          # core·travel·music·matching·sqs별 테스트
 docs/                           # 구조 안내·기능별 연동 문서
 artifacts/                      # 과거 평가·검증 결과
 model/                          # 로컬 모델 자산, Git 제외
@@ -81,7 +79,7 @@ model/                          # 로컬 모델 자산, Git 제외
 | 매칭 점수·필터·정렬 | `ai_service/services/matching.py` |
 | 개발용 합성 데이터·기준값 | `scripts/matching/dataset.py`, `catalog.py` |
 | 개발 DB 오프라인 조회 | `scripts/matching/evaluation_data.py` |
-| 큐 재시도·중복 처리 | `ai_service/jobs/worker.py`, `store.py`, `service.py` |
+| SQS 메시지·전송·중복 실행 처리 | `ai_service/sqs/worker.py`, `client.py`, `messages.py`, `idempotency.py` |
 | 인증·오류 응답 | `ai_service/core/auth.py`, `handlers.py` |
 
 ## 호출 흐름
@@ -89,16 +87,17 @@ model/                          # 로컬 모델 자산, Git 제외
 - 일정 JSON/SSE: `api/routes/travel.py` → 요청 변환·설정 검사 → `services/travel/pipeline.py` → 플래너·외부 클라이언트 → JSON 또는 백엔드 SSE 변환.
 - 별도 음악 추천: `api/routes/music.py` → `services/music.py` → YouTube 검색 → E5 추론 → 영상 검증 → JSON.
 - 동기 매칭: `api/routes/matching.py` → `schemas/matching.py` 검증 → `services/matching.py` → `{candidates, count}`.
-- 큐 일정 생성: `api/routes/jobs.py` → `jobs/service.py` → Redis·Celery → `jobs/worker.py` → 일정 생성 → 결과 저장·상태 조회.
+- 비동기 일정 생성: 백엔드 → 요청 SQS → `sqs/worker.py` → 일정 생성 → 결과 SQS → 백엔드의 상태 갱신·DB 저장.
+- 선택 Redis는 SQS 워커의 실행 권한·완료 결과 재발행 기록에만 사용하며, 작업 큐나 사용자용 상태 조회 저장소가 아닙니다.
 
 별도 음악 API는 E5, 일정 생성 중 음악 단계는 OpenAI를 사용합니다. 매칭은 테마·속도 계산식으로 추천하며 모델을 사용하지 않습니다.
 
 ## 실행과 검증
 
-앱 진입점 `ai_service.main:app`, 워커 진입점 `ai_service.jobs.worker:celery_app`을 사용합니다. 프로젝트 루트에서 실행합니다.
+앱 진입점 `ai_service.main:app`, 워커 실행 `python -m ai_service.sqs.worker`를 사용합니다. 프로젝트 루트에서 실행합니다.
 
 ```bash
 ./.venv/bin/python -m unittest discover -s tests -t .
 ```
 
-외부 API는 테스트 대역으로 대체합니다. 로컬 모델이 있으면 실제 E5 검사도 실행하고, Redis 통합 검사는 필요한 실행 환경이 없으면 건너뜁니다.
+외부 API는 테스트 대역으로 대체합니다. 로컬 모델이 있으면 실제 E5 검사도 실행하고, SQS SDK·전송은 테스트 대역으로 검증하며 실제 AWS 큐는 호출하지 않습니다.

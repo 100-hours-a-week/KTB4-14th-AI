@@ -2,7 +2,7 @@
 
 일정 생성 · 음악 추천 · 동행자 매칭 · 큐 작업을 기능별로 관리하는 FastAPI 서비스입니다.
 
-[프로젝트 구조와 수정할 파일 찾기](docs/architecture.md) · [백엔드 매칭 계약](docs/matching/backend-contract.md) · [개발 DB 평가](docs/matching/mysql.md) · [큐 작업](docs/jobs/queue.md)
+[프로젝트 구조와 수정할 파일 찾기](docs/architecture.md) · [백엔드 매칭 계약](docs/matching/backend-contract.md) · [개발 DB 평가](docs/matching/mysql.md) · [큐 작업](docs/sqs/queue.md)
 
 
 ## 진행중인 항목
@@ -179,14 +179,14 @@ ROUTE_OPTIMIZE_DONE → complete
 | `ai_service/planners/` | 모델 요청 구성·출력 검증 |
 | `ai_service/clients/` | OpenAI·카카오·YouTube 외부 API 연동 |
 | `ai_service/services/` | 여행 생성·음악 추천·매칭 처리 |
-| `ai_service/jobs/` | 작업 서비스·Redis 저장·Celery 워커 |
+| `ai_service/sqs/` | SQS 요청 수신·일정 생성·진행 및 결과 발행 |
 | `ai_service/embeddings/` | 음악 추천의 E5 ONNX 추론 |
 | `ai_service/data/matching/` | 매칭 목데이터·개발 DB SQL·카탈로그 |
 | `ai_service/data/travel/` | 확인한 식당 영업시간 데이터 |
 | `scripts/matching/` | DB 준비·평가·백엔드 연동 검증 도구 |
 | `scripts/models/` | 고정 모델 다운로드·체크섬 검증 |
-| `tests/` | `core`, `travel`, `music`, `matching`, `jobs`별 회귀 테스트 |
-| `docs/` | `travel`, `matching`, `jobs`별 문서와 설정 예시 |
+| `tests/` | `core`, `travel`, `music`, `matching`, `sqs`별 회귀 테스트 |
+| `docs/` | `travel`, `matching`, `sqs`별 문서와 설정 예시 |
 | `artifacts/matching/` | 평가 결과·실행 기록·이전 결과 보관 |
 
 API 진입점은 `ai_service/main.py`이며 실행 명령은 `ai_service.main:app`입니다. 기능별 파일과 호출 흐름은 [구조 안내](docs/architecture.md)를 참고하세요. 루트에는 `.env`, 잠금 파일, Dockerfile 등 실행·배포 설정을 둡니다.
@@ -240,7 +240,7 @@ uv sync --frozen --extra dev
 입력 검증 실패는 `errors`에 필드별 설명과 수정 방법을 기록합니다.
 예를 들어 매칭 `limit=4`는 “추천 수: 3 이하여야 합니다.”와 “limit은 1~3 정수로 전달하세요.”로 표시합니다.
 서비스 토큰 미설정은 `reason=service_token_missing`과 `AUDIGO_API_TOKEN` 확인 안내를 남깁니다.
-일정 큐 실패는 `job_id`, 실행 횟수, `retry_scheduled`와 한국어 재시도 안내를 함께 기록합니다.
+SQS 워커는 `generation_job_id`와 메시지 처리·재발행·전송 실패를 기록합니다.
 요청 본문·토큰 값·외부 예외 문자열은 로그에 넣지 않으며 API 응답 계약은 유지합니다.
 
 ## 실제 일정 생성 검증
@@ -249,16 +249,20 @@ uv sync --frozen --extra dev
 
 밤 일정은 18:00~23:59(한국시간) 안에서 생성합니다. 18시 이후 도착하면 도착일 장소 선택에도 이 범위를 적용합니다. `preference.extra_request`에 “밤 일정만 만들어주세요” 또는 “야간 일정만 만들어주세요”를 넣으면 여행의 모든 날짜에 적용합니다. 실제 도착/출발 시각과 도착 후 준비시간을 함께 반영하며, 다음날 00:00~05:59로 방문을 넘기지 않습니다. 일반 주간 여행의 시간 규칙은 유지합니다.
 
-## 큐 기반 일정 생성
+## SQS 기반 일정 생성
 
-Redis + Celery 일정 작업 접수 API `POST /api/ai/v1/itinerary-jobs`는
-202/job_id/status_url을 반환하며, `GET /api/ai/v1/jobs/{job_id}`에서 진행 단계와 완료 결과를 조회합니다.
-동행자 추천은 `POST /api/ai/v1/matches/candidates`에서 `{request,candidates}`에 대해 200 최종 결과를 반환합니다.
-ID만 보내거나 이전 평면 형식으로 보내면 400 입력 오류를 반환합니다.
+비동기 일정 생성은 백엔드가 요청 큐에 메시지를 발행하고 AI의 SQS 워커가 처리합니다.
+AI는 진행·완료·실패 결과를 결과 큐에 발행하며, 사용자용 작업 상태와 결과 DB 저장은 백엔드가 담당합니다.
+기존 Redis·Celery 큐 API, 작업 상태 조회 API, worker·beat 실행은 제거했습니다.
+기존 JSON·SSE API와 동기 매칭 API는 유지합니다.
 
-[큐 API 계약·중복 방지·재시도·실행·테스트 방법](docs/jobs/queue.md)을 확인하세요.
-Docker 실행은 `docker compose -f compose.jobs.yml up --build -d`입니다.
-일정 큐에는 Redis/worker/beat가 모두 필요하며, 큐 설정이 없으면 일정 작업 접수는 503을 반환합니다.
+```bash
+./.venv/bin/python -m ai_service.sqs.worker
+```
+
+환경변수와 메시지 계약·재전달·중복 처리의 범위는 [SQS 연동 안내](docs/sqs/queue.md)를 참고하세요.
+컨테이너 구성 예시는 `compose.sqs.yml`입니다. 선택 Redis는 중복 실행 방지용이며 큐가 아닙니다.
+Redis 미설정 시 기록은 프로세스 메모리에만 남아 여러 워커·재시작 사이의 중복 실행을 막지 못합니다.
 
 ## 동행자 매칭 개발 DB와 오프라인 평가
 

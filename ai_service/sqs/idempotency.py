@@ -1,4 +1,4 @@
-"""SQS 전용 실행 lease와 최종 결과 캐시. 기존 Celery 키·상태에는 접근하지 않는다."""
+"""SQS 전용 실행 lease와 최종 결과 캐시. 선택 Redis 저장소는 큐나 사용자용 작업 상태를 관리하지 않는다."""
 from collections import OrderedDict
 from dataclasses import dataclass
 import json
