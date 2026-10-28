@@ -34,6 +34,7 @@ from ai_service.services.travel.scheduling import (
     day_windows,
     ensure_one_optional_visit,
     minimum_day_minutes,
+    order_opening_visits,
     validate_generation_window,
     schedule_selection,
     select_candidates,
@@ -43,6 +44,7 @@ from ai_service.planners.travel import OpenAIPlanner
 from ai_service.clients.youtube import fallback_music
 from ai_service.clients.kakao_places import KakaoPlaces, distance_km
 from ai_service.clients.kakao_routes import KakaoRoutes, schedule_with_routes
+from ai_service.services.travel.place_hours import hours_for
 from ai_service.schemas.travel import (
     Coordinate, GenerationResult, ItineraryRequest, ModelSelection, Place, RoutesResult, SelectionItem
 )
@@ -138,6 +140,7 @@ def trim_places_to_time(
     카테고리·최소 개수 충족 여부는 뒤의 검증 단계에서 다시 판단한다.
     그래도 시간이 부족하면 검증 단계에서 필요한 시간을 보고한다.
     """
+    selection = order_opening_visits(request, selection, places)
     windows = day_windows(request)
     if [d.date for d in selection.days] != [w["date"] for w in windows]:
         return selection  # 날짜 불일치는 검증 단계에서 모델에 설명한다.
@@ -525,17 +528,17 @@ def fallback_two_day_accommodation(
 def replace_closed_restaurant(
     request: ItineraryRequest, selection: ModelSelection, places: list[Place],
 ) -> ModelSelection:
-    """Try unused, verified restaurants near a closed optional selection."""
-    if not any(place._restaurant_hours is not None for place in places):
+    """운영시간 충돌은 재배치하고, 선택 장소는 같은 종류 후보로 대체·제외한다."""
+    if not any(hours_for(place) is not None for place in places):
         return selection
     by_id = {place.provider_place_id: place for place in places}
-    result = selection.model_copy(deep=True)
-    for _ in range(sum(place.category == "식당" for place in places) + 1):
+    result = order_opening_visits(request, selection, places)
+    for _ in range(sum(hours_for(place) is not None for place in places) + 1):
         try:
             schedule_selection(request, result, places)
             return result
         except InvalidModelOutput as exc:
-            if not str(exc).startswith("restaurant_closed:"):
+            if not str(exc).startswith(("restaurant_closed:", "place_closed:")):
                 raise
             closed_id = str(exc).split(":", 1)[1]
             closed = by_id.get(closed_id)
@@ -560,7 +563,7 @@ def replace_closed_restaurant(
                         schedule_selection(request, proposal, places)
                     except InvalidModelOutput:
                         continue
-                    record("restaurant_rescheduled", place_id=closed_id,
+                    record("restaurant_rescheduled" if closed.category == "식당" else "place_rescheduled", place_id=closed_id,
                            day_number=day_index + 1)
                     result = proposal
                     rescheduled = True
@@ -573,8 +576,8 @@ def replace_closed_restaurant(
                 raise
             used = {item.provider_place_id for day in result.days for item in day.items}
             alternatives = sorted(
-                (place for place in places if place.category == "식당"
-                 and place._restaurant_hours is not None
+                (place for place in places if place.category == closed.category
+                 and (hours_for(place) is not None or place.category != "식당")
                  and place.provider_place_id not in used),
                 key=lambda place: distance_km(closed, place),
             )
@@ -590,7 +593,7 @@ def replace_closed_restaurant(
                     schedule_selection(request, proposal, places)
                 except InvalidModelOutput:
                     continue
-                record("restaurant_replaced", old_place_id=closed_id,
+                record("restaurant_replaced" if closed.category == "식당" else "place_replaced", old_place_id=closed_id,
                        new_place_id=candidate.provider_place_id)
                 result = proposal
                 replaced = True
@@ -605,7 +608,7 @@ def replace_closed_restaurant(
                     schedule_selection(request, proposal, places)
                 except InvalidModelOutput:
                     raise exc
-                record("restaurant_excluded", place_id=closed_id)
+                record("restaurant_excluded" if closed.category == "식당" else "place_excluded", place_id=closed_id)
                 result = proposal
     raise InvalidModelOutput("restaurant_closed:replacement_exhausted")
 
@@ -874,15 +877,35 @@ async def connect_routes(
     try:
         return await schedule_with_routes(request, selection, places, model, router)
     except InvalidModelOutput as exc:
-        if str(exc).startswith("restaurant_closed:"):
+        if str(exc).startswith(("restaurant_closed:", "place_closed:")):
             closed_id = str(exc).split(":", 1)[1]
             by_id = {place.provider_place_id: place for place in places}
             closed = by_id.get(closed_id)
+            # 실제 이동시간 때문에 운영시간을 벗어나면 같은 날 순서부터 다시 시도한다.
+            # 최종 검증이 필수 장소·순서·숙소·카테고리 조건을 그대로 검사한다.
+            if closed is not None and closed.category == "관광":
+                for day_index, day in enumerate(selection.days):
+                    position = next((i for i, item in enumerate(day.items)
+                                     if item.provider_place_id == closed_id), None)
+                    if position is None:
+                        continue
+                    for target in range(len(day.items)):
+                        if target == position:
+                            continue
+                        proposal = selection.model_copy(deep=True)
+                        moved = proposal.days[day_index].items.pop(position)
+                        proposal.days[day_index].items.insert(target, moved)
+                        try:
+                            result = await schedule_with_routes(request, proposal, places, model, router)
+                        except InvalidModelOutput:
+                            continue
+                        record("place_route_rescheduled", place_id=closed_id, day_number=day_index + 1)
+                        return result
             if closed is not None and not closed.is_required:
                 used = {item.provider_place_id for day in selection.days for item in day.items}
                 choices = sorted(
-                    (place for place in places if place.category == "식당"
-                     and place._restaurant_hours is not None
+                    (place for place in places if place.category == closed.category
+                     and (hours_for(place) is not None or place.category != "식당")
                      and place.provider_place_id not in used),
                     key=lambda place: distance_km(closed, place),
                 )[:6]
@@ -900,7 +923,7 @@ async def connect_routes(
                         result = await schedule_with_routes(request, proposal, places, model, router)
                     except InvalidModelOutput:
                         continue
-                    record("restaurant_route_replanned", old_place_id=closed_id,
+                    record("restaurant_route_replanned" if closed.category == "식당" else "place_route_replanned", old_place_id=closed_id,
                            new_place_id=candidate.provider_place_id if candidate else None)
                     return result
         # 모델/내부 검증 문구를 그대로 노출하는 대신, 사용자가 조정할 수 있는

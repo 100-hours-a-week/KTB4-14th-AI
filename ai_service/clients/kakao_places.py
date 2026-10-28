@@ -21,6 +21,7 @@ from ai_service.schemas.common import (
     TRANSPORT_ALIASES
 )
 from ai_service.services.travel.restaurant_hours import attach_verified_hours, load_hours
+from ai_service.services.travel.place_hours import hours_for
 from ai_service.services.travel.transport import base_transport, resolve_day_transports
 
 
@@ -371,6 +372,8 @@ class KakaoPlaces:
         if hours_file is not None:
             result = attach_verified_hours(result, hours_file, verified_hours)
             record("restaurant_hours_filtered", restaurants=sum(p.category == "식당" for p in result))
+        for place in result:
+            hours_for(place)
         return result
 
     async def accommodations(
