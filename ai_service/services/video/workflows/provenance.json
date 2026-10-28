@@ -1,0 +1,16 @@
+{
+  "source": "https://raw.githubusercontent.com/Comfy-Org/workflow_templates/e7cd011d4ded3411c2f481200544f0be6fdc962e/templates/video_wan2_2_14B_flf2v.json",
+  "revision": "e7cd011d4ded3411c2f481200544f0be6fdc962e",
+  "sha256": "0325fe7832674530deed833c2baab73c4bcac7629faa0a9790dfd74e2336fe2b",
+  "comfyui_version": "0.35.0",
+  "comfyui_revision": "40c4fcdf513a4523e39d54a9d391908af8df8171",
+  "conversion": "Default active branch only; connected links preserved; widget fields mapped using ComfyUI v0.35.0 schemas; SaveVideo uses flattened DynamicCombo fields for MP4/H.264.",
+  "nodes": {
+    "start": "80",
+    "end": "89",
+    "conditioning": "81",
+    "positive": "90",
+    "negative": "78",
+    "save": "83"
+  }
+}

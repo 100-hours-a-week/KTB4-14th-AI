@@ -2,6 +2,8 @@
 
 코드의 역할을 기준으로 폴더를 나눕니다. 요청·응답 모델은 `schemas/`, 모델 지시문은 `prompts/`, 모델 요청과 결과 검증은 `planners/`, 실제 기능 처리는 `services/`, 외부 통신은 `clients/`에서 찾습니다.
 
+여행 사진 기반 AI 영상은 `schemas/video.py` → `services/video/pipeline.py` → `clients/runpod.py`(주소 선택) → `clients/comfyui.py`(FLF2V 생성) → `services/video/media.py`(FFmpeg)로 처리합니다. 검증 CLI는 `python -m scripts.video.run`, 선택 의존성은 `video`, 테스트는 `tests/video/`입니다. 기존 영상 HTTP/SQS 계약이 없으므로 기존 앱과 일정 전용 메시지에 새 경로나 필드를 등록하지 않았습니다. [영상 파이프라인 설계·실행 근거](video/pipeline.md), [설치와 실행 명령](../README.md#여행-사진--wan22-ai-영상)을 참고하세요.
+
 ```text
 ai_service/
 ├── main.py                     # 앱 조립·라우터 등록

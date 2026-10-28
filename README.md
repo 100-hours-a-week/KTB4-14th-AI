@@ -1,8 +1,138 @@
 # AUDIGO AI
 
-일정 생성 · 음악 추천 · 동행자 매칭 · 큐 작업을 기능별로 관리하는 FastAPI 서비스입니다.
+일정 생성 · 음악 추천 · 동행자 매칭 · 큐 작업을 기능별로 관리하는 FastAPI 서비스입니다. 여행 사진 기반 Wan2.2 영상 생성은 독립 Python 서비스와 검증 CLI로 제공합니다.
 
 [프로젝트 구조와 수정할 파일 찾기](docs/architecture.md) · [백엔드 매칭 계약](docs/matching/backend-contract.md) · [개발 DB 평가](docs/matching/mysql.md) · [큐 작업](docs/sqs/queue.md)
+
+## 여행 사진 → Wan2.2 AI 영상
+
+사진의 시작·끝 프레임을 **Wan2.2-I2V-A14B FLF2V**에 넣어 중간 프레임과 움직임을 생성하고, 여러 AI 클립을 FFmpeg로 연결합니다. 최종 길이는 요청한 **10~180초**, 1280×720·16:9·H.264 MP4·최대 500MB입니다. `smoke`는 사진 2장으로 1개 클립을 검증하는 별도 명령이며 기본 5초입니다.
+
+기존 HTTP·SQS 계약은 유지했습니다. 현재 영상 백엔드 API 계약이 없어 HTTP 경로나 SQS 메시지를 새로 정의하지 않았습니다. [설계·Python 연동·공식 노드 근거·라우팅·측정 방식](docs/video/pipeline.md), [실행한 테스트와 측정 기록](docs/video/validation.md)을 참고하세요. GPU가 없는 환경에서는 Mock API와 실제 FFmpeg만 실행하며, **Mock 성공은 실제 AI 생성 성공이 아닙니다.**
+
+### 영상용 의존성 설치
+
+프로젝트 루트에서 실행합니다. 영상 패키지는 선택 의존성이며 기존 API 서버는 추가 설치 없이 동작합니다. ComfyUI의 PyTorch/CUDA 환경은 별도이며 이 명령으로 변경하지 않습니다.
+
+```bash
+uv sync --frozen --extra video --extra dev
+# macOS
+brew install ffmpeg
+# Ubuntu/RunPod에서 FFmpeg가 없는 경우
+# apt-get update && apt-get install -y ffmpeg
+ffmpeg -version
+ffprobe -version
+```
+
+pip 환경에서는 `pip install -e '.[video,dev]'`를 사용할 수 있습니다. 기존 `requirements.txt`는 영상 작업에 필수인 OpenCV/Pillow를 설치하지 않습니다.
+
+### GPU 없이 바로 실행하는 Mock 검사
+
+아래는 테스트 패턴 사진을 만들고, 실제 ComfyUI/RunPod 요청 없이 Mock multipart 업로드·prompt·history·queue·파일 조회를 실행합니다. 반환 영상은 FFmpeg 테스트 패턴입니다.
+
+```bash
+uv run --frozen --extra video python - <<'PY'
+from pathlib import Path
+from PIL import Image
+root = Path('artifacts/video/mock-inputs')
+root.mkdir(parents=True, exist_ok=True)
+for index, color in enumerate(('red', 'blue', 'green')):
+    Image.new('RGB', (960, 640), color).save(root / f'{index}.png')
+PY
+uv run --frozen --extra video python -m scripts.video.run check --mock
+uv run --frozen --extra video python -m scripts.video.run smoke --mock \
+  --workspace artifacts/video/mock \
+  --photos artifacts/video/mock-inputs/0.png artifacts/video/mock-inputs/1.png
+uv run --frozen --extra video python -m scripts.video.run generate --mock \
+  --workspace artifacts/video/mock --duration 10 \
+  --photos artifacts/video/mock-inputs/0.png artifacts/video/mock-inputs/1.png artifacts/video/mock-inputs/2.png
+uv run --frozen --extra video python -m scripts.video.run summarize --workspace artifacts/video/mock
+uv run --frozen --extra video --extra dev pytest tests/video -q
+```
+
+출력은 `artifacts/video/mock/<job_id>/final.mp4`와 `report.json`입니다. 기록의 `execution_mode=mock`, `status=mock_completed`와 GPU 시간·비용의 null을 확인하세요. 테스트는 손상된 사진, EXIF 회전·반전, 10~180초 계획, 모델 누락, prompt 거절, 실행 오류, timeout, 제출 응답 유실, 결과 누락, 다운로드 실패, 용량 상한, Pod 교체와 작업 중 주소 고정도 검증합니다.
+
+### RunPod / ComfyUI 모델 설치
+
+실행 대상은 ComfyUI **0.35.0 / CUDA 12.8**, L40S 48GB입니다. Pod/인프라를 자동 배포하지 않습니다. `/workspace/ComfyUI`와 실행 중인 ComfyUI 환경을 먼저 준비하세요. 아래 명령은 약 34GB의 모델을 받으므로 GPU 확보 후 Pod에서 실행합니다. 원본 저장소 revision을 고정했습니다.
+
+```bash
+export HF_HOME=/workspace/hf
+uvx --from huggingface-hub hf download Comfy-Org/Wan_2.2_ComfyUI_Repackaged \
+  split_files/diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors \
+  split_files/diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors \
+  split_files/vae/wan_2.1_vae.safetensors \
+  --revision ee6f4a40737a995bf5818954cfce6d59443b0f04 --local-dir /workspace/wan-models
+uvx --from huggingface-hub hf download Comfy-Org/Wan_2.1_ComfyUI_repackaged \
+  split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors \
+  --revision 123acf1cc74bccbb9bfff8ac1ee72edc08c2341d --local-dir /workspace/wan-models
+mkdir -p /workspace/ComfyUI/models/diffusion_models /workspace/ComfyUI/models/vae /workspace/ComfyUI/models/text_encoders
+ln -s /workspace/wan-models/split_files/diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors /workspace/ComfyUI/models/diffusion_models/
+ln -s /workspace/wan-models/split_files/diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors /workspace/ComfyUI/models/diffusion_models/
+ln -s /workspace/wan-models/split_files/vae/wan_2.1_vae.safetensors /workspace/ComfyUI/models/vae/
+ln -s /workspace/wan-models/split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors /workspace/ComfyUI/models/text_encoders/
+```
+
+이미 해당 파일이 있으면 중복 다운로드/링크를 만들 필요가 없습니다. 파일은 디렉터리별로 ComfyUI 모델 목록에 표시되어야 합니다. Lightning LoRA나 외부 커스텀 노드는 필요하지 않습니다. 공식 템플릿의 FP8 scaled 기본 20단계 분기를 사용하며 텍스트 인코더는 기본 CPU입니다. 설치 후 ComfyUI를 재시작해 모델 목록을 새로 불러오세요. 템플릿이 이미 서비스를 실행한다면 두 번째 ComfyUI를 띄우지 않습니다. 수동 실행 환경이라면 **ComfyUI의 기존 Python 환경**에서 `python main.py --listen 0.0.0.0 --port 8188`로 실행합니다.
+
+### 환경변수 및 동적 Pod 라우팅
+
+프로젝트 `.env` 또는 프로세스 환경변수를 읽고 프로세스 환경을 우선합니다. 실제 `.env`는 수정하거나 커밋하지 않습니다. `.env.example`에 영상용 항목을 추가했습니다.
+
+| 변수 | 의미 / 기본값 |
+| --- | --- |
+| `VIDEO_WORKSPACE` | `/workspace/audigo-video` — 사진·클립·최종 파일·작업 기록 |
+| `VIDEO_ENDPOINT_MODE` | `static` 또는 `runpod` |
+| `COMFYUI_URL` | 고정 모드 주소, 기본 `http://127.0.0.1:8188` |
+| `COMFYUI_API_TOKEN` | 선택: 자체 ComfyUI 인증 gateway 토큰. RunPod 계정 키와 별개 |
+| `RUNPOD_API_KEY` | 동적 모드의 RunPod REST 계정 키 |
+| `RUNPOD_POD_PREFIX` | Pod 이름 접두사, 기본 `audigo-video-` |
+| `RUNPOD_POD_ID` | 선택: 특정 Pod로 제한. 교체 Pod를 따라가려면 미설정 |
+| `RUNPOD_COMFYUI_PORT` | 기본 `8188`, Pod에 `8188/http` 노출 필요 |
+| `VIDEO_DISCOVERY_TTL_SECONDS` | RunPod 주소 캐시 30초 |
+| `VIDEO_HTTP_TIMEOUT_SECONDS` | HTTP 요청 제한 30초 |
+| `VIDEO_PROMPT_TIMEOUT_SECONDS` | 클립 하나의 큐 대기+생성 제한 3600초 |
+| `VIDEO_JOB_TIMEOUT_SECONDS` | 전체 작업 제한 43200초 |
+| `VIDEO_POLL_SECONDS` | 상태 조회 주기 2초 |
+| `VIDEO_TEXT_ENCODER_DEVICE` | `cpu` 또는 `default`, 기본 `cpu` |
+| `VIDEO_GPU_HOURLY_USD` | 관측 구간 비용 추정 단가, 기본 1.11 |
+| `FFMPEG_BIN`, `FFPROBE_BIN` | 실행 파일 이름 또는 절대 경로 |
+
+모델 파일명 변경은 `.env.example`의 `VIDEO_HIGH_MODEL`, `VIDEO_LOW_MODEL`, `VIDEO_TEXT_ENCODER`, `VIDEO_VAE`를 사용합니다.
+
+Pod 내부에서 실행할 때는 고정 모드와 localhost를 사용합니다. 외부 AI 서버에서 Pod 교체를 따라갈 때는 `VIDEO_ENDPOINT_MODE=runpod`와 계정 키를 설정하고, 새 Pod 이름에 같은 접두사를 붙입니다. 실행 중인 Pod 목록을 조회하고 실제 준비된 ComfyUI를 골라 공식 프록시 주소로 접근하므로 Pod 교체마다 URL을 재배포할 필요가 없습니다. 계정 키를 ComfyUI로 전달하지 않습니다.
+
+**작업 도중에는 Pod 주소를 바꾸지 않습니다.** 이미 제출한 prompt ID는 해당 Pod에만 존재합니다. 실행 중 Pod가 사라지면 작업을 실패로 기록하고 다음 새 작업에서 재탐색합니다. 제출 응답 유실/timeout 때 자동 재제출하지 않습니다. 기록된 prompt ID와 원래 Pod의 queue/history를 확인해야 중복 생성·과금을 피할 수 있습니다. 여러 CLI 프로세스에 대한 분산 잠금/중복 제거는 제공하지 않으므로 초기 GPU 측정은 한 작업씩 실행하세요. 향후 영상용 SQS pull worker 설계는 [상세 문서](docs/video/pipeline.md)에 설명했습니다.
+
+### GPU 확보 후 사진 2장으로 실제 생성 검증
+
+아래 명령은 **실제 GPU 추론을 요청하고 과금될 수 있습니다**. `check`는 연결·노드·모델 파일명만 검사하며 추론하지 않습니다. `/workspace/input/start.jpg`, `end.jpg`에는 실제 테스트 사진을 준비합니다.
+
+```bash
+uv run --frozen --extra video python -m scripts.video.run check
+uv run --frozen --extra video python -m scripts.video.run smoke \
+  --photos /workspace/input/start.jpg /workspace/input/end.jpg --seed 42
+```
+
+출력 폴더의 `workflow-0000.json`, prompt ID, `final.mp4`, `report.json`을 확인합니다. 5초·720p의 실제 움직임과 시작/끝 조건, L40S 메모리 사용·OOM·첫 실행 시간을 확인하고 같은 명령을 다시 실행해 warm 시간을 비교합니다. OOM이면 실패 기록을 보존하고 `smoke --duration 2`로 프레임 수를 줄여 진단할 수 있습니다. 운영 기본 해상도를 몰래 낮추거나 슬라이드쇼로 대체하지 않습니다.
+
+짧은 검증을 통과한 뒤 여러 클립을 연결한 최종 영상과 길이별 관측 비용을 확인합니다. 아래 마지막 반복문은 **별도로 4편을 생성**하므로 먼저 smoke/10초 결과를 검토한 뒤 실행하세요.
+
+```bash
+uv run --frozen --extra video python -m scripts.video.run generate --duration 10 \
+  --photos /workspace/input/start.jpg /workspace/input/end.jpg
+for seconds in 10 30 60 180; do
+  uv run --frozen --extra video python -m scripts.video.run generate --duration "$seconds" \
+    --photos /workspace/input/start.jpg /workspace/input/end.jpg
+done
+uv run --frozen --extra video python -m scripts.video.run summarize
+```
+
+입력 사진이 두 장이면 추가 구간은 도착 사진 B를 양쪽 조건으로 넣어 **새로 추론하는 B→B 움직임 클립**입니다. 긴 여행 영상의 장면 다양성을 위해 실제 여행 사진을 더 전달할 수 있으며 순서를 유지합니다. 사진마다 최소 2초가 필요합니다. 길이를 25/30초로 고정하지 않습니다.
+
+`report.json`은 단계/전체 소요·실패 사유·출력 검증·Pod ID·prompt ID·가능한 경우 provider 실행 시간을 기록합니다. live 실행의 관측 예약 구간 × $1.11/h를 추정하며 **실제 청구 GPU 시간·청구액은 미측정 null**입니다. 설치·idle·취소 후 남은 작업·보관비까지 RunPod 청구 내역으로 대조해야 합니다. Mock와 live 측정은 summary에서 분리합니다.
+
+총 $269 / 500편은 영상당 $0.538, 참고 단가에서 **편당 총 예약 시간 약 29.08분**에 해당합니다. 재생성·설치·대기 비용까지 포함하면 여유가 더 줄어듭니다. **11월 17일까지 500편 제작 가능 여부는 아직 검증되지 않았습니다.** 모델 가중치·사진·영상·작업 기록은 Git에 넣지 않습니다.
 
 
 ## 진행중인 항목
