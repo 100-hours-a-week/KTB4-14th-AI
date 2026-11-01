@@ -23,8 +23,9 @@ def configure_openapi(app: FastAPI):
         # Matching validation is handled as HTTP 400, including malformed JSON.
         schema["paths"]["/api/ai/v1/matches/candidates"]["post"]["responses"].pop("422", None)
         tags = schema.setdefault("tags", [])
-        if not any(tag["name"] == "V2" for tag in tags):
-            tags.append({"name": "V2"})
+        for name in ('V2', 'V3'):
+            if not any(tag['name'] == name for tag in tags):
+                tags.append({'name': name})
         return schema
 
     app.openapi = openapi_with_response_examples

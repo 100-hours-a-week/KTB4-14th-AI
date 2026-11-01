@@ -1,6 +1,9 @@
 """운영 로그용 한국어 설명. 입력값이나 외부 예외 문자열을 인용하지 않는다."""
 
 REASONS = {
+    'checklist_timeout': ('체크리스트 생성 제한 시간을 초과했습니다.', '모델 호출·재생성이 제한 시간 안에 끝나지 않았습니다.', 'OpenAI 연결 상태와 모델 응답 지연을 확인하세요.'),
+    'checklist_model_refused': ('모델이 체크리스트 생성을 거절했습니다.', '모델 응답을 체크리스트 결과로 사용할 수 없습니다.', '여행 조건과 모델 응답 상태를 확인하세요.'),
+    'checklist_output_invalid': ('체크리스트 결과 검증에 실패했습니다.', '재생성 후에도 형식·길이·중복 조건을 만족하지 못했습니다.', '체크리스트 스키마와 생성 프롬프트를 확인하세요.'),
     'service_token_missing': ('서비스 인증 설정이 없어 요청을 처리하지 못했습니다.', 'AUDIGO_API_TOKEN이 설정되지 않았습니다.', 'AI 서버와 백엔드의 서비스 토큰 설정을 확인하고 설정 변경 후 서버를 재시작하세요.'),
     'service_token_invalid': ('서비스 인증에 실패했습니다.', 'Authorization 헤더가 없거나 Bearer 토큰이 서버 설정과 일치하지 않습니다.', '백엔드의 Authorization: Bearer 헤더와 양쪽 서비스 토큰이 같은지 확인하세요.'),
     'method_not_allowed': ('요청한 HTTP 메서드를 사용할 수 없습니다.', '해당 API 경로에서 허용하지 않는 메서드로 요청했습니다.', 'Swagger의 HTTP 메서드를 확인하세요. 동행자 추천은 POST로 호출하세요.'),
@@ -51,6 +54,7 @@ REASONS = {
 }
 
 CODES = {
+    'CHECKLIST_GENERATION_FAILED': ('체크리스트를 생성하지 못했습니다.', '모델이 유효한 체크리스트 결과를 만들지 못했습니다.', 'reason과 같은 request_id의 로그를 확인하세요.'),
     'INVALID_REQUEST': ('요청 검증에 실패했습니다.', '요청 필드의 누락·자료형·허용 범위를 확인해야 합니다.', 'errors의 field·message_ko·action_ko를 보고 백엔드 요청 DTO를 수정하세요.'),
     'UNAUTHORIZED': REASONS['service_token_invalid'],
     # 매칭 503의 기존 응답 코드 호환용이며 별도 큐 사용을 뜻하지 않는다.

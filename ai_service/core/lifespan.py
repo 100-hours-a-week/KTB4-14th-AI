@@ -9,12 +9,15 @@ from ai_service.clients.youtube import YouTubeMusic
 from ai_service.planners.travel import OpenAIPlanner
 from ai_service.clients.kakao_places import KakaoPlaces
 from ai_service.clients.kakao_routes import KakaoRoutes
+from ai_service.clients.openai import OpenAIClient
+from ai_service.services.checklist import ChecklistGenerator
 
 
 def create_lifespan(settings: Settings, transport: httpx.AsyncBaseTransport | None = None):
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         async with httpx.AsyncClient(transport=transport) as client:
+            app.state.checklist_generator = ChecklistGenerator(OpenAIClient(client, settings))
             app.state.places = KakaoPlaces(client, settings)
             app.state.planner = OpenAIPlanner(client, settings)
             app.state.routes = KakaoRoutes(client, settings)
