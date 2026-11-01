@@ -3,6 +3,7 @@ import asyncio
 from copy import deepcopy
 from dataclasses import replace
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import httpx
@@ -21,6 +22,14 @@ GENERATED = {
     'title': CHECKLIST_RESPONSE_EXAMPLE['title'],
     'items': [{'content': item['content']} for item in CHECKLIST_RESPONSE_EXAMPLE['items']],
 }
+SHEET_CONTRACT = json.loads((Path(__file__).parent / 'fixtures' / 'sheet-contract.json').read_text())
+
+
+def field_parent(body, path):
+    parts = path.split('.')
+    for part in parts[:-1]:
+        body = body[int(part)] if isinstance(body, list) else body[part]
+    return body, parts[-1]
 
 
 def completion(raw=None, *, refusal=None, finish='stop'):
@@ -62,7 +71,7 @@ def assert_error(response, status, code):
     return body
 
 
-def test_success_uses_trip_context_and_server_owned_fields(api):
+def test_success_uses_full_trip_and_itinerary_context_and_server_owned_fields(api):
     client, calls, _, _ = api
     response = client.post(PATH, json=CHECKLIST_REQUEST_EXAMPLE, headers=HEADERS)
     assert response.status_code == 200
@@ -70,7 +79,9 @@ def test_success_uses_trip_context_and_server_owned_fields(api):
     assert response.headers['X-Request-Id'].startswith('req_')
     assert len(calls) == 1
     call = calls[0]
-    assert json.loads(call['messages'][1]['content']) == CHECKLIST_REQUEST_EXAMPLE['trip_context']
+    expected_context = {key: value for key, value in SHEET_CONTRACT['request'].items()
+                        if key != 'travel_plan_id'}
+    assert json.loads(call['messages'][1]['content']) == expected_context
     assert call['model'] == SETTINGS.openai_model
     schema = call['response_format']['json_schema']
     assert schema['strict'] is True
@@ -79,47 +90,90 @@ def test_success_uses_trip_context_and_server_owned_fields(api):
     assert set(schema['schema']['$defs']['GeneratedChecklistItem']['required']) == {'content'}
 
 
+def test_request_response_and_openapi_match_independent_sheet_snapshot(api):
+    client, _, _, _ = api
+    assert CHECKLIST_REQUEST_EXAMPLE == SHEET_CONTRACT['request']
+    assert CHECKLIST_RESPONSE_EXAMPLE == SHEET_CONTRACT['responses']['200']
+    spec = client.get('/openapi.json').json()
+    operation = spec['paths'][PATH]['post']
+    assert 'E5' not in operation['description']
+    assert 'OPENAI_MODEL' in operation['description']
+    schemas = spec['components']['schemas']
+    request_schema = schemas['ChecklistRequest']
+    assert set(request_schema['properties']) == set(SHEET_CONTRACT['request'])
+    assert set(request_schema['required']) == set(SHEET_CONTRACT['request'])
+    assert set(schemas['ChecklistPreference']['properties']) == {'themes'}
+    item_fields = set(SHEET_CONTRACT['request']['itinerary_items'][0])
+    assert set(schemas['ChecklistItineraryItem']['properties']) == item_fields
+    assert set(schemas['ChecklistItineraryItem']['required']) == item_fields
+    for code, expected in SHEET_CONTRACT['responses'].items():
+        assert operation['responses'][code]['content']['application/json']['example'] == expected
+
+
 @pytest.mark.parametrize('field,value', [
     ('travel_plan_id', 0), ('travel_plan_id', -1), ('travel_plan_id', True),
     ('travel_plan_id', '101'), ('travel_plan_id', 1.0), ('travel_plan_id', None),
-    ('destination', ''), ('destination', '   '), ('destination', None), ('destination', 123),
-    ('destination', 'x' * 501),
-    ('travelers', 0), ('travelers', -1), ('travelers', True), ('travelers', '2'),
-    ('travelers', 2.0), ('travelers', None),
-    ('start_date', '2026-02-30'), ('start_date', '20261110'),
-    ('start_date', '2026-11-10T00:00:00'), ('start_date', 1794268800),
-    ('end_date', '2026-11-09'), ('end_date', '2026-11-31'),
-    ('themes', []), ('themes', ['NATURE', 'NATURE']), ('themes', ['UNKNOWN']),
-    ('themes', ['nature']), ('themes', ['NATURE', 'FOOD', 'REST', 'SNS']),
-    ('themes', None), ('themes', 'NATURE'),
+    ('region_name', ''), ('region_name', '   '), ('region_name', None), ('region_name', 123),
+    ('region_name', 'x' * 501),
+    ('headcount', 0), ('headcount', -1), ('headcount', True), ('headcount', '2'),
+    ('headcount', 2.0), ('headcount', None),
+    ('companion_type', ''), ('companion_type', None), ('companion_type', 1),
+    ('arrival_datetime', '2026-02-30T13:00:00'), ('arrival_datetime', '20261110'),
+    ('arrival_datetime', '2026-11-10'), ('arrival_datetime', 1794268800),
+    ('departure_datetime', '2026-11-10T12:59:00'),
+    ('departure_datetime', '2026-11-31T13:00:00'),
+    ('departure_datetime', '2026-11-11T18:00:00+09:00'),
+    ('preference', None),
+    ('preference.themes', []), ('preference.themes', ['NATURE', 'NATURE']),
+    ('preference.themes', ['UNKNOWN']), ('preference.themes', ['nature']),
+    ('preference.themes', ['NATURE', 'FOOD', 'REST', 'SNS']),
+    ('preference.themes', None), ('preference.themes', 'NATURE'),
+    ('itinerary_items', None), ('itinerary_items', {}),
+    ('itinerary_items.0.day_number', 0), ('itinerary_items.0.day_number', True),
+    ('itinerary_items.0.day_number', '1'), ('itinerary_items.0.date', '2026-02-30'),
+    ('itinerary_items.0.date', '2026-11-10T15:00:00'),
+    ('itinerary_items.0.place_name', '  '), ('itinerary_items.0.item_type', ''),
+    ('itinerary_items.0.start_time', '24:00'), ('itinerary_items.0.start_time', '3:00'),
+    ('itinerary_items.0.end_time', '16:60'), ('itinerary_items.0.end_time', '16:00:00'),
 ])
 def test_invalid_fields_are_400_before_model_call(api, field, value):
     client, calls, _, _ = api
     body = deepcopy(CHECKLIST_REQUEST_EXAMPLE)
-    target = body if field == 'travel_plan_id' else body['trip_context']
-    target[field] = value
+    target, key = field_parent(body, field)
+    target[key] = value
     result = assert_error(client.post(PATH, json=body, headers=HEADERS), 400, 'INVALID_REQUEST')
-    assert field in result['error']['details'][0]['field'].split('.')
+    actual_field = result['error']['details'][0]['field']
+    assert actual_field == f'body.{field}' or actual_field.startswith(f'body.{field}.')
     assert calls == []
 
 
-@pytest.mark.parametrize('field', ['travel_plan_id', 'trip_context', 'destination', 'start_date',
-                                   'end_date', 'travelers', 'themes'])
+@pytest.mark.parametrize('field', [
+    'travel_plan_id', 'region_name', 'arrival_datetime', 'departure_datetime',
+    'headcount', 'companion_type', 'preference', 'preference.themes', 'itinerary_items',
+    'itinerary_items.0.day_number', 'itinerary_items.0.date', 'itinerary_items.0.place_name',
+    'itinerary_items.0.item_type', 'itinerary_items.0.start_time', 'itinerary_items.0.end_time',
+])
 def test_all_fields_are_required(api, field):
     client, calls, _, _ = api
     body = deepcopy(CHECKLIST_REQUEST_EXAMPLE)
-    target = body if field in ('travel_plan_id', 'trip_context') else body['trip_context']
-    target.pop(field)
+    target, key = field_parent(body, field)
+    target.pop(key)
     result = assert_error(client.post(PATH, json=body, headers=HEADERS), 400, 'INVALID_REQUEST')
     assert result['error']['details'][0]['type'] == 'missing'
+    assert result['error']['details'][0]['field'] == f'body.{field}'
     assert calls == []
 
 
 @pytest.mark.parametrize('body', [
     b'{"travel_plan_id":', b'', b'null', b'[]',
     json.dumps({**CHECKLIST_REQUEST_EXAMPLE, 'user_id': 1}).encode(),
-    json.dumps({**CHECKLIST_REQUEST_EXAMPLE, 'trip_context': {
-        **CHECKLIST_REQUEST_EXAMPLE['trip_context'], 'ignored': True}}).encode(),
+    json.dumps({**CHECKLIST_REQUEST_EXAMPLE, 'preference': {
+        **CHECKLIST_REQUEST_EXAMPLE['preference'], 'ignored': True}}).encode(),
+    json.dumps({**CHECKLIST_REQUEST_EXAMPLE, 'itinerary_items': [{
+        **CHECKLIST_REQUEST_EXAMPLE['itinerary_items'][0], 'ignored': True}]}).encode(),
+    json.dumps({'travel_plan_id': 101, 'trip_context': {
+        'destination': '부산', 'start_date': '2026-11-10', 'end_date': '2026-11-11',
+        'travelers': 2, 'themes': ['NATURE', 'FOOD']}}).encode(),
 ])
 def test_malformed_and_extra_fields(api, body):
     client, calls, _, _ = api
@@ -129,10 +183,34 @@ def test_malformed_and_extra_fields(api, body):
 
 
 def test_same_day_trip_and_whitespace_trim(api):
+    client, calls, _, _ = api
+    body = deepcopy(CHECKLIST_REQUEST_EXAMPLE)
+    body.update(departure_datetime='2026-11-10T18:00:00', region_name='  부산광역시  ')
+    assert client.post(PATH, json=body, headers=HEADERS).status_code == 200
+    assert json.loads(calls[0]['messages'][1]['content'])['region_name'] == '부산광역시'
+
+
+def test_empty_itinerary_still_uses_trip_conditions(api):
+    client, calls, _, _ = api
+    body = {**CHECKLIST_REQUEST_EXAMPLE, 'itinerary_items': []}
+    assert client.post(PATH, json=body, headers=HEADERS).status_code == 200
+    assert json.loads(calls[0]['messages'][1]['content'])['itinerary_items'] == []
+
+
+def test_timezone_dates_use_korea_for_itinerary_day_number(api):
     client, _, _, _ = api
     body = deepcopy(CHECKLIST_REQUEST_EXAMPLE)
-    body['trip_context'].update(end_date='2026-11-10', destination='  부산  ')
+    body.update(arrival_datetime='2026-11-09T23:00:00Z', departure_datetime='2026-11-10T09:00:00Z')
     assert client.post(PATH, json=body, headers=HEADERS).status_code == 200
+
+
+@pytest.mark.parametrize('changes', [{'date': '2026-11-12', 'day_number': 3}, {'day_number': 2}])
+def test_itinerary_outside_trip_or_inconsistent_day_is_rejected(api, changes):
+    client, calls, _, _ = api
+    body = deepcopy(CHECKLIST_REQUEST_EXAMPLE)
+    body['itinerary_items'][0].update(changes)
+    assert_error(client.post(PATH, json=body, headers=HEADERS), 400, 'INVALID_REQUEST')
+    assert calls == []
 
 
 @pytest.mark.parametrize('headers', [{}, {'Authorization': 'Bearer wrong'},
@@ -256,7 +334,7 @@ def test_swagger_examples_match_runtime_errors(api):
     assert operation['security'] == [{'HTTPBearer': []}]
     assert set(operation['responses']) == {'200', '400', '401', '422', '500', '503'}
     bad = deepcopy(CHECKLIST_REQUEST_EXAMPLE)
-    bad['trip_context'].pop('destination')
+    bad.pop('region_name')
     responses = {
         400: client.post(PATH, json=bad, headers=HEADERS),
         401: client.post(PATH, json=CHECKLIST_REQUEST_EXAMPLE),

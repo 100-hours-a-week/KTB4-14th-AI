@@ -1,12 +1,12 @@
 """여행 체크리스트 생성 요청과 검증된 생성 결과."""
-from datetime import date
+from datetime import date, datetime
 import re
 from typing import Annotated, Literal
 import unicodedata
 
-from pydantic import BeforeValidator, Field, ValidationInfo, field_validator
+from pydantic import BeforeValidator, Field, ValidationInfo, field_validator, model_validator
 
-from ai_service.schemas.common import StrictModel
+from ai_service.schemas.common import KST, NonEmpty, StrictModel
 
 
 Theme = Literal['NATURE', 'FOOD', 'CULTURE', 'REST', 'SNS', 'ACTIVITY']
@@ -26,20 +26,18 @@ def calendar_date(value):
 CalendarDate = Annotated[date, BeforeValidator(calendar_date)]
 
 
-class TripContext(StrictModel):
-    destination: str = Field(min_length=1, max_length=500)
-    start_date: CalendarDate
-    end_date: CalendarDate
-    travelers: PositiveInt
-    themes: list[Theme] = Field(min_length=1, max_length=3)
+def calendar_datetime(value):
+    if not isinstance(value, datetime) and not (isinstance(value, str) and 'T' in value):
+        raise ValueError('ISO datetime with a date and time is required')
+    return value
 
-    @field_validator('end_date')
-    @classmethod
-    def validate_end_date(cls, value: date, info: ValidationInfo):
-        start = info.data.get('start_date')
-        if start is not None and value < start:
-            raise ValueError('end_date must be on or after start_date')
-        return value
+
+CalendarDateTime = Annotated[datetime, BeforeValidator(calendar_datetime)]
+ClockTime = Annotated[str, Field(pattern=r'^(?:[01]\d|2[0-3]):[0-5]\d$')]
+
+
+class ChecklistPreference(StrictModel):
+    themes: list[Theme] = Field(min_length=1, max_length=3)
 
     @field_validator('themes')
     @classmethod
@@ -49,9 +47,51 @@ class TripContext(StrictModel):
         return values
 
 
+class ChecklistItineraryItem(StrictModel):
+    day_number: PositiveInt
+    date: CalendarDate
+    place_name: NonEmpty
+    item_type: NonEmpty
+    start_time: ClockTime
+    end_time: ClockTime
+
+
 class ChecklistRequest(StrictModel):
+    """AI 서비스 API 시트 D26의 평면 여행·일정 DTO."""
     travel_plan_id: PositiveInt
-    trip_context: TripContext
+    region_name: NonEmpty
+    arrival_datetime: CalendarDateTime
+    departure_datetime: CalendarDateTime
+    headcount: PositiveInt
+    companion_type: NonEmpty
+    preference: ChecklistPreference
+    itinerary_items: list[ChecklistItineraryItem] = Field(max_length=500)
+
+    @field_validator('departure_datetime')
+    @classmethod
+    def validate_departure(cls, value: datetime, info: ValidationInfo):
+        start = info.data.get('arrival_datetime')
+        if start is not None:
+            if bool(start.tzinfo) != bool(value.tzinfo):
+                raise ValueError('both datetimes must use the same timezone convention')
+            if value < start:
+                raise ValueError('departure_datetime must be on or after arrival_datetime')
+        return value
+
+    def local_dates(self) -> tuple[date, date]:
+        def local(value):
+            return value.astimezone(KST).date() if value.tzinfo else value.date()
+        return local(self.arrival_datetime), local(self.departure_datetime)
+
+    @model_validator(mode='after')
+    def validate_itinerary_dates(self):
+        first, last = self.local_dates()
+        for item in self.itinerary_items:
+            if not first <= item.date <= last:
+                raise ValueError('itinerary date must be within the trip dates in Asia/Seoul')
+            if item.day_number != (item.date - first).days + 1:
+                raise ValueError('itinerary day_number must match its trip date')
+        return self
 
 
 class GeneratedChecklistItem(StrictModel):

@@ -5,10 +5,18 @@ from ai_service.schemas.common import StructuredErrorResponse
 
 CHECKLIST_REQUEST_EXAMPLE = {
     'travel_plan_id': 101,
-    'trip_context': {
-        'destination': '부산', 'start_date': '2026-11-10', 'end_date': '2026-11-11',
-        'travelers': 2, 'themes': ['NATURE', 'FOOD'],
+    'region_name': '부산광역시',
+    'arrival_datetime': '2026-11-10T13:00:00',
+    'departure_datetime': '2026-11-11T18:00:00',
+    'headcount': 2,
+    'companion_type': 'COUPLE',
+    'preference': {
+        'themes': ['NATURE', 'FOOD'],
     },
+    'itinerary_items': [{
+        'day_number': 1, 'date': '2026-11-10', 'place_name': '광안리해수욕장',
+        'item_type': 'TOUR', 'start_time': '15:00', 'end_time': '16:00',
+    }],
 }
 CHECKLIST_RESPONSE_EXAMPLE = {
     'travel_plan_id': 101,
@@ -39,7 +47,7 @@ for status, code, message, description in (
         'content': {'application/json': {'example': {
             'error': {
                 'code': code, 'message': message, 'retryable': status == 503,
-                'details': [{'field': 'body.trip_context.destination', 'type': 'missing'}]
+                'details': [{'field': 'body.region_name', 'type': 'missing'}]
                 if status == 400 else [],
             },
             'request_id': 'req_checklist_example',

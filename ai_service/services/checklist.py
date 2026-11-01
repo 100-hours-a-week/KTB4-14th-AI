@@ -19,7 +19,7 @@ class ChecklistGenerator:
         messages = [
             {'role': 'system', 'content': CHECKLIST_SYSTEM_PROMPT},
             {'role': 'user', 'content': json.dumps(
-                request.trip_context.model_dump(mode='json'), ensure_ascii=False)},
+                request.model_dump(mode='json', exclude={'travel_plan_id'}), ensure_ascii=False)},
         ]
         schema = GeneratedChecklist.model_json_schema()
         for attempt in range(2):

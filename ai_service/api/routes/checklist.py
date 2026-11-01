@@ -15,7 +15,9 @@ def router(settings):
     @routes.post(
         '/api/ai/v1/checklists', response_model=ChecklistResponse,
         responses=CHECKLIST_RESPONSES, tags=['V3'], summary='여행 체크리스트 생성',
-        description='사용 모델: E5'
+        description=('여행 지역·도착/출발 일시·인원·동행 유형·선호·상세 일정으로 '
+                     '체크리스트를 동기 생성합니다. 생성 모델은 OPENAI_MODEL 설정을 사용하며, '
+                     '반환 결과의 DB 저장은 백엔드가 담당합니다.')
     )
     async def generate_checklist(
         body: Annotated[ChecklistRequest, Body(openapi_examples={

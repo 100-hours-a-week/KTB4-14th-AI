@@ -296,7 +296,7 @@ INFO:     Uvicorn running on http://127.0.0.1:8000
 
 ### V3 여행 체크리스트 생성
 
-`POST /api/ai/v1/checklists`에 `travel_plan_id`와 `trip_context`(여행지·시작일·종료일·인원·테마)를 전달하면 준비 체크리스트를 동기로 반환합니다. 서비스 Bearer 토큰과 OpenAI 키가 필요하며, DB 저장은 백엔드가 담당합니다. 두 상태는 초기 `false`, 정렬 순서는 1부터 서버가 부여합니다. [호출 예시·검증 조건·오류 계약](docs/checklist/api.md)을 참고하세요. `/docs`의 V3에서도 실행할 수 있습니다.
+`POST /api/ai/v1/checklists`는 시트 명세에 맞춰 `travel_plan_id`, `region_name`, `arrival_datetime`, `departure_datetime`, `headcount`, `companion_type`, `preference.themes`, `itinerary_items`를 받아 준비 체크리스트를 동기로 반환합니다. 서비스 Bearer 토큰과 OpenAI 키가 필요하며, DB 저장은 백엔드가 담당합니다. 두 상태는 초기 `false`, 정렬 순서는 1부터 서버가 부여합니다. [호출 예시·검증 조건·오류 계약](docs/checklist/api.md)을 참고하세요. `/docs`의 V3에서도 실행할 수 있습니다.
 
 ### V2 동행자 후보 추천 명세
 
