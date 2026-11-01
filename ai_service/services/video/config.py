@@ -33,13 +33,25 @@ class VideoSettings:
     text_encoder: str = "umt5_xxl_fp8_e4m3fn_scaled.safetensors"
     vae: str = "wan_2.1_vae.safetensors"
     text_encoder_device: str = "cpu"
+    generation_profile: str = "standard"
+    high_lora: str = "wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors"
+    low_lora: str = "wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors"
+    ltx_checkpoint: str = 'ltx-2.3-22b-distilled-fp8.safetensors'
+    ltx_text_encoder: str = 'gemma_3_12B_it_fp8_scaled.safetensors'
+    ltx_width: int = 768
+    ltx_height: int = 448
+    story_model: str | None = None
     hourly_usd: float = 1.11
     max_input_bytes: int = 25_000_000
     max_clip_bytes: int = 500_000_000
 
     def __post_init__(self):
+        if self.generation_profile not in {"standard", "fast"}:
+            raise ValueError("VIDEO_GENERATION_PROFILE must be standard or fast")
         if self.endpoint_mode not in {"static", "runpod"}:
             raise ValueError("VIDEO_ENDPOINT_MODE must be static or runpod")
+        if min(self.ltx_width,self.ltx_height)<64 or self.ltx_width%32 or self.ltx_height%32:
+            raise ValueError('LTX dimensions must be multiples of 32')
         if self.endpoint_mode == "static":
             url = urlsplit(self.comfyui_url)
             if url.scheme not in {"http", "https"} or not url.hostname or url.username or url.password or url.query or url.fragment:
@@ -79,6 +91,14 @@ class VideoSettings:
             "text_encoder": ("VIDEO_TEXT_ENCODER", str),
             "vae": ("VIDEO_VAE", str),
             "text_encoder_device": ("VIDEO_TEXT_ENCODER_DEVICE", str),
+            "generation_profile": ("VIDEO_GENERATION_PROFILE", str),
+            "high_lora": ("VIDEO_HIGH_LORA", str),
+            "low_lora": ("VIDEO_LOW_LORA", str),
+            "ltx_checkpoint": ("VIDEO_LTX_CHECKPOINT", str),
+            "ltx_text_encoder": ("VIDEO_LTX_TEXT_ENCODER", str),
+            "ltx_width": ("VIDEO_LTX_WIDTH", int),
+            "ltx_height": ("VIDEO_LTX_HEIGHT", int),
+            "story_model": ("VIDEO_STORY_MODEL", str),
             "hourly_usd": ("VIDEO_GPU_HOURLY_USD", float),
         }
         return cls(**{key: cast(values[env]) for key, (env, cast) in mapping.items() if values.get(env)})

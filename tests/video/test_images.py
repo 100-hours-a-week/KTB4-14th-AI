@@ -2,12 +2,13 @@
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 try:
     import cv2
     import numpy as np
     from PIL import Image
-    from ai_service.services.video.images import prepare_photo
+    from ai_service.services.video.images import assess_quality, prepare_photo
     VIDEO_EXTRAS = True
 except ImportError:
     VIDEO_EXTRAS = False
@@ -17,6 +18,75 @@ from ai_service.services.video.errors import VideoError
 
 @unittest.skipUnless(VIDEO_EXTRAS, "install uv sync --extra video --extra dev")
 class PhotoTests(unittest.TestCase):
+    def test_panorama_background_does_not_allocate_oversized_intermediate_image(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for size in ((4096, 32), (32, 4096)):
+                source = root / 'panorama.png'
+                Image.new('RGB', size, 'red').save(source)
+                with patch('ai_service.services.video.images.cv2.resize', wraps=cv2.resize) as resize:
+                    prepare_photo(source, root / 'prepared.png', 1_000_000, fit='blurred_background')
+                self.assertTrue(all(call.args[1][0] * call.args[1][1] <= 1280 * 720
+                                    for call in resize.call_args_list))
+
+    def test_quality_separates_sharp_blurred_and_bad_exposure(self):
+        rng = np.random.default_rng(42)
+        sharp = rng.integers(0, 256, (720, 1024, 3), dtype=np.uint8)
+        blurred = cv2.GaussianBlur(sharp, (0, 0), 8)
+        a, b = assess_quality(sharp), assess_quality(blurred)
+        self.assertGreater(a['laplacian_variance'], b['laplacian_variance'] * 10)
+        self.assertEqual(a['sharpness'], 'SHARP')
+        self.assertEqual(b['sharpness'], 'BLURRY')
+        self.assertEqual(assess_quality(np.zeros_like(sharp))['exposure'], 'UNDEREXPOSED')
+        self.assertEqual(assess_quality(np.full_like(sharp, 255))['exposure'], 'OVEREXPOSED')
+
+    def test_quality_uses_original_before_blurred_background_and_preserves_subject(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            rng = np.random.default_rng(42)
+            pixels = rng.integers(30, 220, (800, 400, 3), dtype=np.uint8)
+            source = root / 'portrait.png'
+            cv2.imwrite(str(source), pixels)
+            a = prepare_photo(source, root / 'letterbox.png', 10_000_000)
+            b = prepare_photo(source, root / 'filled.png', 10_000_000, fit='blurred_background')
+            self.assertEqual(a['quality'], b['quality'])
+            self.assertEqual(b['fit'], 'blurred_background')
+            filled, letterbox = cv2.imread(str(root / 'filled.png')), cv2.imread(str(root / 'letterbox.png'))
+            self.assertGreater(float(filled[:, :100].mean()), 20)
+            np.testing.assert_array_equal(filled[:, 460:820], letterbox[:, 460:820])
+
+    def test_iphone_mpo_jpeg_uses_primary_photo(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, output = root / 'iphone.jpg', root / 'prepared.png'
+            primary = Image.new('RGB', (80, 40), 'red')
+            primary.save(source, format='MPO', save_all=True,
+                         append_images=[Image.new('RGB', (80, 40), 'blue')])
+            with Image.open(source) as image:
+                self.assertEqual((image.format, image.n_frames), ('MPO', 2))
+            info = prepare_photo(source, output, 1_000_000)
+            self.assertEqual((info['original_width'], info['original_height']), (80, 40))
+            pixels = cv2.imread(str(output))
+            self.assertGreater(int(pixels[360, 640, 2]), 240)
+            self.assertLess(int(pixels[360, 640, 0]), 10)
+
+    def test_cinematic_crop_fills_frame_and_scores_uncropped_original(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'portrait.png'
+            image = Image.new('RGB', (400, 800), 'red')
+            image.paste('green', (0, 288, 400, 512))
+            image.save(source)
+            cropped = prepare_photo(source, root / 'crop.png', 1_000_000, fit='cinematic_crop')
+            full = prepare_photo(source, root / 'full.png', 1_000_000)
+            self.assertEqual(cropped['quality'], full['quality'])
+            self.assertEqual(cropped['visual_signature'], full['visual_signature'])
+            pixels = cv2.imread(str(root / 'crop.png'))
+            self.assertEqual(pixels.shape, (720, 1280, 3))
+            # 중앙의 초록 영역이 화면 양끝까지 차고 배경/검은 여백은 없어야 한다.
+            self.assertGreater(float(pixels[360, :, 1].min()), 120)
+            self.assertLess(float(pixels[360, :, 2].max()), 5)
+
     def test_valid_png_and_webp(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

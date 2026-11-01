@@ -24,10 +24,16 @@ def object_info():
     encoder = "umt5_xxl_fp8_e4m3fn_scaled.safetensors"
     models = ["wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors", "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors"]
     codec = dynamic([{"key": "h264", "inputs": {"optional": {"encoding": dynamic([{"key": "auto", "inputs": {}}])}}}])
-    return {
+    info = {
         "LoadImage": node({"image": combo("uploaded.png")}),
         "CLIPLoader": node({"clip_name": combo(encoder), "type": combo("wan")}, {"device": combo("cpu", "default")}),
         "UNETLoader": node({"unet_name": [models], "weight_dtype": combo("default", "fp8_e4m3fn")}),
+        "LoraLoaderModelOnly": node({
+            "model": ["MODEL"],
+            "lora_name": combo('wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors',
+                               'wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors'),
+            "strength_model": number('FLOAT', -100, 100),
+        }),
         "VAELoader": node({"vae_name": combo("wan_2.1_vae.safetensors")}),
         "CLIPTextEncode": node({"clip": ["CLIP"], "text": ["STRING"]}),
         "ModelSamplingSD3": node({"model": ["MODEL"], "shift": number("FLOAT", 0, 100)}),
@@ -45,10 +51,31 @@ def object_info():
             "return_with_leftover_noise": combo("enable", "disable"),
         }),
         "VAEDecode": node({"samples": ["LATENT"], "vae": ["VAE"]}),
-        "CreateVideo": node({"images": ["IMAGE"], "fps": number("FLOAT", 1, 120)}),
+        "CreateVideo": node({"images": ["IMAGE"], "fps": number("FLOAT", 1, 120)}, {'audio':['AUDIO']}),
         "SaveVideo": node({"video": ["VIDEO"], "filename_prefix": ["STRING"],
                            "format": dynamic([{"key": "mp4", "inputs": {"required": {"codec": codec}}}])}, output=True),
     }
+    checkpoint='ltx-2.3-22b-distilled-fp8.safetensors'
+    info.update({
+        'CheckpointLoaderSimple':node({'ckpt_name':combo(checkpoint)}),
+        'LTXAVTextEncoderLoader':node({'text_encoder':combo('gemma_3_12B_it_fp8_scaled.safetensors'),'ckpt_name':combo(checkpoint),'device':combo('default','cpu')}),
+        'LTXVAudioVAELoader':node({'ckpt_name':combo(checkpoint)}),
+        'LTXVConditioning':node({'positive':['CONDITIONING'],'negative':['CONDITIONING'],'frame_rate':number('FLOAT',0,1000)}),
+        'EmptyLTXVLatentVideo':node({'width':number('INT',64,16384),'height':number('INT',64,16384),'length':number('INT',1,16384),'batch_size':number('INT',1,4096)}),
+        'LTXVAddGuide':node({'positive':['CONDITIONING'],'negative':['CONDITIONING'],'vae':['VAE'],'latent':['LATENT'],'image':['IMAGE'],'frame_idx':number('INT',-9999,9999),'strength':number('FLOAT',0,10)}),
+        'LTXVEmptyLatentAudio':node({'frames_number':number('INT',1,1000),'frame_rate':number('FLOAT',1,1000),'batch_size':number('INT',1,4096),'audio_vae':['VAE']}),
+        'LTXVConcatAVLatent':node({'video_latent':['LATENT'],'audio_latent':['LATENT']}),
+        'LTXVSeparateAVLatent':node({'av_latent':['LATENT']}),
+        'LTXVCropGuides':node({'positive':['CONDITIONING'],'negative':['CONDITIONING'],'latent':['LATENT']}),
+        'CFGGuider':node({'model':['MODEL'],'positive':['CONDITIONING'],'negative':['CONDITIONING'],'cfg':number('FLOAT',0,100)}),
+        'RandomNoise':node({'noise_seed':number('INT',0,2**64-1)}),
+        'SamplerEulerAncestral':node({'eta':number('FLOAT',0,100),'s_noise':number('FLOAT',0,100)}),
+        'ManualSigmas':node({'sigmas':['STRING']}),
+        'SamplerCustomAdvanced':node({'noise':['NOISE'],'guider':['GUIDER'],'sampler':['SAMPLER'],'sigmas':['SIGMAS'],'latent_image':['LATENT']}),
+        'VAEDecodeTiled':node({'samples':['LATENT'],'vae':['VAE'],'tile_size':number('INT',64,4096),'overlap':number('INT',0,4096),'temporal_size':number('INT',8,4096),'temporal_overlap':number('INT',4,4096)}),
+        'LTXVAudioVAEDecode':node({'samples':['LATENT'],'audio_vae':['VAE']}),
+    })
+    return info
 
 
 class MockComfyUI:
@@ -58,15 +85,21 @@ class MockComfyUI:
         self._videos = {}
 
     def _video(self, graph):
-        frames, fps = graph["81"]["inputs"]["length"], graph["86"]["inputs"]["fps"]
-        key = (frames, fps)
+        ltx = graph.get('6',{}).get('class_type')=='EmptyLTXVLatentVideo'
+        if ltx:
+            video=graph['6']['inputs'];frames,fps=video['length'],graph['22']['inputs']['fps'];size=f"{video['width']}x{video['height']}"
+        else:
+            frames, fps = graph["81"]["inputs"]["length"], graph["86"]["inputs"]["fps"]
+            size='1280x720'
+        key = (frames, fps, size, ltx)
         if key not in self._videos:
             with tempfile.TemporaryDirectory() as directory:
                 path = Path(directory) / "synthetic.mp4"
                 subprocess.run([
                     self.ffmpeg_bin, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-                    "-f", "lavfi", "-i", f"testsrc2=size=1280x720:rate={fps}",
-                    "-frames:v", str(frames), "-an", "-c:v", "libx264", "-preset", "ultrafast",
+                    "-f", "lavfi", "-i", f"testsrc2=size={size}:rate={fps}",
+                    *(['-f','lavfi','-i','sine=frequency=440:sample_rate=44100','-c:a','aac','-shortest'] if ltx else ['-an']),
+                    "-frames:v", str(frames), "-c:v", "libx264", "-preset", "ultrafast",
                     "-crf", "32", "-pix_fmt", "yuv420p", str(path),
                 ], check=True, capture_output=True, timeout=120)
                 self._videos[key] = path.read_bytes()
@@ -95,10 +128,16 @@ class MockComfyUI:
             body = json.loads(request.content)
             assert set(body) == {"prompt", "client_id"}
             graph = body["prompt"]
-            assert graph["81"]["inputs"]["start_image"] == ["80", 0]
-            assert graph["81"]["inputs"]["end_image"] == ["89", 0]
-            for node in ("80", "89"):
-                assert graph[node]["inputs"]["image"].startswith("server-assigned/renamed-")
+            if graph.get('6',{}).get('class_type')=='EmptyLTXVLatentVideo':
+                assert sum(n['class_type']=='SamplerCustomAdvanced' for n in graph.values())==1
+                assert graph['20']['inputs']['samples']==['19',2] # Remove appended guides before decoding.
+                for n in graph.values():
+                    if n['class_type']=='LoadImage':assert n['inputs']['image'].startswith('server-assigned/renamed-')
+            else:
+                assert graph["81"]["inputs"]["start_image"] == ["80", 0]
+                assert graph["81"]["inputs"]["end_image"] == ["89", 0]
+                for node in ("80", "89"):
+                    assert graph[node]["inputs"]["image"].startswith("server-assigned/renamed-")
             prompt_id = f"mock-{len(self.prompts)}"
             self.prompts[prompt_id] = graph
             if self.failure == "lost_submission":

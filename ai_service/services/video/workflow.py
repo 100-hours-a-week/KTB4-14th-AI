@@ -8,6 +8,14 @@ from ai_service.services.video.errors import VideoError
 WORKFLOWS = Path(__file__).with_name("workflows")
 
 
+def _combo_choices(spec):
+    if isinstance(spec[0], list):
+        return spec[0]
+    if spec[0] == 'COMBO' and len(spec) > 1:
+        return spec[1].get('options', [])
+    return None
+
+
 def build_workflow(settings: VideoSettings, *, start: str, end: str, frames: int,
                    fps: float, prompt: str, seed: int, prefix: str) -> dict:
     graph = json.loads((WORKFLOWS / "wan2_2_flf2v.api.json").read_text())
@@ -22,6 +30,20 @@ def build_workflow(settings: VideoSettings, *, start: str, end: str, frames: int
     graph["72"]["inputs"].update(clip_name=settings.text_encoder, device=settings.text_encoder_device)
     graph["79"]["inputs"]["vae_name"] = settings.vae
     graph["84"]["inputs"]["noise_seed"] = seed
+    if settings.generation_profile == 'fast':
+        # 고정한 공식 템플릿의 LightX2V 분기: 각 전문가 LoRA 1.0, shift 5, CFG 1, 2+2단계.
+        graph['91'] = {'class_type': 'LoraLoaderModelOnly', 'inputs': {
+            'model': ['76', 0], 'lora_name': settings.high_lora, 'strength_model': 1.0,
+        }}
+        graph['92'] = {'class_type': 'LoraLoaderModelOnly', 'inputs': {
+            'model': ['77', 0], 'lora_name': settings.low_lora, 'strength_model': 1.0,
+        }}
+        for sampling, lora in (('73', '91'), ('74', '92')):
+            graph[sampling]['inputs'].update(model=[lora, 0], shift=5.0)
+        for sampler in ('84', '87'):
+            graph[sampler]['inputs'].update(steps=4, cfg=1.0)
+        graph['84']['inputs']['end_at_step'] = 2
+        graph['87']['inputs']['start_at_step'] = 2
     return graph
 
 
@@ -38,6 +60,26 @@ def _expand_inputs(schema: dict, values: dict, prefix="") -> dict:
                 if selected:
                     expanded.update(_expand_inputs(selected["inputs"], values, key + "."))
     return expanded
+
+
+def model_availability(graph: dict, object_info: dict) -> list[dict]:
+    """설정된 모델·LoRA가 서버 목록에 있는지 확인한다. 서버 경로·응답 원문은 반환하지 않는다."""
+    fields = {'CLIPLoader': 'clip_name', 'UNETLoader': 'unet_name', 'VAELoader': 'vae_name',
+              'LoraLoaderModelOnly': 'lora_name', 'CheckpointLoaderSimple':'ckpt_name',
+              'LTXVAudioVAELoader':'ckpt_name', 'LTXAVTextEncoderLoader':'text_encoder'}
+    models = []
+    for node in graph.values():
+        kind = node['class_type']
+        field = fields.get(kind)
+        if field is None:
+            continue
+        spec = object_info.get(kind, {}).get('input', {}).get('required', {}).get(field, [[]])
+        choices = (_combo_choices(spec) or []) if isinstance(spec, list) and spec else []
+        value = node['inputs'][field]
+        models.append({'node': kind, 'field': field,
+                       'model': Path(value.replace('\\', '/')).name,
+                       'available': value in choices, 'available_count': len(choices)})
+    return models
 
 
 def validate_workflow(graph: dict, object_info: dict):
@@ -60,6 +102,8 @@ def validate_workflow(graph: dict, object_info: dict):
             choices = spec[0]
             if choices == "COMFY_DYNAMICCOMBO_V3":
                 choices = [o["key"] for o in spec[1]["options"]]
+            elif choices == 'COMBO':
+                choices = _combo_choices(spec)
             # 모델 목록과 달리 입력 사진은 업로드한 뒤에만 서버 목록에 나타난다.
             if isinstance(choices, list) and not (kind == "LoadImage" and key == "image") and value not in choices:
                 raise VideoError("comfyui_value_unavailable", node=kind, field=key)

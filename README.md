@@ -1,12 +1,33 @@
 # AUDIGO AI
 
-일정 생성 · 음악 추천 · 동행자 매칭 · 큐 작업을 기능별로 관리하는 FastAPI 서비스입니다. 여행 사진 기반 Wan2.2 영상 생성은 독립 Python 서비스와 검증 CLI로 제공합니다.
+일정 생성 · 음악 추천 · 동행자 매칭 · 큐 작업을 기능별로 관리하는 FastAPI 서비스입니다. 여행 사진 기반 AI 영상 생성은 독립 Python 서비스와 검증 CLI로 제공합니다.
 
 [프로젝트 구조와 수정할 파일 찾기](docs/architecture.md) · [백엔드 매칭 계약](docs/matching/backend-contract.md) · [개발 DB 평가](docs/matching/mysql.md) · [큐 작업](docs/sqs/queue.md)
 
-## 여행 사진 → Wan2.2 AI 영상
 
-사진의 시작·끝 프레임을 **Wan2.2-I2V-A14B FLF2V**에 넣어 중간 프레임과 움직임을 생성하고, 여러 AI 클립을 FFmpeg로 연결합니다. 최종 길이는 요청한 **10~180초**, 1280×720·16:9·H.264 MP4·최대 500MB입니다. `smoke`는 사진 2장으로 1개 클립을 검증하는 별도 명령이며 기본 5초입니다.
+## API
+
+| 구분 | Method | 경로 | 설명 | 상태 |
+|---|---|---|---|---|
+| 공통 | GET | `/health` | 서버 상태 확인 | 완료 |
+| 실제 | POST | `/internal/ai/itineraries/generate` | 일정 생성 | 완료 |
+| 실제 | POST | `/api/ai/v1/itinerary-jobs/stream` | 일정 생성 | 완료 |
+| 체크리스트 | POST | `/api/ai/v1/checklists` | 여행가기전 체크리스트 생성 (JSON) | 구현 |
+
+
+## 여행 사진 → AI 여행 재방문 영상
+
+[자동 선택·검수·재개와 한계](docs/video/diverse-film.md), [품질 목표·실측 비교·동시 사용자 처리 설계](docs/video/quality-and-capacity.md)를 참고하세요.
+
+현재 추억영상 기본 경로는 **OpenCV 입력 검사 → 전체 사진의 피사체·장면 분석 → 반복 없는 장면 선택 → 장면별 FLF 생성 → 자동 구간 검수 → 정확한 길이로 편집**입니다. 30초에는 서로 다른 사용 가능한 기억이 충분하면 최대 15개 장면을 선택합니다. 10개·5개의 서로 다른 장면만 있으면 그 수에 맞추며, 같은 소스를 반복해 길이를 채우지 않습니다.
+
+`python -m scripts.video.run memory --input-dir /actual/photos --workspace artifacts/video/memory`로 실행합니다. 기본 백엔드는 `ltx23_film`이며 `--preview-only`는 GPU 생성 없이 사진 분석·구성만 저장합니다. 기존 단일 생성은 `--backend ltx23`, Wan 경로는 `--backend wan_segments`로 명시합니다.
+
+일반 입력을 처리하는 실행기는 `ai_service/services/video/film.py`입니다. 사진 인덱스나 편집 시작 구간을 운영자가 지정하지 않습니다. OpenCV 지표와 참조 사진 기반 영상 모델 검수를 모두 통과한 구간만 사용하며, 실패 시 제한된 재생성·예비 장면 교체를 수행합니다. 검수 서비스 장애나 재시도 한도 소진 시 실패를 기록합니다. 이 검사는 상업적 품질을 보증하는 인증이 아닙니다.
+
+실행 환경에는 영상 모델과 ACE 음악 모델을 갖춘 ComfyUI, FFmpeg, 한글 폰트, OpenAI 키가 필요합니다. 음악 파일은 `--music-file`로 지정할 수 있습니다. 새 경로의 자동 작곡은 음질 검사에 실패할 수 있으며, 현재 검증 실행에서는 기존 검증 음원을 지정했습니다. HTTP 영상 접수 API는 아직 별도 계약이 없으며 Python 서비스/CLI 진입점을 제공합니다.
+
+별도 기존 `generate`/`smoke` 명령은 **Wan2.2-I2V-A14B FLF2V**를 사용합니다. 이 분할 경로의 최종 길이는 **10~180초**이며 `smoke`는 사진 2장으로 기본 5초를 검증합니다. 기본 `memory`의 장면별 자동 생성·검수 경로와 구분합니다.
 
 기존 HTTP·SQS 계약은 유지했습니다. 현재 영상 백엔드 API 계약이 없어 HTTP 경로나 SQS 메시지를 새로 정의하지 않았습니다. [설계·Python 연동·공식 노드 근거·라우팅·측정 방식](docs/video/pipeline.md), [실행한 테스트와 측정 기록](docs/video/validation.md)을 참고하세요. GPU가 없는 환경에서는 Mock API와 실제 FFmpeg만 실행하며, **Mock 성공은 실제 AI 생성 성공이 아닙니다.**
 
@@ -73,9 +94,54 @@ ln -s /workspace/wan-models/split_files/vae/wan_2.1_vae.safetensors /workspace/C
 ln -s /workspace/wan-models/split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors /workspace/ComfyUI/models/text_encoders/
 ```
 
-이미 해당 파일이 있으면 중복 다운로드/링크를 만들 필요가 없습니다. 파일은 디렉터리별로 ComfyUI 모델 목록에 표시되어야 합니다. Lightning LoRA나 외부 커스텀 노드는 필요하지 않습니다. 공식 템플릿의 FP8 scaled 기본 20단계 분기를 사용하며 텍스트 인코더는 기본 CPU입니다. 설치 후 ComfyUI를 재시작해 모델 목록을 새로 불러오세요. 템플릿이 이미 서비스를 실행한다면 두 번째 ComfyUI를 띄우지 않습니다. 수동 실행 환경이라면 **ComfyUI의 기존 Python 환경**에서 `python main.py --listen 0.0.0.0 --port 8188`로 실행합니다.
+이미 해당 파일이 있으면 중복 다운로드/링크를 만들 필요가 없습니다. 파일은 디렉터리별로 ComfyUI 모델 목록에 표시되어야 합니다. 기본 `standard`는 공식 템플릿의 FP8 scaled 20단계 분기이며 LoRA 없이 실행합니다. 텍스트 인코더는 기본 CPU입니다. 설치 후 ComfyUI를 재시작해 모델 목록을 새로 불러오세요. 템플릿이 이미 서비스를 실행한다면 두 번째 ComfyUI를 띄우지 않습니다. 수동 실행 환경이라면 **ComfyUI의 기존 Python 환경**에서 `python main.py --listen 0.0.0.0 --port 8188`로 실행합니다.
+
+`check`에서 `comfyui_value_unavailable`이 나오면 `detail.node`·`detail.field`와 `detail.models`를 확인하세요. `/system_stats`에서 GPU가 보여도 모델이 준비됐다는 뜻은 아닙니다. `models[].available=false`이면 위 파일을 **RunPod의 실제 ComfyUI 설치 경로**에 내려받거나 연결한 뒤 ComfyUI를 재시작하세요. `CLIPLoader`와 `UNETLoader` 목록이 비어 있다면 해당 서버에서 모델을 찾지 못한 상태입니다. 사진 업로드나 GPU 추론 전에 중단하므로 모델 준비 후 `check`를 다시 실행합니다.
+
+iPhone의 일부 `.jpg`는 보조 사진을 포함한 MPO로 인식됩니다. 전처리는 첫 번째 주 사진을 사용하고 EXIF 방향을 보정하므로 별도의 `_clean.jpg` 변환 없이 원본을 전달할 수 있습니다.
+
+### 사진 두 장·5초 영상의 고속 생성
+
+`--profile fast`는 같은 공식 템플릿의 LightX2V 분기를 사용합니다. 전문가별 LoRA 두 개, CFG 1, shift 5, 총 4단계(2+2)로 생성하며 사진 두 장의 첫·마지막 프레임 조건과 1280×720·81프레임을 유지합니다. 20단계 결과와 질감·움직임이 달라질 수 있습니다. **5분 이내는 실제 GPU에서 확인해야 하는 목표이며 보장된 소요시간이 아닙니다.**
+
+RunPod의 실행 중인 ComfyUI 폴더에서 LoRA를 준비합니다. 현재 Pod의 실제 경로는 `/workspace/runpod-slim/ComfyUI`로 확인했습니다. 다른 Pod에서는 설치 위치를 먼저 확인하세요.
+
+```bash
+cd /workspace/runpod-slim/ComfyUI
+mkdir -p models/loras
+uvx --from huggingface-hub hf download Comfy-Org/Wan_2.2_ComfyUI_Repackaged \
+  split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors \
+  split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors \
+  --revision ee6f4a40737a995bf5818954cfce6d59443b0f04 --local-dir /workspace/wan-models
+ln -s /workspace/wan-models/split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors models/loras/
+ln -s /workspace/wan-models/split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors models/loras/
+```
+
+이미 같은 파일이 준비되어 있으면 다시 설치하지 않습니다. 로컬 프로젝트에서 확인 후 실행합니다.
+
+```bash
+uv run --frozen --extra video python -m scripts.video.run check --profile fast
+uv run --frozen --extra video python -m scripts.video.run smoke --profile fast \
+  --workspace artifacts/video/fast \
+  --photos artifacts/video/input/start.jpg artifacts/video/input/end.jpg --seed 42
+```
+
+`report.json`의 `generation_profile`, `total_seconds`, `latency_target_seconds=300`, `latency_target_met`로 목표 달성을 확인합니다. 실제 생성·다운로드·최종 인코딩까지 포함하며 모델 설치 시간은 제외합니다. 대기 중인 다른 작업이 있으면 대기 시간도 포함됩니다. Mock 실행의 `latency_target_met`는 null이며 실제 GPU 성능을 뜻하지 않습니다. 실제 결과는 [고속 생성 검증 기록](docs/video/fast-validation.md)에 기록합니다.
 
 ### 환경변수 및 동적 Pod 라우팅
+
+추억영상의 사진 흐림·노출 점수, 밝은 배경음악 자동/직접 선택, 추억 연출 스타일,
+기존 클립의 음악 교체는 [추억영상 편집·음악 선택](docs/video/memory-editing.md)을 참고하세요.
+
+요청한 First–Last Frame AI 생성은 `--story-mode TRANSITION`입니다(기본값).
+서로 다른 두 사진을 `WanFirstLastFrameToVideo`의 `start_image`·`end_image`로 전달합니다.
+사진 편집 시간과 AI 생성 시간을 구분해서 확인해야 합니다.
+
+별도로 원본 사진을 줌·이동·컷으로 편집하고 음악을 넣으려면 `--story-mode PHOTO_MOTION`을 사용합니다.
+GPU를 호출하지 않는 실제 편집 경로이며 두 장·5초를 로컬에서 1.933초에 검증했습니다.
+새 L40S의 AI `MONTAGE` 검증은 원본에 없는 인물 생성으로 미통과했고 GPU를 중지했습니다.
+기존 184.206초 AI `TRANSITION` 측정과 사진 편집 속도는 별개입니다.
+기본 음악은 자체 합성한 샘플이며 실제 사용자 음원 파일도 받을 수 있습니다.
 
 프로젝트 `.env` 또는 프로세스 환경변수를 읽고 프로세스 환경을 우선합니다. 실제 `.env`는 수정하거나 커밋하지 않습니다. `.env.example`에 영상용 항목을 추가했습니다.
 
@@ -132,7 +198,9 @@ uv run --frozen --extra video python -m scripts.video.run summarize
 
 `report.json`은 단계/전체 소요·실패 사유·출력 검증·Pod ID·prompt ID·가능한 경우 provider 실행 시간을 기록합니다. live 실행의 관측 예약 구간 × $1.11/h를 추정하며 **실제 청구 GPU 시간·청구액은 미측정 null**입니다. 설치·idle·취소 후 남은 작업·보관비까지 RunPod 청구 내역으로 대조해야 합니다. Mock와 live 측정은 summary에서 분리합니다.
 
-총 $269 / 500편은 영상당 $0.538, 참고 단가에서 **편당 총 예약 시간 약 29.08분**에 해당합니다. 재생성·설치·대기 비용까지 포함하면 여유가 더 줄어듭니다. **11월 17일까지 500편 제작 가능 여부는 아직 검증되지 않았습니다.** 모델 가중치·사진·영상·작업 기록은 Git에 넣지 않습니다.
+총예산 **32만원 / 500편 = 편당 총비용 640원**입니다. 예비비 20%를 남기면 편당 GPU 예산은 512원입니다.
+계획 환산율 1달러=1,500원, 참고 단가 $1.11/h 기준 총 GPU 시간 약 18.45분/편이며, 실제 GPU 단가와 준비·대기·실패를 모두 반영해야 합니다.
+이 환산율은 실시간 시세가 아닌 계획 가정입니다. **11월 17일까지 500편 제작 가능 여부는 아직 검증되지 않았습니다.** 모델 가중치·사진·영상·작업 기록은 Git에 넣지 않습니다.
 
 
 ## 진행중인 항목
@@ -225,6 +293,10 @@ INFO:     Uvicorn running on http://127.0.0.1:8000
 ```
 
 ## 현재 요청과 검증
+
+### V3 여행 체크리스트 생성
+
+`POST /api/ai/v1/checklists`에 `travel_plan_id`와 `trip_context`(여행지·시작일·종료일·인원·테마)를 전달하면 준비 체크리스트를 동기로 반환합니다. 서비스 Bearer 토큰과 OpenAI 키가 필요하며, DB 저장은 백엔드가 담당합니다. 두 상태는 초기 `false`, 정렬 순서는 1부터 서버가 부여합니다. [호출 예시·검증 조건·오류 계약](docs/checklist/api.md)을 참고하세요. `/docs`의 V3에서도 실행할 수 있습니다.
 
 ### V2 동행자 후보 추천 명세
 

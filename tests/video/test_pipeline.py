@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import httpx
 
-from ai_service.schemas.video import ClipRequest, VideoRequest
+from ai_service.schemas.video import ClipRequest, VideoRequest, MusicSelection
 from ai_service.services.video.config import VideoSettings
 from ai_service.services.video.errors import VideoError
 from scripts.video.mock_comfyui import MockComfyUI
@@ -43,7 +43,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         http = httpx.AsyncClient(transport=httpx.MockTransport(mock.handle))
         self.addAsyncCleanup(http.aclose)
         pipeline = VideoPipeline(http, settings or self.settings, execution_mode="mock")
-        request = request or VideoRequest(photos=self.photos, duration_seconds=10)
+        request = request or VideoRequest(photos=self.photos, duration_seconds=10, story_mode='TRANSITION')
         return await pipeline.generate(request), mock
 
     async def test_three_photos_two_generated_requests_and_real_ffmpeg_10s_mp4(self):
@@ -54,6 +54,8 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["media"]["duration_seconds"], 10)
         self.assertEqual(result["media"]["codec"], "h264")
         self.assertEqual(result["media"]["pixel_format"], "yuv420p")
+        self.assertEqual((result['media']['audio_streams'], result['media']['audio_codec']), (1, 'aac'))
+        self.assertEqual(result['music']['source'], 'BUILTIN_SYNTHESIZED')
         self.assertEqual((result["media"]["width"], result["media"]["height"]), (1280, 720))
         self.assertLess(result["media"]["size_bytes"], 500_000_000)
         self.assertIsNone(result["estimated_request_window_cost_usd"])
@@ -71,13 +73,90 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(summary["comparisons"][0]["estimated_cost_per_completed_video_including_failures"])
 
     async def test_two_photos_single_clip_smoke_and_arbitrary_final_duration(self):
-        smoke, _ = await self.run_job(ClipRequest(photos=self.photos[:2]))
+        smoke, _ = await self.run_job(ClipRequest(photos=self.photos[:2], story_mode='TRANSITION'))
         self.assertEqual(smoke["test_kind"], "single_clip_smoke")
         self.assertEqual(len(smoke["clips"]), 1)
-        final, mock = await self.run_job(VideoRequest(photos=self.photos[:2], duration_seconds=11))
+        final, mock = await self.run_job(VideoRequest(photos=self.photos[:2], duration_seconds=11, story_mode='TRANSITION'))
         self.assertEqual(len(mock.prompts), 3)
         self.assertAlmostEqual(final["media"]["duration_seconds"], 11, places=2)
         self.assertEqual([c["kind"] for c in final["clips"]], ["transition", "motion_hold", "motion_hold"])
+
+    async def test_fast_profile_records_target_without_claiming_mock_speed_as_gpu_measurement(self):
+        result, mock = await self.run_job(ClipRequest(photos=self.photos[:2], story_mode='MONTAGE'),
+                                        settings=replace(self.settings, generation_profile='fast'))
+        self.assertEqual(result['generation_profile'], 'fast')
+        self.assertEqual(result['latency_target_seconds'], 300)
+        self.assertIsNone(result['latency_target_met'])
+        self.assertEqual((result['media']['width'], result['media']['height']), (1280, 720))
+        self.assertEqual(result['media']['duration_seconds'], 5)
+        # Mock 서버 내부 구조와 별개로 저장된 실제 요청 그래프도 확인한다.
+        workflow = json.loads((Path(result['output_file']).parent / 'workflow-0000.json').read_text())
+        self.assertEqual(workflow['84']['inputs']['steps'], 4)
+        self.assertEqual(workflow['87']['inputs']['cfg'], 1)
+        self.assertEqual(result['story_mode'], 'MONTAGE')
+        self.assertEqual([(c['start_index'], c['end_index']) for c in result['clips']], [(0, 0), (1, 1)])
+
+    async def test_user_audio_is_used_and_none_is_silent(self):
+        from ai_service.services.video.music import render_preset
+        music_file = self.root / 'chosen.wav'
+        render_preset(music_file, 'BRIGHT', 2)
+        result, _ = await self.run_job(ClipRequest(photos=self.photos[:2],
+            music=MusicSelection(file=music_file, start_seconds=0.5)))
+        self.assertEqual(result['music']['source'], 'USER_FILE')
+        self.assertEqual(result['media']['audio_channels'], 2)
+        from ai_service.services.video.media import Media
+        decoded = await Media(self.settings).run([
+            self.settings.ffmpeg_bin, '-v', 'error', '-i', result['output_file'], '-vn',
+            '-f', 'f32le', '-ac', '1', '-ar', '8000', 'pipe:1',
+        ])
+        import numpy as np
+        samples = np.frombuffer(decoded, dtype='<f4')
+        self.assertGreater(float(np.sqrt(np.mean(samples[3*8000:4*8000] ** 2))), 0.001)
+        silent, _ = await self.run_job(ClipRequest(photos=self.photos[:2], music=MusicSelection(preset='NONE')))
+        self.assertEqual(silent['media']['audio_streams'], 0)
+
+    async def test_photo_motion_renders_real_photos_and_audio_without_network(self):
+        from PIL import ImageDraw
+        from ai_service.services.video.media import Media
+        import numpy as np
+        with Image.open(self.photos[0]) as source:
+            image = source.copy()
+        ImageDraw.Draw(image).rectangle((20, 0, 28, 63), fill='white')
+        image.save(self.photos[0])
+        result, mock = await self.run_job(ClipRequest(photos=self.photos[:2], story_mode='PHOTO_MOTION'))
+        self.assertEqual(result['status'], 'completed')
+        self.assertEqual(result['execution_mode'], 'photo_motion')
+        self.assertFalse(result['gpu_inference_executed'])
+        self.assertIsNone(result['pod_id'])
+        self.assertEqual(mock.calls, [])
+        self.assertTrue(result['latency_target_met'])
+        self.assertEqual(result['media']['duration_seconds'], 5)
+        self.assertEqual(result['media']['audio_channels'], 2)
+        self.assertEqual(len(result['clips']), 2)
+        # 실제 프레임의 이동과 두 번째 원본으로의 컷을 확인한다.
+        frames = []
+        for moment in (0.3, 1.9, 4):
+            raw = await Media(self.settings).run([
+                self.settings.ffmpeg_bin, '-v', 'error', '-ss', str(moment), '-i', result['output_file'],
+                '-frames:v', '1', '-vf', 'scale=160:90', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'])
+            frames.append(np.frombuffer(raw, dtype=np.uint8).reshape(90, 160, 3))
+        self.assertGreater(float(np.abs(frames[0].astype(float)-frames[1]).mean()), 0.1)
+        self.assertGreater(float(frames[2][45, 80, 2]), 150)
+        self.assertLess(float(frames[2][45, 80, 0]), 40)
+        saved = json.loads((Path(result['output_file']).parent / 'report.json').read_text())
+        self.assertEqual(saved, result)
+
+    async def test_quality_reject_and_invalid_music_fail_before_gpu_submission(self):
+        for request, expected in [
+            (ClipRequest(photos=self.photos[:2], quality_policy='REJECT'), 'photo_quality_rejected'),
+            (ClipRequest(photos=self.photos[:2], music=MusicSelection(file=self.root/'missing.mp3')), 'music_missing_or_too_large'),
+        ]:
+            mock = MockComfyUI()
+            async with httpx.AsyncClient(transport=httpx.MockTransport(mock.handle)) as http:
+                with self.assertRaises(VideoError) as error:
+                    await VideoPipeline(http, self.settings, execution_mode='mock').generate(request)
+            self.assertEqual(error.exception.reason, expected)
+            self.assertEqual(mock.calls, [])
 
     async def test_errors_are_recorded_without_final_output_or_secret_text(self):
         for failure, reason in (("missing_model", "comfyui_value_unavailable"),
