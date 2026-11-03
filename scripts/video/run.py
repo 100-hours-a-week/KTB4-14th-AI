@@ -53,6 +53,11 @@ def summarize(workspace: Path) -> dict:
 
 async def execute(args):
     settings = VideoSettings.from_env()
+    if getattr(args, 'publish_to_runpod', False):
+        if args.mock or args.preview_only:
+            raise VideoError('storage_publication_requires_live_final_video')
+        from ai_service.services.video.storage import VolumeSettings
+        VolumeSettings.from_env()  # Missing keys fail before generating paid footage.
     if args.profile:
         settings = replace(settings, generation_profile=args.profile)
     if args.workspace:
@@ -108,6 +113,11 @@ async def execute(args):
             )
         from ai_service.services.video.pipeline import VideoPipeline
         result = await VideoPipeline(http, settings, execution_mode="mock" if args.mock else "live").generate(request)
+        if getattr(args, 'publish_to_runpod', False):
+            from scripts.video.storage import publish_video
+            result['storage_result'] = await publish_video(Path(result['output_file']))
+            output = Path(result['output_file'])
+            (output.parent/'storage-result.json').write_text(json.dumps(result['storage_result'], ensure_ascii=False, indent=2)+'\n')
         print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
@@ -178,6 +188,7 @@ def main():
     memory.add_argument('--profile', choices=('standard', 'fast'), default='fast')
     memory.add_argument('--mock', action='store_true', help='선별은 실제 OpenCV, GPU 결과는 합성 테스트 패턴')
     memory.add_argument('--preview-only', action='store_true', help='선별·FLF 계획만 저장, GPU 호출 없음')
+    memory.add_argument('--publish-to-runpod', action='store_true', help='완성 영상을 RunPod 볼륨에 업로드하고 읽기 검증. S3 전용 키 필요')
     memory.add_argument('--backend',choices=('ltx23','ltx23_film','wan_segments'),default='ltx23_film',help='기본: 서로 다른 장면 자동 선택·검수·편집. ltx23은 이전 단일 생성 경로')
     memory.add_argument('--max-photos', type=int, default=12, help='이전 ltx23/wan_segments 참고 사진 상한. 기본 film은 가용 장면으로 자동 결정')
     memory.add_argument('--duration',type=int,default=30,help='실제 생성할 목표 길이, 기본 30초')

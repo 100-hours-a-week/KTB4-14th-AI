@@ -17,7 +17,7 @@
 
 ## 여행 사진 → AI 여행 재방문 영상
 
-[자동 선택·검수·재개와 한계](docs/video/diverse-film.md), [품질 목표·실측 비교·동시 사용자 처리 설계](docs/video/quality-and-capacity.md)를 참고하세요.
+[자동 선택·검수·재개와 한계](docs/video/diverse-film.md), [품질 목표·실측 비교·동시 사용자 처리 설계](docs/video/quality-and-capacity.md), [RunPod 볼륨 저장·조회](docs/video/runpod-storage.md)를 참고하세요.
 
 현재 추억영상 기본 경로는 **OpenCV 입력 검사 → 전체 사진의 피사체·장면 분석 → 반복 없는 장면 선택 → 장면별 FLF 생성 → 자동 구간 검수 → 정확한 길이로 편집**입니다. 30초에는 서로 다른 사용 가능한 기억이 충분하면 최대 15개 장면을 선택합니다. 10개·5개의 서로 다른 장면만 있으면 그 수에 맞추며, 같은 소스를 반복해 길이를 채우지 않습니다.
 
