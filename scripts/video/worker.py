@@ -9,7 +9,7 @@ from pathlib import Path
 import httpx
 
 from ai_service.services.video.errors import VideoError
-from ai_service.services.video.jobs import claim, connection, recover_interrupted, set_notice, update
+from ai_service.services.video.jobs import claim, connection, failure_message, recover_interrupted, set_notice, update
 from ai_service.services.video.storage import VolumeResults, VolumeSettings
 from ai_service.services.video.config import VideoSettings
 from ai_service.schemas.video import MemoryVideoRequest, MusicSelection
@@ -232,8 +232,8 @@ async def child(job_id):
     try:
         await run_job(row)
     except Exception as exc:
-        reason = getattr(exc, 'reason', None) or str(exc) or type(exc).__name__
-        update(row['id'], 'FAILED', status='FAILED', error='VIDEO_GENERATION_FAILED', message=reason)
+        reason = getattr(exc, 'reason', None) or type(exc).__name__
+        update(row['id'], 'FAILED', status='FAILED', error=reason[:100], message=failure_message(reason))
         logging.error('Video job %s failed (%s); inspect local pipeline report', row['id'], type(exc).__name__)
         raise SystemExit(1)
 

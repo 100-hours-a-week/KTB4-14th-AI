@@ -14,6 +14,45 @@ STAGES = {
 }
 MAX_ATTEMPTS = 3
 
+# User-facing Korean explanation for a pipeline failure code: exact codes first, then the code's prefix.
+FAILURE_MESSAGES = {
+    'too_many_photos_for_duration': '사진 수에 비해 영상 길이가 짧습니다. 사진을 줄이거나 영상 길이를 늘려 다시 요청해 주세요.',
+    'insufficient_usable_photos': '영상에 쓸 수 있는 사진이 부족합니다. 흐리거나 어두운 사진 대신 선명한 사진을 더 올려 주세요.',
+    'photo_quality_rejected': '영상에 쓸 수 있는 사진이 부족합니다. 흐리거나 어두운 사진 대신 선명한 사진을 더 올려 주세요.',
+    'insufficient_usable_memory_scenes': '영상으로 만들 만한 장면을 충분히 찾지 못했습니다. 여행의 여러 순간이 담긴 사진을 더 올려 주세요.',
+    'runpod_no_ready_pod': '영상을 만드는 GPU 서버에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.',
+    'WORKER_INTERRUPTED': '작업 실행기가 반복해서 중단되어 생성을 포기했습니다. 다시 요청해 주세요.',
+    'WORKER_PROCESS_FAILED': '영상 생성 프로세스가 비정상 종료되었습니다. 다시 요청해 주세요.',
+    'CANCELLED_TEST': '배포 확인용 테스트 작업이라 GPU 실행 전에 취소했습니다.',
+}
+FAILURE_PREFIXES = [
+    ('score_', '자동 작곡한 배경음악이 품질 검사를 통과하지 못했습니다. 다시 요청하거나 음악 없이(NONE) 요청해 주세요.'),
+    ('ace_music_', '배경음악을 만드는 중 문제가 생겼습니다. 다시 요청하거나 음악 없이(NONE) 요청해 주세요.'),
+    ('music_', '배경음악 파일에 문제가 있습니다. 다른 음악을 고르거나 음악 없이 요청해 주세요.'),
+    ('photo_', '읽을 수 없거나 너무 큰 사진이 있습니다. JPEG·PNG·WebP 사진(20MB 이하)으로 다시 올려 주세요.'),
+    ('memory_film_', 'AI가 만든 장면이 품질 검사를 충분히 통과하지 못했습니다. 다른 사진을 섞어 다시 요청해 주세요.'),
+    ('memory_', '사진을 장면으로 묶는 중 문제가 생겼습니다. 다시 요청해 주세요.'),
+    ('travel_story', '여행 이야기 구성(AI 사진 분석)에 실패했습니다. 잠시 후 다시 요청해 주세요.'),
+    ('quality_', 'AI 품질 검수 단계에서 문제가 생겼습니다. 잠시 후 다시 요청해 주세요.'),
+    ('comfyui_', '영상을 만드는 GPU 서버에서 문제가 생겼습니다. 잠시 후 다시 요청해 주세요.'),
+    ('runpod_storage_', '완성 영상을 저장하는 중 문제가 생겼습니다. 다시 요청해 주세요.'),
+    ('storage_', '완성 영상을 저장하는 중 문제가 생겼습니다. 다시 요청해 주세요.'),
+    ('runpod_', '영상을 만드는 GPU 서버에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.'),
+    ('premium_', '영상 편집(자막·음악 합치기) 단계에서 문제가 생겼습니다. 다시 요청해 주세요.'),
+    ('final_video_', '완성 영상 검사에서 문제가 발견되었습니다. 다시 요청해 주세요.'),
+    ('media_', '영상 편집 프로그램 처리 중 문제가 생겼습니다. 다시 요청해 주세요.'),
+]
+UNKNOWN_FAILURE = '영상을 만드는 중 예상하지 못한 문제가 생겼습니다. 다시 요청해 주세요.'
+
+
+def failure_message(code):
+    """Korean explanation for a failure code such as 'score_quality_failed'."""
+    if not code:
+        return None
+    if code in FAILURE_MESSAGES:
+        return FAILURE_MESSAGES[code]
+    return next((message for prefix, message in FAILURE_PREFIXES if code.startswith(prefix)), UNKNOWN_FAILURE)
+
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS video_uploads (
  id uuid PRIMARY KEY, owner_id bigint NOT NULL CHECK(owner_id > 0),

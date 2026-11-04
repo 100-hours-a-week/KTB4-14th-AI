@@ -188,3 +188,20 @@ def test_status_explains_queue_and_estimate(monkeypatch):
     row.update(status='COMPLETED', stage='COMPLETED')
     done = client().get(f'/api/ai/v1/video-jobs/{uuid4()}', headers={'Authorization': 'Bearer test-secret', 'X-Owner-ID': '1'}).json()
     assert done['queue_position'] is None and done['estimate_note'] is None
+
+
+def test_failure_reason_is_shown_in_korean(monkeypatch):
+    from ai_service.services.video.jobs import UNKNOWN_FAILURE, failure_message
+    assert '배경음악' in failure_message('score_quality_failed')
+    assert '사진' in failure_message('photo_decode_failed')
+    assert failure_message('something_new') == UNKNOWN_FAILURE and failure_message(None) is None
+    monkeypatch.setattr(video_jobs, 'worker_state', lambda: 'IDLE')
+    monkeypatch.setattr(video_jobs, 'queue_position', lambda job: None)
+    headers = {'Authorization': 'Bearer test-secret', 'X-Owner-ID': '1'}
+    # Jobs failed before this change stored the raw code as the message.
+    old = {'status': 'FAILED', 'stage': 'FAILED', 'error_code': 'VIDEO_GENERATION_FAILED', 'error_message': 'score_quality_failed', 'updated_at': None}
+    monkeypatch.setattr(video_jobs, 'find_job', lambda job, owner: old)
+    assert '배경음악' in client().get(f'/api/ai/v1/video-jobs/{uuid4()}', headers=headers).json()['error_message']
+    korean = {**old, 'error_code': 'WORKER_INTERRUPTED', 'error_message': '작업 실행기가 반복해서 중단되어 생성을 포기했습니다.'}
+    monkeypatch.setattr(video_jobs, 'find_job', lambda job, owner: korean)
+    assert client().get(f'/api/ai/v1/video-jobs/{uuid4()}', headers=headers).json()['error_message'] == korean['error_message']

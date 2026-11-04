@@ -13,7 +13,7 @@ from fastapi import APIRouter, File, Header, HTTPException, Request, Response, U
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from ai_service.services.video.jobs import STAGES, connection
+from ai_service.services.video.jobs import STAGES, connection, failure_message
 from ai_service.services.video.storage import VolumeResults, VolumeSettings
 
 Owner = Annotated[int, Header(alias='X-Owner-ID', gt=0, le=9223372036854775807)]
@@ -65,6 +65,14 @@ def queue_position(job_id):
             WHERE status IN ('QUEUED','RUNNING') AND created_at < (SELECT created_at FROM video_jobs WHERE id=%s)""",
                            (job_id,)).fetchone()
     return row['ahead'] + 1
+
+
+def korean_failure(row):
+    """Jobs failed before Korean messages stored the raw code (e.g. 'score_quality_failed') as the message."""
+    message = row.get('error_message')
+    if message and not message.isascii():
+        return message
+    return failure_message(message if message and re.fullmatch(r'[A-Za-z0-9_]+', message) else row.get('error_code'))
 
 
 def worker_state():
@@ -195,7 +203,7 @@ def router(settings):
                 'queue_position': queue_position(job_id) if row['status'] == 'QUEUED' else None,
                 'worker_state': worker, 'worker_state_label': WORKER_LABELS.get(worker, worker),
                 'estimate_note': ESTIMATE_NOTE if active else None,
-                'error_code': row['error_code'], 'error_message': row.get('error_message'),
+                'error_code': row['error_code'], 'error_message': korean_failure(row),
                 'notice': row.get('notice'),
                 'created_at': row.get('created_at'), 'completed_at': row.get('completed_at'),
                 'updated_at': row['updated_at'],

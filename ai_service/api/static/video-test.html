@@ -181,7 +181,7 @@ async function follow() {
     $('stage').textContent = job.stage_label;
     render(job);
     const checked = new Date().toLocaleTimeString('ko-KR');
-    $('stageDetail').textContent = job.status === 'FAILED' ? `실패 이유: ${job.error_message || job.error_code}`
+    $('stageDetail').textContent = job.status === 'FAILED' ? `실패 이유: ${job.error_message || '알 수 없음'} (오류 코드: ${job.error_code})`
       : job.status === 'COMPLETED' ? `작업 번호 ${jobId}` : `마지막 확인 ${checked} · 5초마다 자동으로 새로 고칩니다`;
     if (job.status === 'COMPLETED') {
       const play = await call(`/api/ai/v1/video-jobs/${encodeURIComponent(jobId)}/video?response_format=json`, { headers: headers() });
