@@ -9,7 +9,7 @@ import time
 from uuid import UUID, uuid4
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, File, Header, HTTPException, Request, Response, UploadFile
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -18,6 +18,8 @@ from ai_service.services.video.storage import VolumeResults, VolumeSettings
 
 Owner = Annotated[int, Header(alias='X-Owner-ID', gt=0, le=9223372036854775807)]
 PLAYBACK_SECONDS = 300
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+MAX_BATCH_FILES = 30
 
 class JobInput(BaseModel):
     model_config = ConfigDict(extra='forbid')
@@ -52,7 +54,8 @@ def save_upload(data, owner):
     from PIL import Image, UnidentifiedImageError
     try:
         with Image.open(io.BytesIO(data)) as photo:
-            if photo.format not in {'JPEG', 'PNG', 'WEBP'} or photo.width * photo.height > 40_000_000:
+            # MPO is the JPEG variant phones save with depth or preview frames; its first frame is a normal JPEG.
+            if photo.format not in {'JPEG', 'MPO', 'PNG', 'WEBP'} or photo.width * photo.height > 40_000_000:
                 raise HTTPException(400, 'Unsupported image or image too large')
             photo.load()
     except (UnidentifiedImageError, OSError, SyntaxError, ValueError, Image.DecompressionBombError) as exc:
@@ -91,12 +94,33 @@ def router(settings):
         try:
             async with asyncio.timeout(120):
                 async for chunk in request.stream():
-                    if len(data) + len(chunk) > 20 * 1024 * 1024:
+                    if len(data) + len(chunk) > MAX_UPLOAD_BYTES:
                         raise HTTPException(413, 'Maximum image size is 20 MiB')
                     data.extend(chunk)
         except TimeoutError:
             raise HTTPException(408, 'Upload timed out') from None
         return await asyncio.to_thread(save_upload, bytes(data), x_owner_id)
+
+    @routes.post('/api/ai/v1/uploads/batch', status_code=201)
+    async def upload_batch(x_owner_id: Owner, response: Response,
+                           files: Annotated[list[UploadFile], File(description='Photos (JPEG/PNG/WebP), up to 30 per request')]):
+        """Several photos in one multipart request; each is stored independently so failed ones can be retried."""
+        if not 1 <= len(files) <= MAX_BATCH_FILES:
+            raise HTTPException(400, f'Send between 1 and {MAX_BATCH_FILES} photos per request')
+        items = []
+        for photo in files:
+            data = await photo.read(MAX_UPLOAD_BYTES + 1)
+            try:
+                if len(data) > MAX_UPLOAD_BYTES:
+                    raise HTTPException(413, 'Maximum image size is 20 MiB')
+                saved = await asyncio.to_thread(save_upload, data, x_owner_id)
+                items.append({'filename': photo.filename, 'upload_id': saved['upload_id']})
+            except HTTPException as exc:
+                items.append({'filename': photo.filename, 'error': exc.detail, 'status_code': exc.status_code})
+        upload_ids = [item['upload_id'] for item in items if 'upload_id' in item]
+        if len(upload_ids) != len(items):
+            response.status_code = 207  # Multi-Status: some photos failed; retry only those.
+        return {'upload_ids': upload_ids, 'items': items}
 
     @routes.post('/api/ai/v1/video-jobs', status_code=202)
     def create(body: JobInput, x_owner_id: Owner):

@@ -16,6 +16,7 @@ dependencies = [
   "tokenizers>=0.21,<1",
   "uvicorn[standard]==0.36.0",
   "yt-dlp==2026.8.19",
+  "python-multipart>=0.0.20,<0.1",
 ]
 
 [project.optional-dependencies]

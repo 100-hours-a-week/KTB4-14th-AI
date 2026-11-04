@@ -1,3 +1,4 @@
+import io
 from contextlib import contextmanager
 import time
 from uuid import uuid4
@@ -114,3 +115,58 @@ def test_playback_rejects_expired_or_tampered_links(monkeypatch):
     good = signed(job_id, int(time.time()) + 300)
     assert http.get(good.replace(str(job_id), str(uuid4()))).status_code == 403
     assert http.get(good[:-4] + '0000').status_code == 403
+
+
+def png_bytes():
+    from PIL import Image
+    buffer = io.BytesIO()
+    Image.new('RGB', (8, 8), (10, 20, 30)).save(buffer, 'PNG')
+    return buffer.getvalue()
+
+
+def test_batch_upload_stores_each_photo_and_reports_failures(monkeypatch):
+    saved = []
+    def fake_save(data, owner):
+        if not data.startswith(b'\x89PNG'):
+            raise video_jobs.HTTPException(400, 'Invalid image')
+        saved.append((len(data), owner))
+        return {'upload_id': f'id-{len(saved)}'}
+    monkeypatch.setattr(video_jobs, 'save_upload', fake_save)
+    headers = {'Authorization': 'Bearer test-secret', 'X-Owner-ID': '7'}
+    photo = png_bytes()
+    ok = client().post('/api/ai/v1/uploads/batch', headers=headers,
+                       files=[('files', ('a.png', photo, 'image/png')), ('files', ('b.png', photo, 'image/png'))])
+    assert ok.status_code == 201
+    assert ok.json() == {'upload_ids': ['id-1', 'id-2'], 'items': [
+        {'filename': 'a.png', 'upload_id': 'id-1'}, {'filename': 'b.png', 'upload_id': 'id-2'}]}
+    assert saved == [(len(photo), 7), (len(photo), 7)]
+    mixed = client().post('/api/ai/v1/uploads/batch', headers=headers,
+                          files=[('files', ('c.png', photo, 'image/png')), ('files', ('notes.txt', b'hello', 'text/plain'))])
+    assert mixed.status_code == 207
+    assert mixed.json()['upload_ids'] == ['id-3']
+    assert mixed.json()['items'][1] == {'filename': 'notes.txt', 'error': 'Invalid image', 'status_code': 400}
+
+
+def test_batch_upload_limits_file_count(monkeypatch):
+    monkeypatch.setattr(video_jobs, 'save_upload', lambda data, owner: {'upload_id': 'x'})
+    files = [('files', (f'{i}.png', b'x', 'image/png')) for i in range(video_jobs.MAX_BATCH_FILES + 1)]
+    response = client().post('/api/ai/v1/uploads/batch', files=files,
+                             headers={'Authorization': 'Bearer test-secret', 'X-Owner-ID': '1'})
+    assert response.status_code == 400
+
+
+def test_phone_mpo_photo_is_accepted(monkeypatch):
+    from PIL import Image
+    buffer = io.BytesIO()
+    frames = [Image.new('RGB', (16, 16), (200, 100, 50)), Image.new('RGB', (8, 8))]
+    frames[0].save(buffer, 'MPO', save_all=True, append_images=frames[1:])
+    assert Image.open(io.BytesIO(buffer.getvalue())).format == 'MPO'
+    stored = []
+    s3 = SimpleNamespace(put_object=lambda **kw: stored.append(kw['Key']), delete_object=lambda **kw: None)
+    monkeypatch.setattr(video_jobs, 'store', lambda: SimpleNamespace(settings=SimpleNamespace(volume_id='v'), client=s3))
+    @contextmanager
+    def conn():
+        yield SimpleNamespace(execute=lambda *a: SimpleNamespace(fetchone=lambda: {'n': 0}))
+    monkeypatch.setattr(video_jobs, 'connection', conn)
+    assert 'upload_id' in video_jobs.save_upload(buffer.getvalue(), 1)
+    assert stored and stored[0].startswith('uploads/1/')
