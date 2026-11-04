@@ -67,3 +67,15 @@ def test_gpu_start_failure_keeps_jobs_waiting():
 def test_autostart_is_off_by_default(monkeypatch):
     monkeypatch.delenv('VIDEO_GPU_AUTOSTART', raising=False)
     assert PowerSettings.from_env() is None
+
+
+def test_gpu_without_models_is_not_ready():
+    from ai_service.services.video.config import VideoSettings
+    from scripts.video.worker import missing_models, required_models
+    required = required_models(VideoSettings())
+    empty = {node: {'input': {'required': {field: [[], {}]}}} for node, field, _ in required}
+    assert len(missing_models(empty, required)) == len(required) == 6
+    full = {}
+    for node, field, filename in required:
+        full.setdefault(node, {'input': {'required': {field: [[], {}]}}})['input']['required'][field][0].append(filename)
+    assert missing_models(full, required) == []

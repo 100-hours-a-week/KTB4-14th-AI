@@ -85,7 +85,30 @@ async def run_job(row):
         update(job_id, 'COMPLETED', status='COMPLETED', publication=publication)
 
 
-async def gpu_ready():
+def required_models(settings):
+    """(ComfyUI loader node, input, file) for every model the default film and music path loads."""
+    from ai_service.services.video.ace_music import ace_music_downloads
+    loaders = {'diffusion_models': ('UNETLoader', 'unet_name'), 'text_encoders': ('DualCLIPLoader', 'clip_name1'),
+               'vae': ('VAELoader', 'vae_name')}
+    return [('CheckpointLoaderSimple', 'ckpt_name', settings.ltx_checkpoint),
+            ('LTXAVTextEncoderLoader', 'text_encoder', settings.ltx_text_encoder),
+            *[(*loaders[item['directory']], item['filename']) for item in ace_music_downloads('turbo')]]
+
+
+def missing_models(object_info, required):
+    """Files a loader cannot offer; object_info maps node -> {'input': {'required': {name: [[choices], ...]}}}."""
+    missing = []
+    for node, field, filename in required:
+        spec = (object_info.get(node) or {}).get('input', {}).get('required', {}).get(field)
+        choices = spec[0] if isinstance(spec, list) and spec and isinstance(spec[0], list) else []
+        if filename not in choices:
+            missing.append(filename)
+    return missing
+
+
+async def gpu_check():
+    """READY, NO_GPU (no ComfyUI Pod answers), MODELS_MISSING or GPU_BUSY. Never claims a job on a GPU that
+    lacks its models, so a freshly created empty Pod cannot fail queued jobs."""
     from ai_service.clients.runpod import EndpointResolver
     from ai_service.clients.comfyui import ComfyUI
     settings = VideoSettings.from_env()
@@ -94,10 +117,17 @@ async def gpu_ready():
             endpoint = await EndpointResolver(http, settings).resolve()
             client = ComfyUI(http, endpoint, settings)
             await client.runtime_info(require_cuda=True)
+            required = required_models(settings)
+            info = {}
+            for node in {node for node, _, _ in required}:
+                info.update(await client._json('GET', f'/object_info/{node}'))
+            if missing := missing_models(info, required):
+                logging.warning('GPU Pod is up but lacks %d model file(s): %s', len(missing), ', '.join(missing))
+                return 'MODELS_MISSING'
             queue = await client._json('GET', '/queue')
-            return not queue.get('queue_running') and not queue.get('queue_pending')
+            return 'GPU_BUSY' if queue.get('queue_running') or queue.get('queue_pending') else 'READY'
     except Exception:
-        return False
+        return 'NO_GPU'
 
 
 def heartbeat(conn, state):
@@ -127,10 +157,14 @@ async def main():
             if power:
                 power.mark_busy()
             heartbeat(lease, 'CHECKING_GPU')
-            if not await gpu_ready():
-                if power:
+            gpu = await gpu_check()
+            if gpu != 'READY':
+                if gpu == 'NO_GPU' and power:
                     await power.ensure_started()
-                heartbeat(lease, 'WAITING_FOR_GPU')
+                    heartbeat(lease, 'STARTING_GPU')
+                else:
+                    heartbeat(lease, {'NO_GPU': 'WAITING_FOR_GPU', 'MODELS_MISSING': 'GPU_MODELS_MISSING',
+                                      'GPU_BUSY': 'GPU_BUSY'}[gpu])
                 await asyncio.sleep(10)
                 continue
             row = claim(lease)

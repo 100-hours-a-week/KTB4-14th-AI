@@ -48,6 +48,9 @@ WORKER_LABELS = {
     'IDLE': '작업 실행기 대기 중',
     'CHECKING_GPU': 'GPU 연결 확인 중',
     'WAITING_FOR_GPU': 'GPU가 꺼져 있어 기다리는 중',
+    'STARTING_GPU': 'GPU를 켜는 중 (몇 분 걸릴 수 있음)',
+    'GPU_MODELS_MISSING': 'GPU는 켜졌지만 영상 모델이 없어 기다리는 중',
+    'GPU_BUSY': 'GPU가 다른 작업을 처리하는 중',
     'BUSY': '영상 생성 중',
     'OFFLINE': '작업 실행기가 응답하지 않음',
 }
