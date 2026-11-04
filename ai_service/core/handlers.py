@@ -1,4 +1,4 @@
-"""기존 JSON·큐 API 오류 응답 계약을 유지하는 예외 핸들러."""
+"""일정·음악·매칭·체크리스트 API의 오류 응답을 처리한다."""
 import logging
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -8,7 +8,25 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from ai_service.core.errors import ApiError
 from ai_service.core.diagnostics import failure, record
 from ai_service.core.diagnostic_messages import failure_description, validation_details
-from ai_service.jobs.errors import is_job_request, error_response as job_error_response
+from ai_service.schemas.common import StructuredError, StructuredErrorResponse
+
+
+def is_matching_request(request):
+    return request.url.path == '/api/ai/v1/matches/candidates'
+
+
+def is_checklist_request(request):
+    return request.url.path == '/api/ai/v1/checklists'
+
+
+def uses_structured_error(request):
+    return is_matching_request(request) or is_checklist_request(request)
+
+
+def structured_error_response(request, code, message, *, retryable=False, details=None):
+    return StructuredErrorResponse(error=StructuredError(
+        code=code, message=message, retryable=retryable, details=details or []),
+        request_id=getattr(request.state, 'request_id', 'unknown')).model_dump(mode='json')
 
 
 def request_log_context(request):
@@ -21,9 +39,11 @@ def register_exception_handlers(app: FastAPI):
     @app.exception_handler(ApiError)
     async def handle_api_error(request: Request, exc: ApiError):
         failure("request_failed", exc, http_status=exc.status_code, **request_log_context(request))
-        if is_job_request(request):
-            return JSONResponse(status_code=exc.status_code, content=job_error_response(
-                request, exc.code.upper(), exc.message,
+        if uses_structured_error(request):
+            message = ('잠시 후 다시 시도해 주세요.'
+                       if is_checklist_request(request) and exc.status_code == 503 else exc.message)
+            return JSONResponse(status_code=exc.status_code, content=structured_error_response(
+                request, exc.code.upper(), message,
                 retryable=getattr(exc, 'retryable', exc.status_code == 503),
                 details=getattr(exc, 'details', []),
             ))
@@ -46,8 +66,8 @@ def register_exception_handlers(app: FastAPI):
         record('request_invalid',level=logging.WARNING,http_status=400,code='INVALID_REQUEST',
                **failure_description('INVALID_REQUEST'), **request_log_context(request),
                errors=validation_details(errors,matching=request.url.path=='/api/ai/v1/matches/candidates'))
-        if is_job_request(request):
-            return JSONResponse(status_code=400, content=job_error_response(
+        if uses_structured_error(request):
+            return JSONResponse(status_code=400, content=structured_error_response(
                 request, 'INVALID_REQUEST', '입력값을 확인해 주세요.', details=[{
                     'field': '.'.join(map(str, error['loc'])), 'type': error['type'],
                 } for error in exc.errors()[:10]],
@@ -79,15 +99,18 @@ def register_exception_handlers(app: FastAPI):
         reason = ('service_token_missing' if exc.status_code==503 and exc.detail=='AUDIGO_API_TOKEN is not configured'
                   else 'service_token_invalid' if exc.status_code==401
                   else 'method_not_allowed' if exc.status_code==405 else None)
-        code = ({401:'UNAUTHORIZED',404:'JOB_NOT_FOUND',503:'QUEUE_UNAVAILABLE'}.get(exc.status_code,'HTTP_ERROR')
-                if is_job_request(request) else {401:'UNAUTHORIZED',404:'NOT_FOUND',503:'AI_SERVICE_UNAVAILABLE'}.get(exc.status_code,'HTTP_ERROR'))
+        code = ({401:'UNAUTHORIZED',404:'NOT_FOUND',503:'QUEUE_UNAVAILABLE'}.get(exc.status_code,'HTTP_ERROR')
+                if is_matching_request(request) else {401:'UNAUTHORIZED',404:'NOT_FOUND',503:'AI_SERVICE_UNAVAILABLE'}.get(exc.status_code,'HTTP_ERROR'))
         record('request_failed',level=logging.ERROR if exc.status_code>=500 else logging.WARNING,
                http_status=exc.status_code,code=code,reason=reason,error_type=type(exc).__name__,
                **failure_description(code,reason), **request_log_context(request))
-        if is_job_request(request):
-            return JSONResponse(status_code=exc.status_code, headers=exc.headers, content=job_error_response(
-                request, {401: 'UNAUTHORIZED', 404: 'JOB_NOT_FOUND', 503: 'QUEUE_UNAVAILABLE'}.get(exc.status_code, 'HTTP_ERROR'),
-                {401: '인증 정보를 확인해 주세요.', 404: '작업을 찾을 수 없습니다.'}.get(exc.status_code, '요청을 처리할 수 없습니다.'),
+        if uses_structured_error(request):
+            messages = {401: '인증 정보를 확인해 주세요.', 404: '요청한 API 경로가 없습니다.'}
+            if is_checklist_request(request):
+                messages[503] = '잠시 후 다시 시도해 주세요.'
+            return JSONResponse(status_code=exc.status_code, headers=exc.headers, content=structured_error_response(
+                request, code,
+                messages.get(exc.status_code, '요청을 처리할 수 없습니다.'),
                 retryable=exc.status_code == 503,
             ))
         code = {
@@ -110,10 +133,10 @@ def register_exception_handlers(app: FastAPI):
     async def handle_unexpected_error(request: Request, exc: Exception):
         # 상위 서비스 예외에는 비밀값이 있을 수 있어 유형과 요청 ID만 기록한다.
         failure("unexpected_error", exc, http_status=500, **request_log_context(request))
-        if is_job_request(request):
-            return JSONResponse(status_code=500, content=job_error_response(
+        if uses_structured_error(request):
+            return JSONResponse(status_code=500, content=structured_error_response(
                 request, 'INTERNAL_SERVER_ERROR', '서버 내부 오류가 발생했습니다.',
-            ))
+            ), headers={'X-Request-Id': getattr(request.state, 'request_id', 'unknown')})
         return JSONResponse(
             status_code=500,
             content={"message": "internal_server_error", "data": None},

@@ -1,6 +1,5 @@
 """HTTP 요청을 공통 일정 생성 조건으로 바꾸고 실행 설정을 확인한다."""
-from typing import Annotated
-from fastapi import Header, Request
+from fastapi import Request
 from ai_service.core.config import Settings
 from ai_service.core.errors import ServiceUnavailable
 from ai_service.schemas.travel import ItineraryRequest, LegacyGenerationRequest, TravelGenerationRequest
@@ -18,5 +17,3 @@ def prepare_generation(body: LegacyGenerationRequest | TravelGenerationRequest, 
     for mode in set(resolve_day_transports(body).values()):
         request.app.state.routes.require_configured(mode)
     return body
-
-IdempotencyKey = Annotated[str | None, Header(alias="Idempotency-Key", min_length=1, max_length=128)]

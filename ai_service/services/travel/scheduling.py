@@ -9,6 +9,7 @@ import math
 import re
 
 from ai_service.core.errors import GenerationFailed, InvalidModelOutput
+from ai_service.services.travel.place_hours import closed_error, fit_visit, hours_context, hours_for, validate_visit
 from ai_service.services.travel.group_policy import daily_item_reduction, movement_buffer_minutes, proximity_floor
 from ai_service.clients.kakao_places import distance_km, travel_minutes
 from ai_service.services.travel.transport import base_transport, resolve_day_transports
@@ -146,9 +147,9 @@ def minimum_day_minutes(
         if previous is not None:
             cursor += timedelta(minutes=travel_minutes(previous, place, window["transport_type"]) + group_buffer)
         stay = policy[place.category][0]
-        if (respect_restaurant_hours and place.category == "식당"
-                and place._restaurant_hours is not None):
-            fitted = place._restaurant_hours.next_start(cursor, stay, end)
+        hours = hours_for(place)
+        if hours is not None and (respect_restaurant_hours or place.category == "관광"):
+            fitted = hours.next_start(cursor, stay, end)
             if fitted is None:
                 return window["available_minutes"] + 1
             cursor = fitted
@@ -305,6 +306,39 @@ def select_candidates(request: ItineraryRequest, places: list[Place]) -> list[Pl
         else:
             chosen = candidates[:limit]
         result.extend(chosen)
+    return result
+
+
+def order_opening_visits(
+    request: ItineraryRequest, selection: ModelSelection, places: list[Place],
+) -> ModelSelection:
+    """야간 개장 관광지의 대기를 줄이되 필수 장소 순서·숙소 마지막 규칙은 유지한다."""
+    if not any(p.category == "관광" and hours_for(p) is not None for p in places):
+        return selection
+    result = selection.model_copy(deep=True)
+    by_id = {p.provider_place_id: p for p in places}
+    order = {p.provider_place_id: p.order for p in request.required_places}
+    policy = PACE_POLICIES[PACE_ALIASES[request.preference.pace_type]]
+    previous = None
+    for day, window in zip(result.days, day_windows(request, schedule=True)):
+        if any(item.provider_place_id not in by_id for item in day.items):
+            continue
+        chosen = [by_id[item.provider_place_id] for item in day.items]
+        for pid in [p.provider_place_id for p in chosen if p.category == "관광" and hours_for(p) is not None]:
+            best = minimum_day_minutes(chosen, window, policy, previous, respect_restaurant_hours=True)
+            for position in range(len(chosen)):
+                trial = [p for p in chosen if p.provider_place_id != pid]
+                trial.insert(position, by_id[pid])
+                required = [order[p.provider_place_id] for p in trial if p.provider_place_id in order]
+                if (required != sorted(required)
+                        or any(p.category == "숙소" and i != len(trial) - 1 for i, p in enumerate(trial))
+                        or any(a.category == b.category == "식당" for a, b in zip(trial, trial[1:]))):
+                    continue
+                needed = minimum_day_minutes(trial, window, policy, previous, respect_restaurant_hours=True)
+                if needed < best:
+                    best, chosen = needed, trial
+            day.items = [SelectionItem(provider_place_id=p.provider_place_id) for p in chosen]
+        previous = chosen[-1] if chosen else previous
     return result
 
 
@@ -550,7 +584,7 @@ def build_context(request: ItineraryRequest, places: list[Place]) -> dict:
         "day_windows": windows,
         "stay_minutes": {k: policy[k] for k in ("관광", "식당", "숙소")},
         "candidates": [
-            p.model_dump(exclude={"road_address", "provider", "is_required"})
+            {**p.model_dump(exclude={"road_address", "provider", "is_required"}), **hours_context(p)}
             for p in places
         ],
         "travel_edges": {
@@ -569,7 +603,6 @@ def schedule_selection(
     request: ItineraryRequest, selection: ModelSelection, places: list[Place]
 ) -> ModelItinerary:
     """모델이 정한 장소 순서를 분 단위의 실행 가능한 일정으로 바꾼다."""
-    from ai_service.services.travel.restaurant_hours import fit_restaurant
     windows = day_windows(request, schedule=True)
     if [d.date for d in selection.days] != [w["date"] for w in windows]:
         raise InvalidModelOutput(
@@ -609,7 +642,7 @@ def schedule_selection(
         cursor = datetime.fromisoformat(f"{selected.date}T{window['start']}")
         end = datetime.fromisoformat(f"{selected.date}T{window['end']}")
         items = []
-        waiting_restaurant_id = None
+        waiting_place_id = None
         for index, (item, place) in enumerate(zip(selected.items, chosen)):
             cursor += timedelta(minutes=transfers[index])
             if place.category == "숙소":
@@ -625,22 +658,23 @@ def schedule_selection(
                     meal_time = cursor.replace(hour=meal_hour, minute=0)
                     wait = int((meal_time - cursor).total_seconds() / 60)
                     if wait <= spare and (
-                        place._restaurant_hours is None or
-                        place._restaurant_hours.next_start(meal_time, stays[index], end) == meal_time
+                        hours_for(place) is None or
+                        hours_for(place).next_start(meal_time, stays[index], end) == meal_time
                     ):
                         cursor = meal_time
                         spare -= wait
+            if place.category != "숙소":
                 try:
-                    fitted = fit_restaurant(place, cursor, stays[index], end)
+                    fitted = fit_visit(place, cursor, stays[index], end)
                 except ValueError as exc:
                     raise InvalidModelOutput(str(exc)) from exc
                 wait = int((fitted - cursor).total_seconds() / 60)
                 cursor, spare = fitted, max(0, spare - wait)
                 if wait:
-                    waiting_restaurant_id = place.provider_place_id
+                    waiting_place_id = place.provider_place_id
             if cursor + timedelta(minutes=stays[index]) > end:
                 raise InvalidModelOutput(
-                    f"restaurant_closed:{waiting_restaurant_id}" if waiting_restaurant_id
+                    closed_error(by_id[waiting_place_id]) if waiting_place_id
                     else f"{selected.date}: visits exceed available time"
                 )
             items.append(
@@ -663,7 +697,6 @@ def validate_itinerary(
     routes: dict[tuple[int, int], RouteSummary] | None = None,
 ) -> list[ItineraryDay]:
     """일정의 날짜·필수 장소·방문 순서·체류시간·경로를 검증한다."""
-    from ai_service.services.travel.restaurant_hours import validate_restaurant_visit
     windows = day_windows(request, schedule=True)
     planning_windows = day_windows(request)
     if [day.date for day in generated.days] != [w["date"] for w in windows]:
@@ -724,8 +757,8 @@ def validate_itinerary(
                 )
             visit_start = datetime.fromisoformat(f"{window['date']}T{item.start_time}")
             visit_end = visit_start + timedelta(minutes=item.stay_minutes)
-            if place.category == "식당" and not validate_restaurant_visit(place, visit_start, visit_end):
-                raise InvalidModelOutput(f"restaurant_closed:{place.provider_place_id}")
+            if place.category != "숙소" and not validate_visit(place, visit_start, visit_end):
+                raise InvalidModelOutput(closed_error(place))
             if place.category == "숙소":
                 if (visit_start.hour < 15 or visit_end != hotel_rest_end(visit_start, end, minimum)
                         or item.stay_minutes < minimum):

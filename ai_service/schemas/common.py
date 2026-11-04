@@ -101,3 +101,15 @@ class Duration(StrictModel):
 class ErrorResponse(StrictModel):
     message: str
     data: dict | None
+
+
+class StructuredError(StrictModel):
+    code: str
+    message: str
+    retryable: bool = False
+    details: list[dict] = Field(default_factory=list)
+
+
+class StructuredErrorResponse(StrictModel):
+    error: StructuredError
+    request_id: str

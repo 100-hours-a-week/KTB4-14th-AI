@@ -74,3 +74,11 @@ class MusicRecommendationFailed(ApiError):
             "추천 가능한 음악을 선택하지 못했습니다.",
             reason=reason, detail=detail,
         )
+
+
+class ChecklistGenerationFailed(ApiError):
+    def __init__(self, *, reason: str | None = None) -> None:
+        super().__init__(
+            422, 'CHECKLIST_GENERATION_FAILED', '체크리스트를 생성하지 못했습니다.',
+            reason=reason,
+        )

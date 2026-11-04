@@ -1,5 +1,5 @@
 """실제 매칭 요청·응답 계약에 맞춘 Swagger 예시."""
-from ai_service.schemas.jobs import JobErrorResponse
+from ai_service.schemas.matching import MatchingErrorResponse
 
 
 BACKEND_MATCHING_EXAMPLE={
@@ -59,7 +59,7 @@ MATCHING_RESPONSES = {
         }}},
     },
     400: {
-        'model': JobErrorResponse,
+        'model': MatchingErrorResponse,
         'description': '요청 검증 실패. 필수 값 누락·null, 불완전한 후보, limit 범위 초과 등을 거절합니다.',
         'content': {'application/json': {'examples': {
             'gender_null': validation_example('동행 성별이 null',
@@ -73,7 +73,7 @@ MATCHING_RESPONSES = {
         }}},
     },
     401: {
-        'model': JobErrorResponse,
+        'model': MatchingErrorResponse,
         'description': '서비스 Bearer 토큰이 없거나 올바르지 않습니다.',
         'content': {'application/json': {'examples': {
             'unauthorized': {'summary': '서비스 인증 실패', 'value': error_example(
@@ -81,7 +81,7 @@ MATCHING_RESPONSES = {
         }}},
     },
     500: {
-        'model': JobErrorResponse,
+        'model': MatchingErrorResponse,
         'description': '예상하지 못한 서버 내부 오류입니다.',
         'content': {'application/json': {'examples': {
             'internal_error': {'summary': '서버 내부 오류', 'value': error_example(
@@ -89,7 +89,7 @@ MATCHING_RESPONSES = {
         }}},
     },
     503: {
-        'model': JobErrorResponse,
+        'model': MatchingErrorResponse,
         'description': '서버의 서비스 인증 토큰(AUDIGO_API_TOKEN)이 설정되지 않았습니다.',
         'content': {'application/json': {'examples': {
             'service_unavailable': {'summary': '서비스 인증 설정 누락', 'value': error_example(

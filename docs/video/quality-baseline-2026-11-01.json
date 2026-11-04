@@ -1,0 +1,156 @@
+{
+  "measured_on": "2026-11-01",
+  "scope": {
+    "real_album_count": 1,
+    "input_photo_count": 110,
+    "paired_controlled_experiment": false,
+    "user_acceptance": "pending",
+    "cross_album_quality_validated": false,
+    "concurrent_user_load_test_performed": false,
+    "vbench_run": false,
+    "human_mos_measured": false
+  },
+  "method": {
+    "edit_metrics": "python -m scripts.video.evaluate",
+    "video_measurement": "ffprobe -count_frames",
+    "temporal_screening": "opencv_generated_take_v1; 320px analysis width; 4Hz samples",
+    "reference_review": "sampled model review, not exhaustive playback or identity guarantee"
+  },
+  "before_v3": {
+    "schema_version": "memory_video_evaluation_v1",
+    "edit": {
+      "take_count": 11,
+      "unique_generated_sources": 7,
+      "generated_source_reuse_count": 4,
+      "generated_source_reuse_ratio": 0.363636,
+      "reused_take_frame_fraction": 0.481944,
+      "largest_source_frame_fraction": 0.416667,
+      "planned_frame_count": 720,
+      "fps": 24.0,
+      "planned_seconds": 30.0,
+      "target_seconds": 30,
+      "planned_duration_error_frames": 0.0,
+      "planned_scene_count": null,
+      "final_reference_photo_count": null,
+      "native_source_sizes": null
+    },
+    "sampled_reviews": null,
+    "decoded_media": {
+      "sha256": "a4b16541e80c34b2b71e3138441354de2e13d88bc065666d9b1b3ec12d589640",
+      "decoded_frame_count": 720,
+      "fps": 24.0,
+      "decoded_duration_seconds": 30.0,
+      "container_duration_seconds": 30.0,
+      "export_dimensions": [
+        1920,
+        1080
+      ],
+      "audio_stream_count": 1,
+      "audio_channels": 2,
+      "audio_sample_rate": 48000,
+      "duration_error_frames": 0.0
+    },
+    "perceptual_quality_certified": false,
+    "limitations": [
+      "Source reuse compares file paths, not perceptual similarity or semantic scene identity.",
+      "Review metrics are sampled heuristic/model decisions, not human defect rates or calibrated probabilities.",
+      "Missing measurements are null. Edit frame counts alone do not prove successful video decoding.",
+      "Job report elapsed time is not assumed to include queueing, all failed attempts, or final fallback review."
+    ],
+    "evidence_sha256": {
+      "report": "b0e104fce62eea0485d75f8c9e334981225c1724373553c855cf229b3583cde8",
+      "reviews": null
+    }
+  },
+  "after_v4": {
+    "schema_version": "memory_video_evaluation_v1",
+    "edit": {
+      "take_count": 7,
+      "unique_generated_sources": 7,
+      "generated_source_reuse_count": 0,
+      "generated_source_reuse_ratio": 0.0,
+      "reused_take_frame_fraction": 0.0,
+      "largest_source_frame_fraction": 0.143056,
+      "planned_frame_count": 720,
+      "fps": 24.0,
+      "planned_seconds": 30.0,
+      "target_seconds": 30,
+      "planned_duration_error_frames": 0.0,
+      "planned_scene_count": 11,
+      "final_reference_photo_count": 9,
+      "native_source_sizes": [
+        [
+          1024,
+          576
+        ]
+      ]
+    },
+    "sampled_reviews": {
+      "matched_take_count": 7,
+      "missing_take_count": 0,
+      "technical_and_semantic_accepted_count": 7,
+      "people_reviewed_take_count": 7,
+      "people_accepted_take_count": 7,
+      "unmatched_foreground_people_flags": 0,
+      "uncertain_foreground_people_flags": 0,
+      "max_take_frozen_fraction": 0.0,
+      "max_take_frozen_run_seconds": 0.0,
+      "max_take_blur_fraction": 0.0
+    },
+    "decoded_media": {
+      "sha256": "f13bcfdbbc924c875a664e426e7fa587748513b389e2f26dc699370d8f250010",
+      "decoded_frame_count": 720,
+      "fps": 24.0,
+      "decoded_duration_seconds": 30.0,
+      "container_duration_seconds": 30.0,
+      "export_dimensions": [
+        1920,
+        1080
+      ],
+      "audio_stream_count": 1,
+      "audio_channels": 2,
+      "audio_sample_rate": 48000,
+      "duration_error_frames": 0.0
+    },
+    "perceptual_quality_certified": false,
+    "limitations": [
+      "Source reuse compares file paths, not perceptual similarity or semantic scene identity.",
+      "Review metrics are sampled heuristic/model decisions, not human defect rates or calibrated probabilities.",
+      "Missing measurements are null. Edit frame counts alone do not prove successful video decoding.",
+      "Job report elapsed time is not assumed to include queueing, all failed attempts, or final fallback review."
+    ],
+    "evidence_sha256": {
+      "report": "29a75bfa7b0a01943e638df8b01e6a1e621207c2a43064b1b008e866e5ab6474",
+      "reviews": "b2a5a84dd79c1902dec86c0439cc0538aaa8ac52150cbc3cd57ab6cd18c00b9a"
+    }
+  },
+  "after_v4_audio": {
+    "method": "ffmpeg_loudnorm_input_measurement_of_delivered_aac",
+    "integrated_lufs": -19.87,
+    "true_peak_dbtp": -6.84,
+    "loudness_range_lu": 13.2,
+    "human_listening_performed": false
+  },
+  "proposed_targets": {
+    "generated_source_reuse_ratio": 0,
+    "duration_error_frames_max": 1,
+    "distinct_memory_units_for_30s_with_sufficient_eligible_units": [
+      10,
+      15
+    ],
+    "human_memory_joy_mos_min": 4,
+    "human_memory_joy_rating_scale": [
+      1,
+      5
+    ],
+    "warm_30s_end_to_end_p95_seconds": 300,
+    "targets_are_achievements": false
+  },
+  "unresolved": [
+    "Only one actual album was tested.",
+    "Final 7 unique generated sources are below the proposed 10–15 distinct-scene target.",
+    "General scene review missed unsupported foreground people in an intermediate candidate; independent people review was added.",
+    "Source-path uniqueness cannot detect semantically repetitive footage in different files.",
+    "Full-job latency, p50/p95, multi-user capacity and quality acceptance rates remain unmeasured."
+  ]
+}

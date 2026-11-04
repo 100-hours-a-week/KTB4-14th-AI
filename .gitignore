@@ -9,3 +9,13 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .DS_Store
+# GPU 모델 가중치·사용자 사진·생성 영상·로컬 성능 측정 기록을 Git에서 제외합니다.
+/artifacts/video/
+/workspace/
+*.safetensors
+*.ckpt
+*.gguf
+*.mp4
+*.mov
+*.mkv
+*.webm

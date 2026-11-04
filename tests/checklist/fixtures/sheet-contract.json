@@ -1,0 +1,102 @@
+{
+  "source": {
+    "spreadsheet_id": "1TzLjPrQyFacu3QHNvTs71D12u_Yt2-N8eZ9KSzThijs",
+    "sheet_id": 562071274,
+    "range": "'[AUDIGO] AI 서비스 API'!A26:H31",
+    "checked_on": "2026-11-01"
+  },
+  "request": {
+    "travel_plan_id": 101,
+    "region_name": "부산광역시",
+    "arrival_datetime": "2026-11-10T13:00:00",
+    "departure_datetime": "2026-11-11T18:00:00",
+    "headcount": 2,
+    "companion_type": "COUPLE",
+    "preference": {
+      "themes": [
+        "NATURE",
+        "FOOD"
+      ]
+    },
+    "itinerary_items": [
+      {
+        "day_number": 1,
+        "date": "2026-11-10",
+        "place_name": "광안리해수욕장",
+        "item_type": "TOUR",
+        "start_time": "15:00",
+        "end_time": "16:00"
+      }
+    ]
+  },
+  "responses": {
+    "200": {
+      "travel_plan_id": 101,
+      "title": "부산 바다 여행 준비물",
+      "items": [
+        {
+          "content": "신분증 챙기기",
+          "is_completed": false,
+          "is_checked": false,
+          "sort_order": 1
+        },
+        {
+          "content": "휴대전화 충전기 챙기기",
+          "is_completed": false,
+          "is_checked": false,
+          "sort_order": 2
+        }
+      ]
+    },
+    "400": {
+      "error": {
+        "code": "INVALID_REQUEST",
+        "message": "입력값을 확인해 주세요.",
+        "retryable": false,
+        "details": [
+          {
+            "field": "body.region_name",
+            "type": "missing"
+          }
+        ]
+      },
+      "request_id": "req_checklist_example"
+    },
+    "401": {
+      "error": {
+        "code": "UNAUTHORIZED",
+        "message": "인증 정보를 확인해 주세요.",
+        "retryable": false,
+        "details": []
+      },
+      "request_id": "req_checklist_example"
+    },
+    "422": {
+      "error": {
+        "code": "CHECKLIST_GENERATION_FAILED",
+        "message": "체크리스트를 생성하지 못했습니다.",
+        "retryable": false,
+        "details": []
+      },
+      "request_id": "req_checklist_example"
+    },
+    "500": {
+      "error": {
+        "code": "INTERNAL_SERVER_ERROR",
+        "message": "서버 내부 오류가 발생했습니다.",
+        "retryable": false,
+        "details": []
+      },
+      "request_id": "req_checklist_example"
+    },
+    "503": {
+      "error": {
+        "code": "AI_SERVICE_UNAVAILABLE",
+        "message": "잠시 후 다시 시도해 주세요.",
+        "retryable": true,
+        "details": []
+      },
+      "request_id": "req_checklist_example"
+    }
+  }
+}

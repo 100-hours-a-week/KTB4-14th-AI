@@ -179,6 +179,7 @@ class Place(PlaceResponse):
     is_required: bool = False
     # 영업시간은 일정 검증용 내부 데이터이며 Spring 응답에는 직렬화하지 않는다.
     _restaurant_hours: object = PrivateAttr(default=None)
+    _opening_hours: object = PrivateAttr(default=None)
 
 
 class SelectionItem(StrictModel):
