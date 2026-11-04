@@ -119,3 +119,12 @@ def test_restart_keeps_jobs(api):
     client.post('/api/ai/v1/video-jobs', headers=headers(), json=body)
     jobs.initialize()  # A server restart re-runs schema setup; it must not drop rows.
     assert client.get('/api/ai/v1/video-jobs/' + body['request_id'], headers=headers()).json()['status'] == 'QUEUED'
+
+
+def test_queue_position_counts_earlier_active_jobs(api):
+    client, photos = api
+    first, second = payload(photos), payload(photos)
+    client.post('/api/ai/v1/video-jobs', headers=headers(), json=first)
+    client.post('/api/ai/v1/video-jobs', headers=headers(), json=second)
+    assert client.get('/api/ai/v1/video-jobs/' + first['request_id'], headers=headers()).json()['queue_position'] == 1
+    assert client.get('/api/ai/v1/video-jobs/' + second['request_id'], headers=headers()).json()['queue_position'] == 2

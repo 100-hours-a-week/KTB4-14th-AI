@@ -44,6 +44,26 @@ def find_job(job_id, owner):
     return row
 
 
+WORKER_LABELS = {
+    'IDLE': '작업 실행기 대기 중',
+    'CHECKING_GPU': 'GPU 연결 확인 중',
+    'WAITING_FOR_GPU': 'GPU가 꺼져 있어 기다리는 중',
+    'BUSY': '영상 생성 중',
+    'OFFLINE': '작업 실행기가 응답하지 않음',
+}
+# One measured end-to-end run on an A100: 110 photos, 30-second film, 1,679 s. Not a guarantee.
+ESTIMATE_NOTE = 'GPU가 준비된 뒤 약 30분 (실측 1회: 사진 110장·30초 영상 28분). GPU를 새로 켜면 준비에 10~20분이 더 걸릴 수 있습니다.'
+
+
+def queue_position(job_id):
+    """1 means next in line; counts queued and running jobs submitted earlier by anyone."""
+    with connection() as conn:
+        row = conn.execute("""SELECT count(*) AS ahead FROM video_jobs
+            WHERE status IN ('QUEUED','RUNNING') AND created_at < (SELECT created_at FROM video_jobs WHERE id=%s)""",
+                           (job_id,)).fetchone()
+    return row['ahead'] + 1
+
+
 def worker_state():
     with connection() as conn:
         worker = conn.execute("SELECT state, heartbeat_at > now() - interval '30 seconds' AS alive FROM video_worker WHERE id=1").fetchone()
@@ -161,10 +181,17 @@ def router(settings):
     @routes.get('/api/ai/v1/video-jobs/{job_id}', summary='영상 진행 상태 조회')
     def status(job_id: UUID, x_owner_id: Owner):
         row = find_job(job_id, x_owner_id)
+        worker = worker_state()
+        active = row['status'] in ('QUEUED', 'RUNNING')
+        request_body = row.get('request') or {}
         return {'job_id': str(job_id), 'status': row['status'], 'stage': row['stage'],
                 'stage_label': STAGES.get(row['stage'], row['stage']),
                 'travel_plan_id': row.get('travel_plan_id'),
-                'worker_state': worker_state(),
+                'photo_count': len(row.get('photo_keys') or request_body.get('upload_ids') or []),
+                'duration_seconds': request_body.get('duration_seconds'),
+                'queue_position': queue_position(job_id) if row['status'] == 'QUEUED' else None,
+                'worker_state': worker, 'worker_state_label': WORKER_LABELS.get(worker, worker),
+                'estimate_note': ESTIMATE_NOTE if active else None,
                 'error_code': row['error_code'], 'error_message': row.get('error_message'),
                 'created_at': row.get('created_at'), 'completed_at': row.get('completed_at'),
                 'updated_at': row['updated_at'],

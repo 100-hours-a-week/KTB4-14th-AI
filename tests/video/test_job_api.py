@@ -34,6 +34,7 @@ def test_invalid_image_is_rejected_before_storage():
 
 def test_completion_url_is_only_shown_when_completed(monkeypatch):
     monkeypatch.setattr(video_jobs, 'worker_state', lambda: 'BUSY')
+    monkeypatch.setattr(video_jobs, 'queue_position', lambda job: 2)
     job_id = uuid4()
     row = {'status': 'RUNNING', 'stage': 'GENERATING_VIDEO', 'error_code': None, 'updated_at': None}
     monkeypatch.setattr(video_jobs, 'find_job', lambda job, owner: row)
@@ -172,3 +173,18 @@ def test_phone_mpo_photo_is_accepted(monkeypatch):
     monkeypatch.setattr(video_jobs, 'connection', conn)
     assert 'upload_id' in video_jobs.save_upload(buffer.getvalue(), 1)
     assert stored and stored[0].startswith('uploads/1/')
+
+
+def test_status_explains_queue_and_estimate(monkeypatch):
+    monkeypatch.setattr(video_jobs, 'worker_state', lambda: 'WAITING_FOR_GPU')
+    monkeypatch.setattr(video_jobs, 'queue_position', lambda job: 2)
+    row = {'status': 'QUEUED', 'stage': 'QUEUED', 'error_code': None, 'updated_at': None,
+           'photo_keys': ['a', 'b', 'c'], 'request': {'duration_seconds': 30}}
+    monkeypatch.setattr(video_jobs, 'find_job', lambda job, owner: row)
+    data = client().get(f'/api/ai/v1/video-jobs/{uuid4()}', headers={'Authorization': 'Bearer test-secret', 'X-Owner-ID': '1'}).json()
+    assert (data['queue_position'], data['photo_count'], data['duration_seconds']) == (2, 3, 30)
+    assert data['worker_state_label'] == 'GPU가 꺼져 있어 기다리는 중'
+    assert '30분' in data['estimate_note']
+    row.update(status='COMPLETED', stage='COMPLETED')
+    done = client().get(f'/api/ai/v1/video-jobs/{uuid4()}', headers={'Authorization': 'Bearer test-secret', 'X-Owner-ID': '1'}).json()
+    assert done['queue_position'] is None and done['estimate_note'] is None
