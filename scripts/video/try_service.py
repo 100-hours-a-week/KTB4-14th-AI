@@ -12,7 +12,7 @@ import sys
 import time
 from uuid import uuid4
 
-from dotenv import dotenv_values
+from dotenv import dotenv_values, find_dotenv
 import httpx
 
 DEFAULT_URL = 'https://bggrh1188jif0b-8000.proxy.runpod.net'
@@ -49,9 +49,10 @@ def main():
     parser.add_argument('--url', default=os.environ.get('VIDEO_SERVICE_URL', DEFAULT_URL))
     parser.add_argument('--interval', type=int, default=10, help='seconds between status checks')
     args = parser.parse_args()
-    token = os.environ.get('AUDIGO_API_TOKEN') or dotenv_values('.env').get('AUDIGO_API_TOKEN')
+    # Walk up from the current folder so a git worktree inside the repo still finds the repo's .env.
+    token = os.environ.get('AUDIGO_API_TOKEN') or dotenv_values(find_dotenv(usecwd=True)).get('AUDIGO_API_TOKEN')
     if not token:
-        sys.exit('AUDIGO_API_TOKEN is not set (environment or .env)')
+        sys.exit('AUDIGO_API_TOKEN을 찾지 못했습니다. 프로젝트 폴더의 .env에 있어야 합니다.')
     headers = {'Authorization': f'Bearer {token}', 'X-Owner-ID': str(args.owner)}
     with httpx.Client(base_url=args.url, headers=headers, timeout=120) as http:
         if args.job:
