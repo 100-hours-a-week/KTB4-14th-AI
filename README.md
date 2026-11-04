@@ -242,6 +242,20 @@ INFO:     Uvicorn running on http://127.0.0.1:8000
 - 서버 상태: [http://localhost:8000/health](http://localhost:8000/health)
 - API 명세: [http://localhost:8000/openapi.json](http://localhost:8000/openapi.json)
 
+로컬 서버의 `/docs`에는 `VIDEO_DATABASE_URL`이 설정된 경우에만 영상 API가 표시됩니다.
+
+### RunPod에 배포된 영상 서비스 테스트 화면
+
+영상 API(사진 업로드·영상 요청·상태·재생)는 RunPod CPU Pod `audigo-ai-api-db`에 배포되어 있어 따로 실행할 필요가 없습니다.
+Pod가 켜져 있으면 브라우저에서 [영상 서비스 테스트 화면](https://bggrh1188jif0b-8000.proxy.runpod.net/docs)을 엽니다.
+
+1. 오른쪽 위 **Authorize**에 `.env`의 `AUDIGO_API_TOKEN` 값을 입력합니다.
+2. 각 API에서 **Try it out**을 누르고 `X-Owner-ID`에 테스트 사용자 번호(예: `1`)를 넣습니다.
+3. 여러 사진은 `POST /api/ai/v1/uploads/batch`로 한 번에 올립니다. 자세한 순서는 [영상 서비스 API](docs/video/service-api.md)를 참고하세요.
+
+터미널에서는 `uv run python -m scripts.video.try_service --photos 사진폴더`로 업로드부터 재생 주소까지 한 번에 확인할 수 있습니다.
+화면이 열리지 않으면 [RunPod Pods](https://console.runpod.io/pods)에서 Pod가 Running인지 확인합니다.
+
 ## 설치가 끝난 뒤 빠르게 다시 실행하기
 
 이미 위 설치를 한 번 완료했다면 다음부터는 아래 블록만 붙여넣으면 됩니다.
