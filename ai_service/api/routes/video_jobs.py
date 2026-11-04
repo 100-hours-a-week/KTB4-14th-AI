@@ -86,7 +86,7 @@ def router(settings):
     routes = APIRouter(tags=['V3 Video'])
 
     # Declared so the /docs page offers a file picker for the raw image body.
-    @routes.post('/api/ai/v1/uploads', status_code=201, openapi_extra={'requestBody': {'required': True, 'content': {
+    @routes.post('/api/ai/v1/uploads', status_code=201, summary='사진 1장 업로드', openapi_extra={'requestBody': {'required': True, 'content': {
         kind: {'schema': {'type': 'string', 'format': 'binary'}} for kind in ('image/jpeg', 'image/png', 'image/webp')}}})
     async def upload(request: Request, x_owner_id: Owner):
         # Raw image body avoids multipart buffering and requires no multipart dependency.
@@ -101,9 +101,9 @@ def router(settings):
             raise HTTPException(408, 'Upload timed out') from None
         return await asyncio.to_thread(save_upload, bytes(data), x_owner_id)
 
-    @routes.post('/api/ai/v1/uploads/batch', status_code=201)
+    @routes.post('/api/ai/v1/uploads/batch', status_code=201, summary='사진 여러 장 업로드 (최대 30장)')
     async def upload_batch(x_owner_id: Owner, response: Response,
-                           files: Annotated[list[UploadFile], File(description='Photos (JPEG/PNG/WebP), up to 30 per request')]):
+                           files: Annotated[list[UploadFile], File(description='사진 최대 30장 (JPEG·PNG·WebP·아이폰 MPO). Swagger에서는 칸 하나에 파일 1개만 고를 수 있으니 "Add string item"으로 칸을 늘려 사진마다 하나씩 선택하세요.')]):
         """Several photos in one multipart request; each is stored independently so failed ones can be retried."""
         if not 1 <= len(files) <= MAX_BATCH_FILES:
             raise HTTPException(400, f'Send between 1 and {MAX_BATCH_FILES} photos per request')
@@ -122,7 +122,7 @@ def router(settings):
             response.status_code = 207  # Multi-Status: some photos failed; retry only those.
         return {'upload_ids': upload_ids, 'items': items}
 
-    @routes.post('/api/ai/v1/video-jobs', status_code=202)
+    @routes.post('/api/ai/v1/video-jobs', status_code=202, summary='영상 생성 요청')
     def create(body: JobInput, x_owner_id: Owner):
         from psycopg.types.json import Jsonb
         if len(set(body.upload_ids)) != len(body.upload_ids):
@@ -150,7 +150,7 @@ def router(settings):
         return {'job_id': str(body.request_id), 'status': row['status'],
                 'status_url': f'/api/ai/v1/video-jobs/{body.request_id}'}
 
-    @routes.get('/api/ai/v1/video-jobs')
+    @routes.get('/api/ai/v1/video-jobs', summary='내 영상 작업 목록')
     def list_jobs(x_owner_id: Owner, offset: int = 0):
         if offset < 0:
             raise HTTPException(400, 'Invalid offset')
@@ -158,7 +158,7 @@ def router(settings):
             rows = conn.execute('SELECT id,status,stage,error_code,created_at,updated_at FROM video_jobs WHERE owner_id=%s ORDER BY created_at DESC LIMIT 50 OFFSET %s', (x_owner_id, offset)).fetchall()
         return {'items': rows, 'offset': offset, 'limit': 50}
 
-    @routes.get('/api/ai/v1/video-jobs/{job_id}')
+    @routes.get('/api/ai/v1/video-jobs/{job_id}', summary='영상 진행 상태 조회')
     def status(job_id: UUID, x_owner_id: Owner):
         row = find_job(job_id, x_owner_id)
         return {'job_id': str(job_id), 'status': row['status'], 'stage': row['stage'],
@@ -170,7 +170,7 @@ def router(settings):
                 'updated_at': row['updated_at'],
                 'video_url': f'/api/ai/v1/video-jobs/{job_id}/video' if row['status'] == 'COMPLETED' else None}
 
-    @routes.get('/api/ai/v1/video-jobs/{job_id}/video')
+    @routes.get('/api/ai/v1/video-jobs/{job_id}/video', summary='영상 재생 주소 발급 (5분 유효)')
     def video(job_id: UUID, x_owner_id: Owner, request: Request,
               response_format: Literal['redirect', 'json'] = 'redirect'):
         row = find_job(job_id, x_owner_id)
