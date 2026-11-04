@@ -4,13 +4,14 @@ import hashlib
 import hmac
 import io
 import os
+from pathlib import Path
 import re
 import time
 from uuid import UUID, uuid4
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, File, Header, HTTPException, Request, Response, UploadFile
-from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from ai_service.services.video.jobs import STAGES, connection
@@ -20,6 +21,7 @@ Owner = Annotated[int, Header(alias='X-Owner-ID', gt=0, le=9223372036854775807)]
 PLAYBACK_SECONDS = 300
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_BATCH_FILES = 30
+TEST_PAGE = Path(__file__).resolve().parents[1] / 'static' / 'video-test.html'
 
 class JobInput(BaseModel):
     model_config = ConfigDict(extra='forbid')
@@ -86,7 +88,7 @@ def router(settings):
     routes = APIRouter(tags=['V3 Video'])
 
     # Declared so the /docs page offers a file picker for the raw image body.
-    @routes.post('/api/ai/v1/uploads', status_code=201, summary='사진 1장 업로드', openapi_extra={'requestBody': {'required': True, 'content': {
+    @routes.post('/api/ai/v1/uploads', status_code=201, summary='사진 1장 업로드', description='한 번에 1장만 올립니다. 여러 장은 `사진 여러 장 업로드`나 [테스트 페이지](/video-test)를 쓰세요.', openapi_extra={'requestBody': {'required': True, 'content': {
         kind: {'schema': {'type': 'string', 'format': 'binary'}} for kind in ('image/jpeg', 'image/png', 'image/webp')}}})
     async def upload(request: Request, x_owner_id: Owner):
         # Raw image body avoids multipart buffering and requires no multipart dependency.
@@ -211,6 +213,11 @@ def parse_range(header, size):
 def playback_router():
     """Browser-facing stream; the signed URL is the authorization, so no service token is needed."""
     routes = APIRouter(tags=['V3 Video'])
+
+    @routes.get('/video-test', include_in_schema=False)
+    def test_page():
+        # Swagger can attach only one file per row; this page uses a real multi-select file picker.
+        return HTMLResponse(TEST_PAGE.read_text(encoding='utf-8'), headers={'Cache-Control': 'no-store'})
 
     @routes.get('/api/ai/v1/playback/{job_id}', include_in_schema=False)
     def playback(job_id: UUID, exp: int, sig: str, range: Annotated[str | None, Header()] = None):

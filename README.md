@@ -10,6 +10,8 @@ AUDIGO 여행 앱의 AI 서버입니다. 여행 일정을 짜 주고, 여행 사
 2. 오른쪽 위 **Authorize**를 누르고 팀에서 받은 토큰(`AUDIGO_API_TOKEN`)을 넣습니다.
 3. 써 볼 API를 열고 **Try it out** → **Execute**를 누릅니다.
 
+사진을 여러 장(최대 120장) 올려 영상까지 확인하려면 [영상 테스트 페이지](https://bggrh1188jif0b-8000.proxy.runpod.net/video-test)를 씁니다. Swagger는 칸 하나에 파일 1개만 고를 수 있습니다.
+
 ## 내 컴퓨터에서 실행하기
 
 [uv](https://docs.astral.sh/uv/getting-started/installation/)가 필요합니다. 없으면 먼저 설치합니다(Mac·Linux).

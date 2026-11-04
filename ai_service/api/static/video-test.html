@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>영상 서비스 테스트</title>
+<style>
+  :root { --bg: #f7f7f5; --card: #fff; --text: #1d1d1b; --muted: #6b6b66; --line: #e2e2dd; --accent: #2f6fde; --ok: #1f8a4c; --bad: #c4372b; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #161615; --card: #20201f; --text: #ececea; --muted: #a3a39d; --line: #34342f; --accent: #6d9cf0; --ok: #4cc27f; --bad: #ef6b5f; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.55 -apple-system, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; }
+  main { max-width: 680px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p.lead { color: var(--muted); margin: 0 0 20px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 14px; }
+  h2 { font-size: 16px; margin: 0 0 10px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 8px 0 4px; }
+  input[type=text], input[type=password], input[type=number] { width: 100%; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; }
+  button { margin-top: 12px; padding: 9px 16px; border: 0; border-radius: 8px; background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: .45; cursor: default; }
+  .row { display: flex; gap: 10px; } .row > div { flex: 1; }
+  ul { margin: 8px 0 0; padding-left: 18px; font-size: 14px; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .muted { color: var(--muted); font-size: 13px; }
+  .stage { font-size: 18px; font-weight: 600; margin-top: 6px; }
+  video { width: 100%; margin-top: 12px; border-radius: 8px; background: #000; }
+  code { font-size: 12px; word-break: break-all; }
+</style>
+</head>
+<body>
+<main>
+  <h1>영상 서비스 테스트</h1>
+  <p class="lead">사진 여러 장을 올리고 영상을 요청한 뒤, 진행 상황과 완성 영상을 확인합니다.</p>
+
+  <section>
+    <h2>1. 로그인 정보</h2>
+    <label for="token">서비스 토큰 (AUDIGO_API_TOKEN)</label>
+    <input id="token" type="password" autocomplete="off" placeholder="팀에서 받은 토큰">
+    <div class="row">
+      <div><label for="owner">테스트 사용자 번호</label><input id="owner" type="number" min="1" value="1"></div>
+      <div><label for="travel">여행 번호</label><input id="travel" type="number" min="1" value="101"></div>
+    </div>
+    <p class="muted">토큰은 이 페이지를 닫으면 사라지며 어디에도 저장하지 않습니다.</p>
+  </section>
+
+  <section>
+    <h2>2. 사진 올리기</h2>
+    <input id="files" type="file" accept="image/jpeg,image/png,image/webp" multiple>
+    <p class="muted">파일 선택 창에서 Shift 또는 Cmd(Ctrl)를 누른 채 여러 장을 고를 수 있습니다. 최대 120장.</p>
+    <button id="upload">사진 올리기</button>
+    <p id="uploadSummary"></p>
+    <ul id="uploadList"></ul>
+  </section>
+
+  <section>
+    <h2>3. 영상 만들기</h2>
+    <label for="context">어떤 여행인가요? (선택)</label>
+    <input id="context" type="text" maxlength="500" placeholder="예: 제주 바다 여행">
+    <button id="create" disabled>영상 만들기 요청</button>
+    <p class="muted">GPU가 꺼져 있으면 "GPU 대기" 상태로 기다립니다. GPU가 켜지면 생성이 시작되고 요금이 발생합니다.</p>
+  </section>
+
+  <section>
+    <h2>4. 진행 상황</h2>
+    <label for="jobId">작업 번호 (이미 있는 작업을 확인할 때 직접 입력)</label>
+    <input id="jobId" type="text" placeholder="영상 요청을 보내면 자동으로 채워집니다">
+    <button id="check">상태 확인</button>
+    <div id="stage" class="stage"></div>
+    <p id="stageDetail" class="muted"></p>
+    <video id="player" controls playsinline hidden></video>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let uploadIds = [];
+let timer = null;
+
+function headers(extra = {}) {
+  const token = $('token').value.trim();
+  if (!token) throw new Error('서비스 토큰을 먼저 입력해 주세요.');
+  return { Authorization: 'Bearer ' + token, 'X-Owner-ID': $('owner').value, ...extra };
+}
+
+async function call(path, options = {}) {
+  const response = await fetch(path, options);
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok && response.status !== 207) {
+    const reason = response.status === 401 ? '토큰이 올바르지 않습니다.' : (body.detail || body.message || '');
+    throw new Error(`요청 실패 (HTTP ${response.status}) ${reason}`);
+  }
+  return body;
+}
+
+$('upload').onclick = async () => {
+  const files = [...$('files').files];
+  const list = $('uploadList');
+  list.innerHTML = '';
+  if (files.length === 0) { $('uploadSummary').textContent = '사진을 먼저 골라 주세요.'; return; }
+  $('upload').disabled = true;
+  uploadIds = [];
+  try {
+    // The server takes at most 30 photos per request, so larger selections go in several requests.
+    for (let start = 0; start < files.length; start += 30) {
+      $('uploadSummary').textContent = `올리는 중… ${start}/${files.length}`;
+      const form = new FormData();
+      files.slice(start, start + 30).forEach(file => form.append('files', file));
+      const result = await call('/api/ai/v1/uploads/batch', { method: 'POST', headers: headers(), body: form });
+      for (const item of result.items) {
+        const li = document.createElement('li');
+        li.className = item.upload_id ? 'ok' : 'bad';
+        li.textContent = item.upload_id ? `${item.filename} ✓` : `${item.filename} ✗ ${item.error}`;
+        list.appendChild(li);
+      }
+      uploadIds.push(...result.upload_ids);
+    }
+    const failed = files.length - uploadIds.length;
+    $('uploadSummary').innerHTML = `<span class="ok">${uploadIds.length}장 올림</span>` + (failed ? ` · <span class="bad">${failed}장 실패</span>` : '');
+    $('create').disabled = uploadIds.length < 2;
+    if (uploadIds.length < 2) $('uploadSummary').innerHTML += ' · 영상은 사진이 2장 이상 필요합니다.';
+  } catch (error) {
+    $('uploadSummary').innerHTML = `<span class="bad">${error.message}</span>`;
+  } finally {
+    $('upload').disabled = false;
+  }
+};
+
+$('create').onclick = async () => {
+  $('create').disabled = true;
+  try {
+    const job = await call('/api/ai/v1/video-jobs', {
+      method: 'POST', headers: headers({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ request_id: crypto.randomUUID(), travel_plan_id: Number($('travel').value),
+                             upload_ids: uploadIds.slice(0, 120), memory_context: $('context').value }),
+    });
+    $('jobId').value = job.job_id;
+    follow();
+  } catch (error) {
+    $('stage').innerHTML = `<span class="bad">${error.message}</span>`;
+    $('create').disabled = false;
+  }
+};
+
+$('check').onclick = follow;
+
+async function follow() {
+  clearTimeout(timer);
+  const jobId = $('jobId').value.trim();
+  if (!jobId) { $('stage').textContent = '작업 번호가 없습니다.'; return; }
+  try {
+    const job = await call(`/api/ai/v1/video-jobs/${encodeURIComponent(jobId)}`, { headers: headers() });
+    const waiting = job.worker_state === 'WAITING_FOR_GPU' ? ' · GPU 대기 중' : '';
+    $('stage').textContent = job.stage_label + waiting;
+    $('stageDetail').textContent = job.status === 'FAILED' ? `실패 이유: ${job.error_message || job.error_code}` : `작업 번호 ${jobId}`;
+    if (job.status === 'COMPLETED') {
+      const play = await call(`/api/ai/v1/video-jobs/${encodeURIComponent(jobId)}/video?response_format=json`, { headers: headers() });
+      $('player').src = play.url;
+      $('player').hidden = false;
+      $('stageDetail').textContent = '완성! 아래에서 재생할 수 있습니다. 재생 주소는 5분 동안 유효합니다.';
+    } else if (job.status !== 'FAILED') {
+      timer = setTimeout(follow, 5000);
+    }
+  } catch (error) {
+    $('stage').innerHTML = `<span class="bad">${error.message}</span>`;
+  }
+}
+</script>
+</body>
+</html>
