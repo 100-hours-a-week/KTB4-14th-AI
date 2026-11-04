@@ -207,69 +207,10 @@ uv run --frozen --extra video python -m scripts.video.run summarize
 
 ## 진행중인 항목
 
-## 로컬 실행 — 한 번에 붙여넣기
+## 로컬 실행
 
-아래 블록 전체를 **터미널에 한 번에 복사해서 붙여넣으면 설치부터 로컬 서버 실행까지 진행됩니다.** `uv`가 잠금 파일에 맞춰 가상환경을 만들거나 갱신합니다. 기존 `.env`와 API 키는 그대로 유지합니다.
-
-현재 Mac의 Python 3.13(`/opt/homebrew/bin/python3.13`)과 이 저장소의 경로를 기준으로 작성했습니다.
-
-```bash
-(
-  set -e
-  cd /Users/samrobert/Documents/GitHub/KTB4-14th-AI
-  unset PYTHONHOME PYTHONPATH
-
-  uv sync --frozen --no-dev --python /opt/homebrew/bin/python3.13
-  ./.venv/bin/python scripts/models/download_e5_model.py model
-
-  if [ ! -f .env ]; then
-    cp .env.example .env
-  fi
-
-  ./.venv/bin/python -m uvicorn ai_service.main:app --host 127.0.0.1 --port 8000 --reload
-)
-```
-
-정상 실행되면 마지막에 다음과 비슷하게 표시됩니다.
-
-```text
-INFO:     Started server process
-INFO:     Waiting for application startup.
-INFO:     Application startup complete.
-INFO:     Uvicorn running on http://127.0.0.1:8000
-```
-
-서버가 실행되면 브라우저에서 [API 테스트 화면](http://localhost:8000/docs)을 엽니다.
-
-- 서버 상태: [http://localhost:8000/health](http://localhost:8000/health)
-- API 명세: [http://localhost:8000/openapi.json](http://localhost:8000/openapi.json)
-
-로컬 서버의 `/docs`에는 `VIDEO_DATABASE_URL`이 설정된 경우에만 영상 API가 표시됩니다.
-
-### RunPod에 배포된 영상 서비스 테스트 화면
-
-영상 API(사진 업로드·영상 요청·상태·재생)는 RunPod CPU Pod `audigo-ai-api-db`에 배포되어 있어 따로 실행할 필요가 없습니다.
-Pod가 켜져 있으면 브라우저에서 [영상 서비스 테스트 화면](https://bggrh1188jif0b-8000.proxy.runpod.net/docs)을 엽니다.
-
-1. 오른쪽 위 **Authorize**에 `.env`의 `AUDIGO_API_TOKEN` 값을 입력합니다.
-2. 각 API에서 **Try it out**을 누르고 `X-Owner-ID`에 테스트 사용자 번호(예: `1`)를 넣습니다.
-3. 여러 사진은 `POST /api/ai/v1/uploads/batch`로 한 번에 올립니다. 자세한 순서는 [영상 서비스 API](video/service-api.md)를 참고하세요.
-
-터미널에서는 `uv run python -m scripts.video.try_service --photos 사진폴더`로 업로드부터 재생 주소까지 한 번에 확인할 수 있습니다.
-화면이 열리지 않으면 [RunPod Pods](https://console.runpod.io/pods)에서 Pod가 Running인지 확인합니다.
-
-## 설치가 끝난 뒤 빠르게 다시 실행하기
-
-이미 위 설치를 한 번 완료했다면 다음부터는 아래 블록만 붙여넣으면 됩니다.
-
-```bash
-(
-  set -e
-  cd /Users/samrobert/Documents/GitHub/KTB4-14th-AI
-  unset PYTHONHOME PYTHONPATH
-  ./.venv/bin/python -m uvicorn ai_service.main:app --host 127.0.0.1 --port 8000 --reload
-)
-```
+설치와 실행 명령은 [README](../README.md#내-컴퓨터에서-실행하기)에 있습니다. 모든 명령은 저장소 폴더(`KTB4-14th-AI`)에서 실행합니다.
+서버 실행 후 [API 테스트 화면](http://localhost:8000/docs), [서버 상태](http://localhost:8000/health), [API 명세](http://localhost:8000/openapi.json)를 열 수 있습니다.
 
 ## 참고
 
@@ -435,9 +376,8 @@ API 진입점은 `ai_service/main.py`이며 실행 명령은 `ai_service.main:ap
 실행 가능한 회귀 테스트는 `tests/`에 유지합니다. 다음 명령은 별도 터미널에서 실행하며 실제 외부 모델·카카오 API를 호출하지 않습니다.
 
 ```bash
-cd /Users/samrobert/Documents/GitHub/KTB4-14th-AI
 uv sync --frozen --extra dev
-./.venv/bin/python -m unittest discover -s tests -t . -v
+uv run python -m unittest discover -s tests -t . -v
 ```
 
 ### 4단계 적용 확인
