@@ -55,7 +55,17 @@ WORKER_LABELS = {
     'OFFLINE': '작업 실행기가 응답하지 않음',
 }
 # One measured end-to-end run on an A100: 110 photos, 30-second film, 1,679 s. Not a guarantee.
-ESTIMATE_NOTE = 'GPU가 준비된 뒤 약 30분 (실측 1회: 사진 110장·30초 영상 28분). GPU를 새로 켜면 준비에 10~20분이 더 걸릴 수 있습니다.'
+JOB_MINUTES = 30
+
+
+def estimate_note(status, position, worker):
+    """Plain-language wait and run estimate; jobs run one at a time on one GPU."""
+    if status == 'RUNNING':
+        return f'만들기 시작한 뒤 약 {JOB_MINUTES}분 걸립니다 (실측 1회: 사진 110장·30초 영상 28분).'
+    ahead = (position or 1) - 1
+    wait = f'앞에 {ahead}개 작업이 있어 시작까지 약 {ahead * JOB_MINUTES}분, ' if ahead else ''
+    boot = ' GPU가 꺼져 있으면 켜는 데 몇 분이 더 걸립니다.' if worker in ('WAITING_FOR_GPU', 'STARTING_GPU') else ''
+    return f'{wait}시작 후 약 {JOB_MINUTES}분 걸립니다.{boot}'
 
 
 def queue_position(job_id):
@@ -195,14 +205,18 @@ def router(settings):
         worker = worker_state()
         active = row['status'] in ('QUEUED', 'RUNNING')
         request_body = row.get('request') or {}
+        position = queue_position(job_id) if row['status'] == 'QUEUED' else None
+        worker_label = WORKER_LABELS.get(worker, worker)
+        if position and position > 1 and worker == 'BUSY':
+            worker_label = '앞 순서의 다른 영상을 만드는 중 (이 작업은 그다음 차례)'
         return {'job_id': str(job_id), 'status': row['status'], 'stage': row['stage'],
                 'stage_label': STAGES.get(row['stage'], row['stage']),
                 'travel_plan_id': row.get('travel_plan_id'),
                 'photo_count': len(row.get('photo_keys') or request_body.get('upload_ids') or []),
                 'duration_seconds': request_body.get('duration_seconds'),
-                'queue_position': queue_position(job_id) if row['status'] == 'QUEUED' else None,
-                'worker_state': worker, 'worker_state_label': WORKER_LABELS.get(worker, worker),
-                'estimate_note': ESTIMATE_NOTE if active else None,
+                'queue_position': position,
+                'worker_state': worker, 'worker_state_label': worker_label,
+                'estimate_note': estimate_note(row['status'], position, worker) if active else None,
                 'error_code': row['error_code'], 'error_message': korean_failure(row),
                 'notice': row.get('notice'),
                 'created_at': row.get('created_at'), 'completed_at': row.get('completed_at'),

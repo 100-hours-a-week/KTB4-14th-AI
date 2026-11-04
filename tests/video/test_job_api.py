@@ -184,7 +184,7 @@ def test_status_explains_queue_and_estimate(monkeypatch):
     data = client().get(f'/api/ai/v1/video-jobs/{uuid4()}', headers={'Authorization': 'Bearer test-secret', 'X-Owner-ID': '1'}).json()
     assert (data['queue_position'], data['photo_count'], data['duration_seconds']) == (2, 3, 30)
     assert data['worker_state_label'] == 'GPU가 꺼져 있어 기다리는 중'
-    assert '30분' in data['estimate_note']
+    assert '앞에 1개 작업' in data['estimate_note'] and '켜는 데' in data['estimate_note']
     row.update(status='COMPLETED', stage='COMPLETED')
     done = client().get(f'/api/ai/v1/video-jobs/{uuid4()}', headers={'Authorization': 'Bearer test-secret', 'X-Owner-ID': '1'}).json()
     assert done['queue_position'] is None and done['estimate_note'] is None
@@ -205,3 +205,13 @@ def test_failure_reason_is_shown_in_korean(monkeypatch):
     korean = {**old, 'error_code': 'WORKER_INTERRUPTED', 'error_message': '작업 실행기가 반복해서 중단되어 생성을 포기했습니다.'}
     monkeypatch.setattr(video_jobs, 'find_job', lambda job, owner: korean)
     assert client().get(f'/api/ai/v1/video-jobs/{uuid4()}', headers=headers).json()['error_message'] == korean['error_message']
+
+
+def test_waiting_behind_another_job_is_explained(monkeypatch):
+    monkeypatch.setattr(video_jobs, 'worker_state', lambda: 'BUSY')
+    monkeypatch.setattr(video_jobs, 'queue_position', lambda job: 2)
+    row = {'status': 'QUEUED', 'stage': 'QUEUED', 'error_code': None, 'updated_at': None, 'photo_keys': ['a'], 'request': {}}
+    monkeypatch.setattr(video_jobs, 'find_job', lambda job, owner: row)
+    data = client().get(f'/api/ai/v1/video-jobs/{uuid4()}', headers={'Authorization': 'Bearer test-secret', 'X-Owner-ID': '1'}).json()
+    assert '앞 순서의 다른 영상' in data['worker_state_label']
+    assert data['estimate_note'].startswith('앞에 1개 작업이 있어 시작까지 약 30분')
