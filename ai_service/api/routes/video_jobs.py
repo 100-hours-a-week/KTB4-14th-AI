@@ -82,7 +82,9 @@ def save_upload(data, owner):
 def router(settings):
     routes = APIRouter(tags=['V3 Video'])
 
-    @routes.post('/api/ai/v1/uploads', status_code=201)
+    # Declared so the /docs page offers a file picker for the raw image body.
+    @routes.post('/api/ai/v1/uploads', status_code=201, openapi_extra={'requestBody': {'required': True, 'content': {
+        kind: {'schema': {'type': 'string', 'format': 'binary'}} for kind in ('image/jpeg', 'image/png', 'image/webp')}}})
     async def upload(request: Request, x_owner_id: Owner):
         # Raw image body avoids multipart buffering and requires no multipart dependency.
         data = bytearray()
