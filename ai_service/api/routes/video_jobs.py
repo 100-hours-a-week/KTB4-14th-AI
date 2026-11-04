@@ -1,12 +1,16 @@
 """Private backend-to-AI HTTP contract; never expose the service token in browsers."""
 import asyncio
+import hashlib
+import hmac
 import io
 import os
+import re
+import time
 from uuid import UUID, uuid4
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Header, HTTPException, Request
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from ai_service.services.video.jobs import STAGES, connection
@@ -141,16 +145,66 @@ def router(settings):
                 'video_url': f'/api/ai/v1/video-jobs/{job_id}/video' if row['status'] == 'COMPLETED' else None}
 
     @routes.get('/api/ai/v1/video-jobs/{job_id}/video')
-    def video(job_id: UUID, x_owner_id: Owner, response_format: Literal['redirect', 'json'] = 'redirect'):
+    def video(job_id: UUID, x_owner_id: Owner, request: Request,
+              response_format: Literal['redirect', 'json'] = 'redirect'):
         row = find_job(job_id, x_owner_id)
         if row['status'] != 'COMPLETED':
             raise HTTPException(409, 'Video is not completed')
-        volume = store()
-        key = row.get('video_key') or row['publication']['assets']['video']['key']
-        url = volume.client.generate_presigned_url('get_object', Params={
-            'Bucket': volume.settings.volume_id, 'Key': key}, ExpiresIn=PLAYBACK_SECONDS)
+        # RunPod's S3 gateway rejects presigned URLs, so the service signs its own short-lived URL.
+        expires = int(time.time()) + PLAYBACK_SECONDS
+        base = os.environ.get('VIDEO_PUBLIC_BASE_URL') or str(request.base_url)
+        url = f"{base.rstrip('/')}/api/ai/v1/playback/{job_id}?exp={expires}&sig={playback_signature(job_id, expires)}"
         if response_format == 'json':
             return JSONResponse({'url': url, 'expires_in': PLAYBACK_SECONDS}, headers={'Cache-Control': 'no-store'})
         return RedirectResponse(url, status_code=307, headers={'Cache-Control': 'no-store'})
+
+    return routes
+
+
+def playback_signature(job_id, expires):
+    secret = os.environ.get('VIDEO_PLAYBACK_SECRET') or os.environ['AUDIGO_API_TOKEN']
+    key = hashlib.sha256(b'audigo-playback:' + secret.encode()).digest()
+    return hmac.new(key, f'{job_id}:{expires}'.encode(), hashlib.sha256).hexdigest()
+
+
+def parse_range(header, size):
+    """Single `bytes=start-end` range as browsers send for seeking; None means the whole file."""
+    match = re.fullmatch(r'bytes=(\d*)-(\d*)', header or '')
+    if not match or match.groups() == ('', ''):
+        return None
+    start, end = match.groups()
+    if start == '':
+        start, end = max(size - int(end), 0), size - 1
+    else:
+        start, end = int(start), min(int(end), size - 1) if end else size - 1
+    if start > end or start >= size:
+        raise HTTPException(416, 'Range not satisfiable', headers={'Content-Range': f'bytes */{size}'})
+    return start, end
+
+
+def playback_router():
+    """Browser-facing stream; the signed URL is the authorization, so no service token is needed."""
+    routes = APIRouter(tags=['V3 Video'])
+
+    @routes.get('/api/ai/v1/playback/{job_id}', include_in_schema=False)
+    def playback(job_id: UUID, exp: int, sig: str, range: Annotated[str | None, Header()] = None):
+        if exp < time.time() or not hmac.compare_digest(sig, playback_signature(job_id, exp)):
+            raise HTTPException(403, 'Playback link expired or invalid')
+        with connection() as conn:
+            row = conn.execute("SELECT video_key FROM video_jobs WHERE id=%s AND status='COMPLETED'", (job_id,)).fetchone()
+        if not row or not row['video_key']:
+            raise HTTPException(404, 'Video not found')
+        volume = store()
+        size = volume.client.head_object(Bucket=volume.settings.volume_id, Key=row['video_key'])['ContentLength']
+        window = parse_range(range, size)
+        params = {'Bucket': volume.settings.volume_id, 'Key': row['video_key']}
+        headers = {'Accept-Ranges': 'bytes', 'Cache-Control': 'private, no-store'}
+        if window:
+            params['Range'] = f'bytes={window[0]}-{window[1]}'
+            headers['Content-Range'] = f'bytes {window[0]}-{window[1]}/{size}'
+        body = volume.client.get_object(**params)['Body']
+        headers['Content-Length'] = str(window[1] - window[0] + 1 if window else size)
+        return StreamingResponse(body.iter_chunks(1024 * 1024), status_code=206 if window else 200,
+                                 media_type='video/mp4', headers=headers)
 
     return routes

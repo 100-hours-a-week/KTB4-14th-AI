@@ -26,6 +26,7 @@ def create_app(*, settings: Settings | None = None, transport: httpx.AsyncBaseTr
     if os.environ.get("VIDEO_DATABASE_URL"):
         from ai_service.api.routes import video_jobs
         app.include_router(video_jobs.router(settings), dependencies=auth)
+        app.include_router(video_jobs.playback_router())
     configure_openapi(app)
     return app
 
