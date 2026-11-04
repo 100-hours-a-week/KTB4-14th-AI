@@ -37,9 +37,44 @@ def backup_once():
     return {'key': key, 'sha256': digest, 'size': target.stat().st_size}
 
 
+PG_STATE = Path('/data/pg')
+
+
+def wal_file(timeline, lsn, segment_size):
+    """WAL file name holding an LSN such as '0/2000028'."""
+    high, low = (int(part, 16) for part in lsn.split('/'))
+    segment = ((high << 32) | low) // segment_size
+    per_id = 0x100000000 // segment_size
+    return f'{timeline:08X}{segment // per_id:08X}{segment % per_id:08X}'
+
+
+def base_backup_once(keep=2):
+    """Physical base backup onto the network volume; restore replays the WAL archive on top of it."""
+    import json
+    import shutil
+    root = PG_STATE / 'base'
+    name = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    temp, target = root / (name + '.tmp'), root / name
+    subprocess.run(['pg_basebackup', '-h', '/var/run/postgresql', '-U', 'postgres', '-D', str(temp),
+                    '-Ft', '-z', '-X', 'fetch', '--checkpoint=fast'],
+                   check=True, timeout=1800, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    os.replace(temp, target)
+    backups = sorted(path for path in root.iterdir() if path.is_dir() and not path.name.endswith('.tmp'))
+    for old in backups[:-keep]:
+        shutil.rmtree(old)
+    # WAL older than the oldest kept base backup can never be replayed again.
+    oldest = json.loads((backups[-keep:][0] / 'backup_manifest').read_text())['WAL-Ranges'][0]
+    size = int(subprocess.run(['psql', '-h', '/var/run/postgresql', '-U', 'postgres', '-Atc', 'SHOW wal_segment_size'],
+                              check=True, capture_output=True, text=True).stdout.strip().removesuffix('MB')) * 1024 * 1024
+    subprocess.run(['pg_archivecleanup', '-x', '.gz', str(PG_STATE / 'wal'),
+                    wal_file(oldest['Timeline'], oldest['Start-LSN'], size)], check=True, stdout=subprocess.DEVNULL)
+    return name
+
+
 def main():
     while True:
         try:
+            print('Base backup stored:', base_backup_once(), flush=True)
             result = backup_once()
             print('Database backup verified:', result['key'], flush=True)
         except Exception as exc:

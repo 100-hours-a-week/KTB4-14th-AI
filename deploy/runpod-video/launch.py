@@ -2,9 +2,13 @@
 import json, os, sys, time
 from pathlib import Path
 os.environ.update(json.loads(Path('/data/config/database.json').read_text()))
+import subprocess
 from ai_service.services.video.jobs import connection, initialize
 for attempt in range(60):
     try:
+        if sys.argv[1] == 'api':
+            # A first boot interrupted after initdb leaves no app role; repair it before connecting.
+            subprocess.run([sys.executable, '/app/deploy/runpod-video/initdb.py'], check=True, capture_output=True)
         with connection() as conn:
             conn.execute('SELECT 1')
         break

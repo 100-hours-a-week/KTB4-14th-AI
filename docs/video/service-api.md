@@ -12,9 +12,18 @@
 - RunPod GPU: 실제 영상 생성 계산을 합니다. `VIDEO_GPU_AUTOSTART=1`이면 실행기가 대기 작업이 있을 때 GPU Pod를 켜고, 대기열이 `VIDEO_GPU_IDLE_STOP_SECONDS`(기본 600초) 동안 비면 끕니다. GPU Pod를 새로 만들거나 삭제하지는 않습니다.
 - RunPod Network Volume: 실제 사진·MP4·썸네일을 저장합니다. DB 자체는 이 볼륨에 설치하지 않습니다.
 
-API와 실행기는 초기에는 같은 CPU 서버의 별도 프로세스로 실행합니다.
-PostgreSQL 데이터는 CPU 서버의 영구 디스크에 저장하며, GPU 중지와 독립적입니다.
-운영에서는 DB 백업과 디스크 용량 관리도 필요합니다. compose 파일은 로컬 개발용 DB입니다.
+API와 실행기는 같은 CPU 서버의 별도 프로세스로 실행합니다. GPU를 꺼도 API와 DB는 계속 동작합니다.
+compose 파일은 로컬 개발용 DB입니다.
+
+### DB 데이터를 지키는 방법
+
+RunPod Network Volume(MooseFS)은 postgres 사용자에게 모든 폴더를 0777로 보여 주므로, PostgreSQL이 그 위에서는 시작을 거부합니다.
+그래서 DB 본체는 CPU Pod의 자체 디스크(`/var/lib/postgresql/data`)에서 실행하고, Network Volume(`/data/pg`)에는 복구용 기록을 둡니다.
+
+- 변경 기록(WAL): 최대 60초마다 `/data/pg/wal`에 gzip으로 복사합니다. 갑작스러운 종료 시 잃을 수 있는 범위는 최대 약 1분입니다.
+- 기준본(base backup): 백업 프로세스가 시작될 때와 이후 매일 `/data/pg/base`에 저장하고, 최근 2개만 남깁니다. 더 오래된 WAL은 자동 정리합니다.
+- 자동 복구: Pod를 껐다 켜서 자체 디스크가 비면, 시작 스크립트가 최신 기준본을 풀고 WAL을 재생해 마지막 상태로 되돌립니다.
+- 별도로 매일 `pg_dump` 파일을 미디어 볼륨의 `service-backups/video-db/`에 올리고 검증합니다.
 
 ## AI DB에 저장되는 내용
 
