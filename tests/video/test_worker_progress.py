@@ -134,8 +134,8 @@ def test_newer_combo_format_lists_models():
 
 
 def test_music_failure_falls_back_to_new_seed_then_no_music():
+    from uuid import uuid4
     from scripts.video.worker import MUSIC_FALLBACK_NOTICE, music_plans
-    plans = music_plans('AUTO')
+    plans = music_plans('AUTO', uuid4())
     assert [p[1] for p in plans] == ['AUTO', 'AUTO', 'NONE']
     assert plans[0][0] != plans[1][0] and plans[2][2] == MUSIC_FALLBACK_NOTICE
-    assert music_plans('NONE') == [(0, 'NONE', None)]

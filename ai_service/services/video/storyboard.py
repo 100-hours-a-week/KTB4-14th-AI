@@ -95,7 +95,7 @@ async def plan_travel_story(http,settings,candidates,*,max_photos,duration,conte
     core=Settings.from_env()
     if not core.openai_api_key:raise VideoError('travel_story_planner_key_missing')
     model=settings.story_model or core.openai_model
-    client=OpenAIClient(http,replace(core,openai_model=model,model_timeout_seconds=120))
+    client=OpenAIClient(http,retries=2,settings=replace(core,openai_model=model,model_timeout_seconds=120))
     content=[{'type':'text','text':f'Target duration: {duration} seconds. Maximum references: {max_photos}. User context: {context}'}]
     for index,path in candidates:
         url=await asyncio.to_thread(_thumbnail,path)
@@ -238,7 +238,7 @@ async def catalog_memory_photos(http, settings, candidates, *, context='', batch
     if not core.openai_api_key:
         raise VideoError('travel_story_planner_key_missing')
     model = settings.story_model or core.openai_model
-    client = OpenAIClient(http, replace(core, openai_model=model, model_timeout_seconds=120))
+    client = OpenAIClient(http, retries=2, settings=replace(core, openai_model=model, model_timeout_seconds=120))
     semaphore = asyncio.Semaphore(concurrency)
     schema = _strict_schema(MemoryPhotoBatch)
 

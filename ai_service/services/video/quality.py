@@ -295,7 +295,7 @@ async def review_take_semantics(http, settings, video_path: Path, reference_path
         images = await asyncio.to_thread(_review_images, video_path, reference_paths,
                                          start_frame, frame_count, policy.semantic_samples)
         content = [{'type': 'text', 'text': f'Intended evidenced scene: {visible_scene}\nIntended action: {subject_action}\nEvaluate the actual frames, not this intention.'}, *images]
-        client = OpenAIClient(http, replace(core, openai_model=model, model_timeout_seconds=90))
+        client = OpenAIClient(http, retries=2, settings=replace(core, openai_model=model, model_timeout_seconds=90))
         raw = await client.complete([{'role': 'system', 'content': REVIEW_INSTRUCTIONS},
                                      {'role': 'user', 'content': content}],
                                     _SemanticReview.model_json_schema(), 'generated_memory_take_review')
@@ -361,7 +361,7 @@ async def review_people_fidelity(http, settings, video_path, reference_paths, *,
     """Independent reference-first check; plausible crowds are not identity evidence."""
     core=Settings.from_env()
     model=settings.story_model or core.openai_model
-    client=OpenAIClient(http,replace(core,openai_model=model,model_timeout_seconds=90))
+    client=OpenAIClient(http,retries=2,settings=replace(core,openai_model=model,model_timeout_seconds=90))
     content=await asyncio.to_thread(_review_images,video_path,reference_paths,start_frame,frame_count,8)
     instructions=('First inventory people actually visible in the REFERENCE images, using visible appearance/clothing only. '
         'Then compare every prominent generated person with that evidence. Do not infer names, nationality or ethnicity. '

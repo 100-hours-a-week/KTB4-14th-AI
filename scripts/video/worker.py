@@ -1,6 +1,7 @@
 """Sequential PostgreSQL queue worker. One instance owns the configured GPU queue."""
 import asyncio
 from dataclasses import replace
+import hashlib
 import json
 import logging
 import tempfile
@@ -135,7 +136,7 @@ async def run_job(row):
 
 async def run_plans(job_id, payload, photos, settings):
     """Generate with each music plan until one works, then publish the finished video."""
-    for seed, preset, notice in music_plans(payload['music']):
+    for seed, preset, notice in music_plans(payload['music'], job_id):
         request = MemoryVideoRequest(photos=photos, duration_seconds=payload['duration_seconds'],
                                      memory_context=payload['memory_context'], memory_style=payload['memory_style'],
                                      music=MusicSelection(preset=preset), seed=seed)
@@ -163,12 +164,19 @@ async def run_plans(job_id, payload, photos, settings):
 MUSIC_FALLBACK_NOTICE = '자동 작곡한 음악이 품질 검사를 두 번 통과하지 못해, 이번 영상은 음악 없이 만들었습니다.'
 
 
-def music_plans(preset):
-    """(seed, music preset, notice) to try in order: the requested music, the same music with a new seed,
+def job_seed(job_id):
+    """Stable per-job seed. A fixed seed made every job compose the same two scores, so a rejected score
+    was rejected again in every later job."""
+    return int(hashlib.sha256(str(job_id).encode()).hexdigest()[:12], 16)
+
+
+def music_plans(preset, job_id):
+    """(seed, music preset, notice) to try in order: the requested music, the same music with another seed,
     then no music with a notice, so a rejected score never discards the whole video."""
+    seed = job_seed(job_id)
     if preset == 'NONE':
-        return [(0, 'NONE', None)]
-    return [(0, preset, None), (1_000_003, preset, None), (0, 'NONE', MUSIC_FALLBACK_NOTICE)]
+        return [(seed, 'NONE', None)]
+    return [(seed, preset, None), (seed + 1_000_003, preset, None), (seed, 'NONE', MUSIC_FALLBACK_NOTICE)]
 
 
 def required_models(settings):
@@ -316,7 +324,8 @@ async def child(job_id):
     except Exception as exc:
         reason = getattr(exc, 'reason', None) or type(exc).__name__
         update(row['id'], 'FAILED', status='FAILED', error=reason[:100], message=failure_message(reason))
-        logging.error('Video job %s failed (%s); inspect local pipeline report', row['id'], type(exc).__name__)
+        logging.error('Video job %s failed (%s %s %s); inspect local pipeline report', row['id'], type(exc).__name__,
+                      reason, getattr(exc, 'fields', '') or '')
         raise SystemExit(1)
 
 

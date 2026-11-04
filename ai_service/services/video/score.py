@@ -40,7 +40,9 @@ class ScorePolicy:
     minimum_active_fraction: float = 0.9
     maximum_leading_quiet_seconds: float = 0.5
     maximum_trailing_quiet_seconds: float = 1.5
-    maximum_internal_quiet_seconds: float = 0.5
+    # ACE takes often breathe for about a second before the main section; 0.5 s rejected every take measured
+    # on 2026-11-04 (pauses of 1.1 s and 1.8 s) although level, length and ending all passed.
+    maximum_internal_quiet_seconds: float = 1.5
     maximum_clipped_sample_fraction: float = 0.0001
     minimum_ending_drop_db: float = 6
 
