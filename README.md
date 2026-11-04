@@ -8,10 +8,10 @@
 ## API
 
 | 구분 | Method | 경로 | 설명 | 상태 |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | 공통 | GET | `/health` | 서버 상태 확인 | 완료 |
-| 실제 | POST | `/internal/ai/itineraries/generate` | 일정 생성 | 완료 |
-| 실제 | POST | `/api/ai/v1/itinerary-jobs/stream` | 일정 생성 | 완료 |
+| 일정생성(JSON) | POST | `/internal/ai/itineraries/generate` | 일정 생성 | 완료 |
+| 일정생성(SSE) | POST | `/api/ai/v1/itinerary-jobs/stream` | 일정 생성 | 완료 |
 | 체크리스트 | POST | `/api/ai/v1/checklists` | 여행가기전 체크리스트 생성 (JSON) | 구현 |
 
 

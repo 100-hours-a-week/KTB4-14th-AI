@@ -1,4 +1,5 @@
 """FastAPI 앱 조립. 실행 진입점은 ai_service.main:app."""
+import os
 from fastapi import Depends, FastAPI
 import httpx
 
@@ -22,6 +23,9 @@ def create_app(*, settings: Settings | None = None, transport: httpx.AsyncBaseTr
     auth = [Depends(require_api_token(settings.api_token))]
     for factory in (travel.router, music.router, matching.router, checklist.router):
         app.include_router(factory(settings), dependencies=auth)
+    if os.environ.get("VIDEO_DATABASE_URL"):
+        from ai_service.api.routes import video_jobs
+        app.include_router(video_jobs.router(settings), dependencies=auth)
     configure_openapi(app)
     return app
 

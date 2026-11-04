@@ -20,6 +20,7 @@ dependencies = [
 
 [project.optional-dependencies]
 video = [
+  "psycopg[binary]>=3.2,<4",
   "opencv-python-headless==4.13.0.92",
   "pillow>=11.3,<13",
 ]
