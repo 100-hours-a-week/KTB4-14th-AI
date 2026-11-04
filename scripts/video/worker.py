@@ -9,7 +9,8 @@ from pathlib import Path
 import httpx
 
 from ai_service.services.video.errors import VideoError
-from ai_service.services.video.jobs import claim, connection, failure_message, recover_interrupted, set_notice, update
+from ai_service.services.video.jobs import (claim, connection, failure_message, mark_cancelled, recover_interrupted,
+                                             set_notice, update)
 from ai_service.services.video.storage import VolumeResults, VolumeSettings
 from ai_service.services.video.config import VideoSettings
 from ai_service.schemas.video import MemoryVideoRequest, MusicSelection
@@ -67,6 +68,27 @@ def purge_media(folder: Path):
         elif path.is_dir() and not any(path.iterdir()):
             path.rmdir()
     return removed
+
+
+async def gpu_interrupt():
+    """Stop whatever the GPU is generating and empty its queue. Each GPU Pod serves only this worker, so
+    ComfyUI's global interrupt cannot touch anyone else's work."""
+    from ai_service.clients.runpod import EndpointResolver
+    settings = VideoSettings.from_env()
+    headers = {'Authorization': f'Bearer {settings.comfyui_token}'}
+    try:
+        async with httpx.AsyncClient(timeout=30) as http:
+            endpoint = await EndpointResolver(http, settings).resolve()
+            await http.post(endpoint.url + '/queue', json={'clear': True}, headers=headers)
+            await http.post(endpoint.url + '/interrupt', headers=headers)
+    except Exception as exc:
+        logging.warning('GPU interrupt skipped (%s)', type(exc).__name__)
+
+
+def cancel_requested(job_id):
+    with connection() as conn:
+        row = conn.execute('SELECT cancel_requested FROM video_jobs WHERE id=%s', (job_id,)).fetchone()
+    return bool(row and row['cancel_requested'])
 
 
 async def gpu_cleanup():
@@ -241,13 +263,32 @@ async def main():
             if row is None:
                 continue
             process = await asyncio.create_subprocess_exec(sys.executable, '-m', 'scripts.video.worker', '--job', str(row['id']), start_new_session=True)
+            cancelled = False
             try:
                 async with asyncio.timeout(7200):
                     while process.returncode is None:
                         heartbeat(lease, 'BUSY')
                         if power:
                             power.mark_busy()
+                        if cancel_requested(row['id']):
+                            cancelled = True
+                            break
                         await asyncio.sleep(2)
+                if cancelled:
+                    logging.info('Job %s: cancel requested; stopping generation', row['id'])
+                    os.killpg(process.pid, signal.SIGTERM)
+                    try:
+                        await asyncio.wait_for(process.wait(), 15)
+                    except TimeoutError:
+                        os.killpg(process.pid, signal.SIGKILL)
+                        await process.wait()
+                    await gpu_interrupt()
+                    with connection() as conn:
+                        mark_cancelled(conn, row['id'])
+                    # The killed child cannot run its own cleanup, so remove its local copies here.
+                    workspace = VideoSettings.from_env().workspace / f"job-{row['id']}-attempt-{row['attempts']}"
+                    if workspace.is_dir():
+                        purge_media(workspace)
                 with connection() as conn:
                     conn.execute("""UPDATE video_jobs SET status='FAILED',stage='FAILED',error_code='WORKER_PROCESS_FAILED',
                                     error_message='영상 생성 프로세스가 비정상 종료되었습니다.',completed_at=now(),updated_at=now()

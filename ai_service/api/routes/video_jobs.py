@@ -13,7 +13,7 @@ from fastapi import APIRouter, File, Header, HTTPException, Request, Response, U
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from ai_service.services.video.jobs import STAGES, connection, failure_message
+from ai_service.services.video.jobs import STAGES, cancel, connection, failure_message
 from ai_service.services.video.storage import VolumeResults, VolumeSettings
 
 Owner = Annotated[int, Header(alias='X-Owner-ID', gt=0, le=9223372036854775807)]
@@ -191,6 +191,18 @@ def router(settings):
         return {'job_id': str(body.request_id), 'status': row['status'],
                 'status_url': f'/api/ai/v1/video-jobs/{body.request_id}'}
 
+    @routes.post('/api/ai/v1/video-jobs/{job_id}/cancel', summary='영상 생성 취소',
+                 description='대기 중이면 바로 취소하고, 만드는 중이면 작업 실행기가 GPU 작업까지 멈춘 뒤 취소합니다.')
+    def cancel_job(job_id: UUID, x_owner_id: Owner):
+        result = cancel(job_id, x_owner_id)
+        if result is None:
+            raise HTTPException(404, 'Job not found')
+        if result == 'FINISHED':
+            raise HTTPException(409, 'Job already finished')
+        message = '취소했습니다.' if result == 'CANCELLED' else '취소를 요청했습니다. 만들던 작업을 멈추는 중입니다 (보통 수십 초).'
+        return JSONResponse({'job_id': str(job_id), 'status': result, 'message': message},
+                            status_code=200 if result == 'CANCELLED' else 202)
+
     @routes.get('/api/ai/v1/video-jobs', summary='내 영상 작업 목록')
     def list_jobs(x_owner_id: Owner, offset: int = 0):
         if offset < 0:
@@ -215,8 +227,10 @@ def router(settings):
         worker_label = WORKER_LABELS.get(worker, worker)
         if position and position > 1 and worker == 'BUSY':
             worker_label = '앞 순서의 다른 영상을 만드는 중 (이 작업은 그다음 차례)'
+        cancelling = row['status'] == 'RUNNING' and row.get('cancel_requested')
         return {'job_id': str(job_id), 'status': row['status'], 'stage': row['stage'],
-                'stage_label': STAGES.get(row['stage'], row['stage']),
+                'stage_label': '취소하는 중' if cancelling else STAGES.get(row['stage'], row['stage']),
+                'cancel_requested': bool(row.get('cancel_requested')),
                 'travel_plan_id': row.get('travel_plan_id'),
                 'photo_count': len(row.get('photo_keys') or request_body.get('upload_ids') or []),
                 'duration_seconds': request_body.get('duration_seconds'),

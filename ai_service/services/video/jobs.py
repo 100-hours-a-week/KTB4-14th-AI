@@ -11,6 +11,7 @@ STAGES = {
     'SAVING': '저장 중',
     'COMPLETED': '완료',
     'FAILED': '실패',
+    'CANCELLED': '취소됨',
 }
 MAX_ATTEMPTS = 3
 
@@ -71,6 +72,7 @@ ALTER TABLE video_jobs ADD COLUMN IF NOT EXISTS error_message text;
 ALTER TABLE video_jobs ADD COLUMN IF NOT EXISTS completed_at timestamptz;
 ALTER TABLE video_jobs ADD COLUMN IF NOT EXISTS attempts integer NOT NULL DEFAULT 0;
 ALTER TABLE video_jobs ADD COLUMN IF NOT EXISTS notice text;
+ALTER TABLE video_jobs ADD COLUMN IF NOT EXISTS cancel_requested boolean NOT NULL DEFAULT false;
 CREATE INDEX IF NOT EXISTS video_jobs_queue ON video_jobs(created_at) WHERE status='QUEUED';
 CREATE INDEX IF NOT EXISTS video_jobs_owner ON video_jobs(owner_id, created_at);
 CREATE TABLE IF NOT EXISTS video_worker (
@@ -111,8 +113,35 @@ def set_notice(job_id, text):
         conn.execute('UPDATE video_jobs SET notice=%s,updated_at=now() WHERE id=%s', (text[:500], job_id))
 
 
+CANCELLED_MESSAGE = '요청에 따라 영상 생성을 취소했습니다.'
+
+
+def cancel(job_id, owner):
+    """Cancel an owner's job. A queued job ends at once; a running job is flagged and the worker stops it.
+    Returns the new status, or None when the job does not exist, or 'FINISHED' when it already ended."""
+    with connection() as conn:
+        row = conn.execute('SELECT status FROM video_jobs WHERE id=%s AND owner_id=%s FOR UPDATE', (job_id, owner)).fetchone()
+        if row is None:
+            return None
+        if row['status'] in ('QUEUED', 'HELD'):
+            conn.execute("""UPDATE video_jobs SET status='CANCELLED',stage='CANCELLED',error_message=%s,
+                            completed_at=now(),updated_at=now() WHERE id=%s""", (CANCELLED_MESSAGE, job_id))
+            return 'CANCELLED'
+        if row['status'] == 'RUNNING':
+            conn.execute('UPDATE video_jobs SET cancel_requested=true,updated_at=now() WHERE id=%s', (job_id,))
+            return 'CANCELLING'
+        return 'FINISHED'
+
+
+def mark_cancelled(conn, job_id):
+    conn.execute("""UPDATE video_jobs SET status='CANCELLED',stage='CANCELLED',error_message=%s,completed_at=now(),
+                    updated_at=now() WHERE id=%s AND status='RUNNING'""", (CANCELLED_MESSAGE, job_id))
+
+
 def recover_interrupted(conn):
     """Requeue jobs a dead worker left RUNNING; give up after MAX_ATTEMPTS claims."""
+    conn.execute("""UPDATE video_jobs SET status='CANCELLED',stage='CANCELLED',error_message=%s,completed_at=now(),
+                    updated_at=now() WHERE status='RUNNING' AND cancel_requested""", (CANCELLED_MESSAGE,))
     conn.execute("""UPDATE video_jobs SET status='QUEUED',stage='QUEUED',updated_at=now()
                     WHERE status='RUNNING' AND attempts < %s""", (MAX_ATTEMPTS,))
     conn.execute("""UPDATE video_jobs SET status='FAILED',stage='FAILED',error_code='WORKER_INTERRUPTED',

@@ -1,3 +1,4 @@
+import pytest
 import io
 from contextlib import contextmanager
 import time
@@ -215,3 +216,32 @@ def test_waiting_behind_another_job_is_explained(monkeypatch):
     data = client().get(f'/api/ai/v1/video-jobs/{uuid4()}', headers={'Authorization': 'Bearer test-secret', 'X-Owner-ID': '1'}).json()
     assert '앞 순서의 다른 영상' in data['worker_state_label']
     assert data['estimate_note'].startswith('앞에 1개 작업이 있어 시작까지 약 30분')
+
+
+@pytest.mark.parametrize('result, status_code, status', [('CANCELLED', 200, 'CANCELLED'), ('CANCELLING', 202, 'CANCELLING')])
+def test_cancel_endpoint(monkeypatch, result, status_code, status):
+    calls = []
+    monkeypatch.setattr(video_jobs, 'cancel', lambda job, owner: calls.append((str(job), owner)) or result)
+    job_id = uuid4()
+    response = client().post(f'/api/ai/v1/video-jobs/{job_id}/cancel', headers={'Authorization': 'Bearer test-secret', 'X-Owner-ID': '3'})
+    assert (response.status_code, response.json()['status']) == (status_code, status)
+    assert calls == [(str(job_id), 3)]
+
+
+@pytest.mark.parametrize('result, status_code', [(None, 404), ('FINISHED', 409)])
+def test_cancel_unknown_or_finished_job(monkeypatch, result, status_code):
+    monkeypatch.setattr(video_jobs, 'cancel', lambda job, owner: result)
+    response = client().post(f'/api/ai/v1/video-jobs/{uuid4()}/cancel', headers={'Authorization': 'Bearer test-secret', 'X-Owner-ID': '1'})
+    assert response.status_code == status_code
+
+
+def test_cancel_requires_service_token():
+    assert client().post(f'/api/ai/v1/video-jobs/{uuid4()}/cancel', headers={'X-Owner-ID': '1'}).status_code == 401
+
+
+def test_running_job_with_cancel_request_says_cancelling(monkeypatch):
+    monkeypatch.setattr(video_jobs, 'worker_state', lambda: 'BUSY')
+    row = {'status': 'RUNNING', 'stage': 'GENERATING_VIDEO', 'cancel_requested': True, 'error_code': None, 'updated_at': None}
+    monkeypatch.setattr(video_jobs, 'find_job', lambda job, owner: row)
+    data = client().get(f'/api/ai/v1/video-jobs/{uuid4()}', headers={'Authorization': 'Bearer test-secret', 'X-Owner-ID': '1'}).json()
+    assert data['stage_label'] == '취소하는 중' and data['cancel_requested'] is True

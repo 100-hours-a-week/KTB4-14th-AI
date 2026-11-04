@@ -18,6 +18,7 @@
   input[type=text], input[type=password], input[type=number] { width: 100%; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; }
   button { margin-top: 12px; padding: 9px 16px; border: 0; border-radius: 8px; background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
   button:disabled { opacity: .45; cursor: default; }
+  button.danger { background: var(--bad); margin-left: 8px; }
   .row { display: flex; gap: 10px; } .row > div { flex: 1; }
   ul { margin: 8px 0 0; padding-left: 18px; font-size: 14px; }
   .ok { color: var(--ok); } .bad { color: var(--bad); } .muted { color: var(--muted); font-size: 13px; }
@@ -68,7 +69,7 @@
     <h2>4. 진행 상황</h2>
     <label for="jobId">작업 번호 (이미 있는 작업을 확인할 때 직접 입력)</label>
     <input id="jobId" type="text" placeholder="영상 요청을 보내면 자동으로 채워집니다">
-    <button id="check">상태 확인</button>
+    <button id="check">상태 확인</button><button id="cancel" class="danger" hidden>이 작업 취소</button>
     <div id="stage" class="stage"></div>
     <ol id="steps" class="steps"></ol>
     <dl id="facts"></dl>
@@ -148,6 +149,21 @@ $('create').onclick = async () => {
 
 $('check').onclick = follow;
 
+$('cancel').onclick = async () => {
+  const jobId = $('jobId').value.trim();
+  if (!jobId || !confirm('이 영상 만들기를 취소할까요? 만들던 내용은 저장되지 않습니다.')) return;
+  $('cancel').disabled = true;
+  try {
+    const result = await call(`/api/ai/v1/video-jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST', headers: headers() });
+    $('stageDetail').textContent = result.message;
+  } catch (error) {
+    $('stageDetail').innerHTML = `<span class="bad">${error.message.includes('409') ? '이미 끝난 작업이라 취소할 수 없습니다.' : error.message}</span>`;
+  } finally {
+    $('cancel').disabled = false;
+    follow();
+  }
+};
+
 const STEPS = [['QUEUED', '대기 중'], ['ANALYZING_PHOTOS', '사진 분석 중'], ['GENERATING_VIDEO', 'AI 영상 생성 중'],
                ['EDITING_VIDEO', '영상 편집 중'], ['SAVING', '저장 중'], ['COMPLETED', '완료']];
 
@@ -180,8 +196,10 @@ async function follow() {
     const job = await call(`/api/ai/v1/video-jobs/${encodeURIComponent(jobId)}`, { headers: headers() });
     $('stage').textContent = job.stage_label;
     render(job);
+    $('cancel').hidden = !['QUEUED', 'RUNNING', 'HELD'].includes(job.status) || job.cancel_requested;
     const checked = new Date().toLocaleTimeString('ko-KR');
-    $('stageDetail').textContent = job.status === 'FAILED' ? `실패 이유: ${job.error_message || '알 수 없음'} (오류 코드: ${job.error_code})`
+    $('stageDetail').textContent = job.status === 'CANCELLED' ? (job.error_message || '취소된 작업입니다.')
+      : job.status === 'FAILED' ? `실패 이유: ${job.error_message || '알 수 없음'} (오류 코드: ${job.error_code})`
       : job.status === 'COMPLETED' ? `작업 번호 ${jobId}` : `마지막 확인 ${checked} · 5초마다 자동으로 새로 고칩니다`;
     if (job.status === 'COMPLETED') {
       const play = await call(`/api/ai/v1/video-jobs/${encodeURIComponent(jobId)}/video?response_format=json`, { headers: headers() });
@@ -189,7 +207,7 @@ async function follow() {
       $('player').hidden = false;
       $('stageDetail').textContent = '완성! 아래에서 재생할 수 있습니다.';
       $('steps').querySelectorAll('li').forEach(li => { li.className = 'done'; li.textContent = '✓ ' + li.textContent.slice(2); });
-    } else if (job.status !== 'FAILED') {
+    } else if (!['FAILED', 'CANCELLED'].includes(job.status)) {
       timer = setTimeout(follow, 5000);
     }
   } catch (error) {

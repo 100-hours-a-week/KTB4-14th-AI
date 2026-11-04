@@ -128,3 +128,20 @@ def test_queue_position_counts_earlier_active_jobs(api):
     client.post('/api/ai/v1/video-jobs', headers=headers(), json=second)
     assert client.get('/api/ai/v1/video-jobs/' + first['request_id'], headers=headers()).json()['queue_position'] == 1
     assert client.get('/api/ai/v1/video-jobs/' + second['request_id'], headers=headers()).json()['queue_position'] == 2
+
+
+def test_cancel_queued_running_finished_and_other_owner(api):
+    client, photos = api
+    queued, running = payload(photos), payload(photos)
+    client.post('/api/ai/v1/video-jobs', headers=headers(), json=queued)
+    client.post('/api/ai/v1/video-jobs', headers=headers(), json=running)
+    with jobs.connection() as conn:
+        conn.execute("UPDATE video_jobs SET status='RUNNING' WHERE id=%s", (running['request_id'],))
+    assert jobs.cancel(queued['request_id'], 2) is None  # someone else's job
+    assert jobs.cancel(queued['request_id'], 1) == 'CANCELLED'
+    assert jobs.cancel(queued['request_id'], 1) == 'FINISHED'
+    assert jobs.cancel(running['request_id'], 1) == 'CANCELLING'
+    with jobs.connection() as conn:
+        jobs.recover_interrupted(conn)  # a worker restart honours the pending cancel instead of requeueing
+        status = conn.execute('SELECT status FROM video_jobs WHERE id=%s', (running['request_id'],)).fetchone()['status']
+    assert status == 'CANCELLED'
