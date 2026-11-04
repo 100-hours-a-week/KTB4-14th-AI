@@ -16,12 +16,16 @@ import httpx
 API = 'https://rest.runpod.io/v1/pods'
 DEFAULT_GPU_TYPES = ('NVIDIA A100 80GB PCIe', 'NVIDIA A100-SXM4-80GB')
 DEFAULT_IMAGE = 'runpod/comfyui:1.4.1-comfyuiv0.35.0-cuda12.8'
+GATE_PORT = 8189
+# The Pod publishes only the password gate (deploy/runpod-gpu/gate.py on the volume), never ComfyUI's 8188.
+START_COMMAND = 'python3 /workspace/audigo/gate.py >> /workspace/audigo/gate.log 2>&1 & exec /start.sh'
 
 
 @dataclass(frozen=True)
 class PowerSettings:
     api_key: str
     volume_id: str
+    gate_token: str = ''
     prefix: str = 'audigo-video-gpu-'
     gpu_types: tuple = DEFAULT_GPU_TYPES
     image: str = DEFAULT_IMAGE
@@ -36,10 +40,12 @@ class PowerSettings:
             return None
         api_key, volume = os.environ.get('RUNPOD_API_KEY', ''), os.environ.get('VIDEO_GPU_VOLUME_ID', '')
         prefix = os.environ.get('RUNPOD_POD_PREFIX', 'audigo-video-gpu-')
-        if not api_key or not re.fullmatch(r'[a-z0-9]+', volume) or len(prefix) < 6:
-            raise SystemExit('VIDEO_GPU_AUTOSTART=1 requires RUNPOD_API_KEY, VIDEO_GPU_VOLUME_ID and RUNPOD_POD_PREFIX')
+        token = os.environ.get('COMFYUI_API_TOKEN', '')
+        if not api_key or not re.fullmatch(r'[a-z0-9]+', volume) or len(prefix) < 6 or len(token) < 32:
+            raise SystemExit('VIDEO_GPU_AUTOSTART=1 requires RUNPOD_API_KEY, VIDEO_GPU_VOLUME_ID, RUNPOD_POD_PREFIX '
+                             'and a 32+ character COMFYUI_API_TOKEN for the GPU password gate')
         types = tuple(t.strip() for t in os.environ.get('VIDEO_GPU_TYPES', '').split(',') if t.strip())
-        return cls(api_key, volume, prefix, types or DEFAULT_GPU_TYPES, os.environ.get('VIDEO_GPU_IMAGE', DEFAULT_IMAGE),
+        return cls(api_key, volume, token, prefix, types or DEFAULT_GPU_TYPES, os.environ.get('VIDEO_GPU_IMAGE', DEFAULT_IMAGE),
                    os.environ.get('VIDEO_GPU_PUBLIC_KEY', ''), int(os.environ.get('VIDEO_GPU_IDLE_STOP_SECONDS', 600)),
                    int(os.environ.get('VIDEO_GPU_START_RETRY_SECONDS', 120)))
 
@@ -68,9 +74,11 @@ class GpuPower:
         body = {'name': f'{self.settings.prefix}{int(time.time())}', 'imageName': self.settings.image,
                 'cloudType': 'SECURE', 'computeType': 'GPU', 'gpuTypeIds': list(self.settings.gpu_types),
                 'gpuCount': 1, 'networkVolumeId': self.settings.volume_id, 'volumeMountPath': '/workspace',
-                'containerDiskInGb': 40, 'ports': ['8188/http', '22/tcp']}
+                'containerDiskInGb': 40, 'ports': [f'{GATE_PORT}/http', '22/tcp'],
+                'dockerEntrypoint': ['bash', '-c'], 'dockerStartCmd': [START_COMMAND],
+                'env': {'COMFYUI_API_TOKEN': self.settings.gate_token}}
         if self.settings.public_key:
-            body['env'] = {'PUBLIC_KEY': self.settings.public_key}
+            body['env']['PUBLIC_KEY'] = self.settings.public_key
         return body
 
     async def ensure_started(self):

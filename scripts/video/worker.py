@@ -52,6 +52,38 @@ async def track_progress(job_id, workspace: Path):
             current = stage
 
 
+# User photos and generated media; text reports stay for debugging.
+MEDIA_SUFFIXES = {'.png', '.jpg', '.jpeg', '.webp', '.image', '.mp4', '.mov', '.webm', '.flac', '.wav', '.mp3',
+                  '.m4a', '.aac', '.partial', '.tmp'}
+
+
+def purge_media(folder: Path):
+    """Delete photo copies, clips, audio and renders under a job workspace; keep JSON reports."""
+    removed = 0
+    for path in sorted(folder.rglob('*'), reverse=True):
+        if path.is_file() and path.suffix.lower() in MEDIA_SUFFIXES:
+            path.unlink()
+            removed += 1
+        elif path.is_dir() and not any(path.iterdir()):
+            path.rmdir()
+    return removed
+
+
+async def gpu_cleanup():
+    """Ask the GPU's password gate to delete this service's ComfyUI inputs and outputs (best effort)."""
+    from ai_service.clients.runpod import EndpointResolver
+    settings = VideoSettings.from_env()
+    try:
+        async with httpx.AsyncClient(timeout=60) as http:
+            endpoint = await EndpointResolver(http, settings).resolve()
+            response = await http.post(endpoint.url + '/_audigo/cleanup',
+                                       headers={'Authorization': f'Bearer {settings.comfyui_token}'})
+            response.raise_for_status()
+            logging.info('GPU cleanup removed %s file(s)', response.json().get('removed_files'))
+    except Exception as exc:
+        logging.warning('GPU cleanup skipped (%s)', type(exc).__name__)
+
+
 async def run_job(row):
     job_id, payload = row['id'], row['request']
     volume = VolumeResults(VolumeSettings.from_env())
@@ -72,31 +104,38 @@ async def run_job(row):
         settings = replace(base, generation_profile='fast', workspace=workspace)
         tracker = asyncio.create_task(track_progress(job_id, workspace))
         try:
-            for seed, preset, notice in music_plans(payload['music']):
-                request = MemoryVideoRequest(photos=photos, duration_seconds=payload['duration_seconds'],
-                                             memory_context=payload['memory_context'], memory_style=payload['memory_style'],
-                                             music=MusicSelection(preset=preset), seed=seed)
-                try:
-                    async with httpx.AsyncClient(follow_redirects=False) as http:
-                        result = await VideoPipeline(http, settings, execution_mode='live').generate(request)
-                except VideoError as error:
-                    # Music is composed before any video scene, so a rejected score costs about a minute of GPU.
-                    if error.reason != 'score_quality_failed':
-                        raise
-                    logging.warning('Job %s: generated music failed its quality check; trying the next music plan', job_id)
-                    continue
-                if notice:
-                    set_notice(job_id, notice)
-                break
-            else:
-                raise VideoError('score_quality_failed')
+            await run_plans(job_id, payload, photos, settings)
         finally:
             tracker.cancel()
-        if result.get('status') != 'completed' or not result.get('output_file'):
-            raise RuntimeError(result.get('failure_reason') or 'Pipeline did not complete')
-        update(job_id, 'SAVING')
-        publication = await publish_video(Path(result['output_file']))
-        update(job_id, 'COMPLETED', status='COMPLETED', publication=publication)
+            # Success or failure, no copy of the user's photos or video stays on the CPU work disk.
+            logging.info('Job %s: removed %d local media file(s)', job_id, purge_media(workspace))
+
+
+async def run_plans(job_id, payload, photos, settings):
+    """Generate with each music plan until one works, then publish the finished video."""
+    for seed, preset, notice in music_plans(payload['music']):
+        request = MemoryVideoRequest(photos=photos, duration_seconds=payload['duration_seconds'],
+                                     memory_context=payload['memory_context'], memory_style=payload['memory_style'],
+                                     music=MusicSelection(preset=preset), seed=seed)
+        try:
+            async with httpx.AsyncClient(follow_redirects=False) as http:
+                result = await VideoPipeline(http, settings, execution_mode='live').generate(request)
+        except VideoError as error:
+            # Music is composed before any video scene, so a rejected score costs about a minute of GPU.
+            if error.reason != 'score_quality_failed':
+                raise
+            logging.warning('Job %s: generated music failed its quality check; trying the next music plan', job_id)
+            continue
+        if notice:
+            set_notice(job_id, notice)
+        break
+    else:
+        raise VideoError('score_quality_failed')
+    if result.get('status') != 'completed' or not result.get('output_file'):
+        raise RuntimeError(result.get('failure_reason') or 'Pipeline did not complete')
+    update(job_id, 'SAVING')
+    publication = await publish_video(Path(result['output_file']))
+    update(job_id, 'COMPLETED', status='COMPLETED', publication=publication)
 
 
 MUSIC_FALLBACK_NOTICE = '자동 작곡한 음악이 품질 검사를 두 번 통과하지 못해, 이번 영상은 음악 없이 만들었습니다.'
@@ -222,6 +261,8 @@ async def main():
                     except TimeoutError:
                         os.killpg(process.pid, signal.SIGKILL)
                         await process.wait()
+                # Photos and clips uploaded to the GPU stay on its persistent volume unless removed.
+                await gpu_cleanup()
 
 
 async def child(job_id):

@@ -57,6 +57,8 @@ class FakeRunPod:
                 return httpx.Response(500, text='There are no instances currently available')
             body = json.loads(request.content)
             assert body['networkVolumeId'] == 'vol1' and body['name'].startswith('audigo-video-gpu-')
+            assert body['ports'] == ['8189/http', '22/tcp'] and body['env']['COMFYUI_API_TOKEN'] == 'g' * 40
+            assert 'gate.py' in body['dockerStartCmd'][0]
             self.pods['new'] = {'id': 'new', 'name': body['name'], 'desiredStatus': 'RUNNING'}
             return httpx.Response(200, json=self.pods['new'])
         if method == 'DELETE':
@@ -66,7 +68,7 @@ class FakeRunPod:
 
 
 def power(api, clock):
-    return GpuPower(PowerSettings('key', 'vol1', idle_stop_seconds=600, start_retry_seconds=120),
+    return GpuPower(PowerSettings('key', 'vol1', 'g' * 40, idle_stop_seconds=600, start_retry_seconds=120),
                     transport=httpx.MockTransport(api.handle), clock=clock)
 
 
