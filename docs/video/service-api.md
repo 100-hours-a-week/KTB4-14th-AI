@@ -44,6 +44,15 @@ RunPod Network Volume(MooseFS)은 postgres 사용자에게 모든 폴더를 0777
 
 표와 열은 API·실행기가 시작할 때 자동으로 만들어지며, 이미 있는 데이터는 지우지 않습니다.
 
+## GPU 서버 구성 (2026-11-04)
+
+- 모델 보관함: 몬트리올(CA-MTL-3) 네트워크 볼륨 `audigo-gpu-models-mtl`(`i1rifh8j8j`, 100GB)에 영상·음악 모델 6개(53GB)가 있습니다. 처음 한 번 `deploy/runpod-gpu/download_models.py`로 받았으며, GPU를 새로 만들어도 다시 받지 않습니다.
+- 필요할 때 GPU 만들기: `VIDEO_GPU_AUTOSTART=1`이면 대기 작업이 있을 때 작업 실행기가 이 볼륨에 A100 GPU Pod(이름 `audigo-video-gpu-…`)를 만들고, 대기열이 10분 동안 비면 삭제합니다. 멈춘 Pod는 원래 머신의 GPU가 차 있으면 다시 켜지지 않기 때문에 멈춤 대신 삭제·새로 만들기를 씁니다. 만들기부터 사용 가능까지 약 2분 걸렸습니다.
+- 모델 확인: GPU의 ComfyUI에 모델 6개가 모두 보일 때만 작업을 가져갑니다. 모델이 없는 GPU에는 작업을 보내지 않습니다.
+- 비밀번호 관문: ComfyUI는 자체 인증이 없으므로 GPU Pod는 `deploy/runpod-gpu/gate.py`(볼륨의 `/workspace/audigo/gate.py`)만 8189 포트로 공개하고 ComfyUI의 8188은 열지 않습니다. `COMFYUI_API_TOKEN`이 맞는 요청만 통과합니다. 실서버에서 비밀번호 없는 요청은 모두 401, 8188 직접 접속은 불가함을 확인했습니다.
+- 사진·영상 사본 삭제: 작업이 끝나면(성공·실패 모두) GPU의 업로드 사진·생성 파일과 CPU 작업 폴더의 사진·영상·음악 사본을 지웁니다. 원인 확인용 JSON 보고서만 남깁니다. 원본 사진과 완성 영상은 미디어 볼륨에만 있습니다.
+- RunPod는 모든 Pod에 `RUNPOD_POD_ID`(그 Pod 자신의 ID)와 `RUNPOD_API_KEY`(권한이 제한된 키)를 자동으로 넣습니다. 그래서 특정 GPU 지정은 `VIDEO_GPU_POD_ID`를 쓰고, 계정 API 키는 `runtime.env`에서 덮어씁니다.
+
 ## 실행
 
 `uv sync --extra video`로 영상 의존성과 PostgreSQL 드라이버를 설치합니다.

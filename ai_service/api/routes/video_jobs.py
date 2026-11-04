@@ -196,8 +196,14 @@ def router(settings):
         if offset < 0:
             raise HTTPException(400, 'Invalid offset')
         with connection() as conn:
-            rows = conn.execute('SELECT id,status,stage,error_code,created_at,updated_at FROM video_jobs WHERE owner_id=%s ORDER BY created_at DESC LIMIT 50 OFFSET %s', (x_owner_id, offset)).fetchall()
-        return {'items': rows, 'offset': offset, 'limit': 50}
+            rows = conn.execute('''SELECT id,status,stage,error_code,error_message,notice,created_at,completed_at,updated_at,
+                                          coalesce(cardinality(photo_keys), 0) AS photo_count
+                                   FROM video_jobs WHERE owner_id=%s ORDER BY created_at DESC LIMIT 50 OFFSET %s''',
+                                (x_owner_id, offset)).fetchall()
+        items = [{**row, 'stage_label': STAGES.get(row['stage'], row['stage']), 'error_message': korean_failure(row),
+                  'video_url': f"/api/ai/v1/video-jobs/{row['id']}/video" if row['status'] == 'COMPLETED' else None}
+                 for row in rows]
+        return {'items': items, 'offset': offset, 'limit': 50}
 
     @routes.get('/api/ai/v1/video-jobs/{job_id}', summary='영상 진행 상태 조회')
     def status(job_id: UUID, x_owner_id: Owner):
