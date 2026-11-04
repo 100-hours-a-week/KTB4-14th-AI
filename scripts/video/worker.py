@@ -8,7 +8,8 @@ from pathlib import Path
 
 import httpx
 
-from ai_service.services.video.jobs import claim, connection, recover_interrupted, update
+from ai_service.services.video.errors import VideoError
+from ai_service.services.video.jobs import claim, connection, recover_interrupted, set_notice, update
 from ai_service.services.video.storage import VolumeResults, VolumeSettings
 from ai_service.services.video.config import VideoSettings
 from ai_service.schemas.video import MemoryVideoRequest, MusicSelection
@@ -64,9 +65,6 @@ async def run_job(row):
             path = Path(folder) / f'{index:04d}.png'
             await asyncio.to_thread(volume.client.download_file, volume.settings.volume_id, keys[upload_id], str(path))
             photos.append(path)
-        request = MemoryVideoRequest(photos=photos, duration_seconds=payload['duration_seconds'],
-                                     memory_context=payload['memory_context'], memory_style=payload['memory_style'],
-                                     music=MusicSelection(preset=payload['music']))
         # A persistent workspace per job keeps failure reports and lets progress tracking read only this job.
         base = VideoSettings.from_env()
         workspace = base.workspace / f'job-{job_id}-attempt-{row["attempts"]}'
@@ -74,8 +72,24 @@ async def run_job(row):
         settings = replace(base, generation_profile='fast', workspace=workspace)
         tracker = asyncio.create_task(track_progress(job_id, workspace))
         try:
-            async with httpx.AsyncClient(follow_redirects=False) as http:
-                result = await VideoPipeline(http, settings, execution_mode='live').generate(request)
+            for seed, preset, notice in music_plans(payload['music']):
+                request = MemoryVideoRequest(photos=photos, duration_seconds=payload['duration_seconds'],
+                                             memory_context=payload['memory_context'], memory_style=payload['memory_style'],
+                                             music=MusicSelection(preset=preset), seed=seed)
+                try:
+                    async with httpx.AsyncClient(follow_redirects=False) as http:
+                        result = await VideoPipeline(http, settings, execution_mode='live').generate(request)
+                except VideoError as error:
+                    # Music is composed before any video scene, so a rejected score costs about a minute of GPU.
+                    if error.reason != 'score_quality_failed':
+                        raise
+                    logging.warning('Job %s: generated music failed its quality check; trying the next music plan', job_id)
+                    continue
+                if notice:
+                    set_notice(job_id, notice)
+                break
+            else:
+                raise VideoError('score_quality_failed')
         finally:
             tracker.cancel()
         if result.get('status') != 'completed' or not result.get('output_file'):
@@ -83,6 +97,17 @@ async def run_job(row):
         update(job_id, 'SAVING')
         publication = await publish_video(Path(result['output_file']))
         update(job_id, 'COMPLETED', status='COMPLETED', publication=publication)
+
+
+MUSIC_FALLBACK_NOTICE = '자동 작곡한 음악이 품질 검사를 두 번 통과하지 못해, 이번 영상은 음악 없이 만들었습니다.'
+
+
+def music_plans(preset):
+    """(seed, music preset, notice) to try in order: the requested music, the same music with a new seed,
+    then no music with a notice, so a rejected score never discards the whole video."""
+    if preset == 'NONE':
+        return [(0, 'NONE', None)]
+    return [(0, preset, None), (1_000_003, preset, None), (0, 'NONE', MUSIC_FALLBACK_NOTICE)]
 
 
 def required_models(settings):

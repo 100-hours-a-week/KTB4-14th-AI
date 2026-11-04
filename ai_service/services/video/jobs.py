@@ -31,6 +31,7 @@ ALTER TABLE video_jobs ADD COLUMN IF NOT EXISTS video_key text;
 ALTER TABLE video_jobs ADD COLUMN IF NOT EXISTS error_message text;
 ALTER TABLE video_jobs ADD COLUMN IF NOT EXISTS completed_at timestamptz;
 ALTER TABLE video_jobs ADD COLUMN IF NOT EXISTS attempts integer NOT NULL DEFAULT 0;
+ALTER TABLE video_jobs ADD COLUMN IF NOT EXISTS notice text;
 CREATE INDEX IF NOT EXISTS video_jobs_queue ON video_jobs(created_at) WHERE status='QUEUED';
 CREATE INDEX IF NOT EXISTS video_jobs_owner ON video_jobs(owner_id, created_at);
 CREATE TABLE IF NOT EXISTS video_worker (
@@ -63,6 +64,12 @@ def update(job_id, stage, *, status='RUNNING', publication=None, error=None, mes
                         completed_at=CASE WHEN %s IN ('COMPLETED','FAILED') THEN now() END,updated_at=now() WHERE id=%s''',
                      (stage, status, Jsonb(publication) if publication else None, video_key, error,
                       message[:500] if message else None, status, job_id))
+
+
+def set_notice(job_id, text):
+    """A user-facing note on an otherwise successful job, such as a music fallback."""
+    with connection() as conn:
+        conn.execute('UPDATE video_jobs SET notice=%s,updated_at=now() WHERE id=%s', (text[:500], job_id))
 
 
 def recover_interrupted(conn):

@@ -168,6 +168,7 @@ function render(job) {
   if (job.queue_position) facts.push(['대기 순번', job.queue_position === 1 ? '다음 차례' : `${job.queue_position}번째`]);
   if (job.estimate_note) facts.push(['예상 시간', job.estimate_note]);
   if (job.completed_at) facts.push(['완료 시각', new Date(job.completed_at).toLocaleString('ko-KR')]);
+  if (job.notice) facts.push(['알림', job.notice]);
   $('facts').innerHTML = facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
 }
 

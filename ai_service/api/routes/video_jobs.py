@@ -196,6 +196,7 @@ def router(settings):
                 'worker_state': worker, 'worker_state_label': WORKER_LABELS.get(worker, worker),
                 'estimate_note': ESTIMATE_NOTE if active else None,
                 'error_code': row['error_code'], 'error_message': row.get('error_message'),
+                'notice': row.get('notice'),
                 'created_at': row.get('created_at'), 'completed_at': row.get('completed_at'),
                 'updated_at': row['updated_at'],
                 'video_url': f'/api/ai/v1/video-jobs/{job_id}/video' if row['status'] == 'COMPLETED' else None}
