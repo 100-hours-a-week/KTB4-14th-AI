@@ -75,7 +75,7 @@ class VideoSettings:
             "comfyui_token": ("COMFYUI_API_TOKEN", str),
             "runpod_api_key": ("RUNPOD_API_KEY", str),
             "runpod_prefix": ("RUNPOD_POD_PREFIX", str),
-            "runpod_pod_id": ("RUNPOD_POD_ID", str),
+            "runpod_pod_id": ("VIDEO_GPU_POD_ID", str),  # not RUNPOD_POD_ID: RunPod sets that to the current Pod
             "runpod_port": ("RUNPOD_COMFYUI_PORT", int),
             "discovery_ttl": ("VIDEO_DISCOVERY_TTL_SECONDS", float),
             "workspace": ("VIDEO_WORKSPACE", Path),

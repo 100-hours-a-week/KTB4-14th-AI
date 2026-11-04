@@ -96,11 +96,16 @@ def required_models(settings):
 
 
 def missing_models(object_info, required):
-    """Files a loader cannot offer; object_info maps node -> {'input': {'required': {name: [[choices], ...]}}}."""
+    """Files a loader cannot offer. ComfyUI lists choices as [[choices], {...}] or, for newer nodes,
+    ['COMBO', {'options': [choices]}]."""
     missing = []
     for node, field, filename in required:
         spec = (object_info.get(node) or {}).get('input', {}).get('required', {}).get(field)
-        choices = spec[0] if isinstance(spec, list) and spec and isinstance(spec[0], list) else []
+        choices = []
+        if isinstance(spec, list) and spec and isinstance(spec[0], list):
+            choices = spec[0]
+        elif isinstance(spec, list) and len(spec) > 1 and spec[0] == 'COMBO' and isinstance(spec[1], dict):
+            choices = spec[1].get('options') or []
         if filename not in choices:
             missing.append(filename)
     return missing
@@ -126,7 +131,8 @@ async def gpu_check():
                 return 'MODELS_MISSING'
             queue = await client._json('GET', '/queue')
             return 'GPU_BUSY' if queue.get('queue_running') or queue.get('queue_pending') else 'READY'
-    except Exception:
+    except Exception as exc:
+        logging.info('No usable GPU yet (%s: %s)', type(exc).__name__, getattr(exc, 'reason', '') or str(exc)[:160])
         return 'NO_GPU'
 
 

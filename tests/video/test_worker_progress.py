@@ -34,34 +34,75 @@ class Clock:
         return self.now
 
 
-def power(calls, clock, status=200):
-    def handle(request):
-        calls.append((request.url.path, request.headers['authorization']))
-        return httpx.Response(status)
-    return GpuPower(PowerSettings('abc123', 'key', idle_stop_seconds=600, start_retry_seconds=300),
-                    transport=httpx.MockTransport(handle), clock=clock)
+class FakeRunPod:
+    """In-memory RunPod REST API: list, start (fails when the machine has no GPU), create, delete."""
+
+    def __init__(self, pods=(), start_fails=False, create_fails=False):
+        self.pods = {pod['id']: dict(pod) for pod in pods}
+        self.start_fails, self.create_fails, self.calls = start_fails, create_fails, []
+
+    def handle(self, request):
+        path, method = request.url.path, request.method
+        self.calls.append((method, path))
+        assert request.headers['authorization'] == 'Bearer key'
+        if method == 'GET':
+            return httpx.Response(200, json=list(self.pods.values()))
+        if method == 'POST' and path.endswith('/start'):
+            if self.start_fails:
+                return httpx.Response(500, text='There are no instances currently available')
+            self.pods[path.split('/')[-2]]['desiredStatus'] = 'RUNNING'
+            return httpx.Response(200, json={})
+        if method == 'POST':
+            if self.create_fails:
+                return httpx.Response(500, text='There are no instances currently available')
+            body = json.loads(request.content)
+            assert body['networkVolumeId'] == 'vol1' and body['name'].startswith('audigo-video-gpu-')
+            self.pods['new'] = {'id': 'new', 'name': body['name'], 'desiredStatus': 'RUNNING'}
+            return httpx.Response(200, json=self.pods['new'])
+        if method == 'DELETE':
+            self.pods.pop(path.split('/')[-1])
+            return httpx.Response(204)
+        raise AssertionError(request)
 
 
-def test_gpu_start_is_rate_limited_and_stop_waits_for_idle():
-    calls, clock = [], Clock()
-    gpu = power(calls, clock)
+def power(api, clock):
+    return GpuPower(PowerSettings('key', 'vol1', idle_stop_seconds=600, start_retry_seconds=120),
+                    transport=httpx.MockTransport(api.handle), clock=clock)
+
+
+OTHER = {'id': 'manual', 'name': 'audigo-video-diversity-v4', 'desiredStatus': 'EXITED'}
+
+
+def test_creates_a_pod_on_the_volume_when_none_exists_and_leaves_other_pods_alone():
+    api, clock = FakeRunPod([OTHER]), Clock()
+    gpu = power(api, clock)
     assert asyncio.run(gpu.ensure_started())
-    assert not asyncio.run(gpu.ensure_started())  # still inside the retry window
-    clock.now = 301
-    assert asyncio.run(gpu.ensure_started())
-    clock.now = 600
-    assert not asyncio.run(gpu.stop_if_idle())  # busy 299 seconds ago
-    clock.now = 902
+    assert ('POST', '/v1/pods') in api.calls and 'manual' in api.pods
+    assert not asyncio.run(gpu.ensure_started())  # inside the retry window
+    clock.now = 121
+    assert not asyncio.run(gpu.ensure_started())  # our Pod is already running (booting)
+
+
+def test_stopped_pod_that_cannot_restart_is_replaced():
+    stuck = {'id': 'old', 'name': 'audigo-video-gpu-1', 'desiredStatus': 'EXITED'}
+    api = FakeRunPod([stuck, OTHER], start_fails=True)
+    assert asyncio.run(power(api, Clock()).ensure_started())
+    assert ('DELETE', '/v1/pods/old') in api.calls and set(api.pods) == {'manual', 'new'}
+
+
+def test_no_free_gpu_keeps_jobs_waiting():
+    api = FakeRunPod(create_fails=True)
+    assert not asyncio.run(power(api, Clock()).ensure_started())
+
+
+def test_idle_pods_are_deleted_only_after_the_idle_period():
+    api, clock = FakeRunPod([{'id': 'p1', 'name': 'audigo-video-gpu-1', 'desiredStatus': 'RUNNING'}, OTHER]), Clock()
+    gpu = power(api, clock)
+    clock.now = 599
+    assert not asyncio.run(gpu.stop_if_idle())
+    clock.now = 601
     assert asyncio.run(gpu.stop_if_idle())
-    clock.now = 2000
-    assert not asyncio.run(gpu.stop_if_idle())  # already stopped
-    assert [path for path, _ in calls] == ['/v1/pods/abc123/start'] * 2 + ['/v1/pods/abc123/stop']
-    assert calls[0][1] == 'Bearer key'
-
-
-def test_gpu_start_failure_keeps_jobs_waiting():
-    calls, clock = [], Clock()
-    assert not asyncio.run(power(calls, clock, status=500).ensure_started())
+    assert set(api.pods) == {'manual'}
 
 
 def test_autostart_is_off_by_default(monkeypatch):
@@ -79,3 +120,12 @@ def test_gpu_without_models_is_not_ready():
     for node, field, filename in required:
         full.setdefault(node, {'input': {'required': {field: [[], {}]}}})['input']['required'][field][0].append(filename)
     assert missing_models(full, required) == []
+
+
+def test_newer_combo_format_lists_models():
+    from scripts.video.worker import missing_models
+    required = [('LTXAVTextEncoderLoader', 'text_encoder', 'gemma.safetensors')]
+    combo = {'LTXAVTextEncoderLoader': {'input': {'required': {'text_encoder': ['COMBO', {'options': ['gemma.safetensors']}]}}}}
+    assert missing_models(combo, required) == []
+    empty = {'LTXAVTextEncoderLoader': {'input': {'required': {'text_encoder': ['COMBO', {'options': []}]}}}}
+    assert missing_models(empty, required) == ['gemma.safetensors']

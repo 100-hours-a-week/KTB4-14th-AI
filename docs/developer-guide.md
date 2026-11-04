@@ -155,7 +155,7 @@ GPU를 호출하지 않는 실제 편집 경로이며 두 장·5초를 로컬에
 | `COMFYUI_API_TOKEN` | 선택: 자체 ComfyUI 인증 gateway 토큰. RunPod 계정 키와 별개 |
 | `RUNPOD_API_KEY` | 동적 모드의 RunPod REST 계정 키 |
 | `RUNPOD_POD_PREFIX` | Pod 이름 접두사, 기본 `audigo-video-` |
-| `RUNPOD_POD_ID` | 선택: 특정 Pod로 제한. 교체 Pod를 따라가려면 미설정 |
+| `VIDEO_GPU_POD_ID` | 선택: 특정 Pod로 제한. 교체 Pod를 따라가려면 미설정 (RunPod가 모든 Pod에 자동으로 넣는 `RUNPOD_POD_ID`와 겹치지 않도록 이름을 바꿈) |
 | `RUNPOD_COMFYUI_PORT` | 기본 `8188`, Pod에 `8188/http` 노출 필요 |
 | `VIDEO_DISCOVERY_TTL_SECONDS` | RunPod 주소 캐시 30초 |
 | `VIDEO_HTTP_TIMEOUT_SECONDS` | HTTP 요청 제한 30초 |
