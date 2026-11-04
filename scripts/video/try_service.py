@@ -31,7 +31,7 @@ def follow(http, job_id, interval):
             sys.exit(f"실패: {job['error_code']} {job.get('error_message') or ''}")
         if job['status'] == 'COMPLETED':
             play = http.get(f'/api/ai/v1/video-jobs/{job_id}/video', params={'response_format': 'json'}).raise_for_status().json()
-            print(f"\n완성! 아래 주소를 브라우저에 붙여 넣으면 재생됩니다 ({play['expires_in'] // 60}분 동안 유효):\n{play['url']}")
+            print(f"\n완성! 아래 주소를 브라우저에 붙여 넣으면 재생됩니다:\n{play['url']}")
             return
         time.sleep(interval)
 

@@ -52,7 +52,7 @@ def test_video_url_has_short_expiry_and_no_cache(monkeypatch):
                            headers={'Authorization': 'Bearer test-secret', 'X-Owner-ID': '1'})
     assert response.status_code == 307
     assert response.headers['cache-control'] == 'no-store'
-    assert f'/api/ai/v1/playback/{job_id}?exp=' in response.headers['location']
+    assert f'/api/ai/v1/playback/{job_id}?sig=' in response.headers['location']
 
 
 def test_video_url_can_be_returned_as_json(monkeypatch):
@@ -63,8 +63,8 @@ def test_video_url_can_be_returned_as_json(monkeypatch):
     response = client().get(f'/api/ai/v1/video-jobs/{job_id}/video?response_format=json',
                            headers={'Authorization': 'Bearer test-secret', 'X-Owner-ID': '1'})
     data = response.json()
-    assert response.status_code == 200 and data['expires_in'] == 300
-    assert data['url'].startswith(f'https://video.example.test/api/ai/v1/playback/{job_id}?exp=')
+    assert response.status_code == 200 and data['expires_in'] is None
+    assert data['url'].startswith(f'https://video.example.test/api/ai/v1/playback/{job_id}?sig=')
     assert response.headers['cache-control'] == 'no-store'
 
 
@@ -90,13 +90,13 @@ def playback_client(monkeypatch):
     return TestClient(app)
 
 
-def signed(job_id, expires):
-    return f'/api/ai/v1/playback/{job_id}?exp={expires}&sig={video_jobs.playback_signature(job_id, expires)}'
+def signed(job_id):
+    return f'/api/ai/v1/playback/{job_id}?sig={video_jobs.playback_signature(job_id)}'
 
 
 def test_signed_playback_streams_whole_file_and_ranges(monkeypatch):
     http = playback_client(monkeypatch)
-    url = signed(uuid4(), int(time.time()) + 300)
+    url = signed(uuid4())
     whole = http.get(url)
     assert whole.status_code == 200 and whole.content == VIDEO
     assert whole.headers['accept-ranges'] == 'bytes' and whole.headers['content-type'] == 'video/mp4'
@@ -108,13 +108,15 @@ def test_signed_playback_streams_whole_file_and_ranges(monkeypatch):
     assert http.get(url, headers={'Range': f'bytes={len(VIDEO)}-'}).status_code == 416
 
 
-def test_playback_rejects_expired_or_tampered_links(monkeypatch):
+def test_playback_link_is_permanent_but_rejects_tampering(monkeypatch):
     http = playback_client(monkeypatch)
     job_id = uuid4()
-    assert http.get(signed(job_id, int(time.time()) - 1)).status_code == 403
-    good = signed(job_id, int(time.time()) + 300)
+    good = signed(job_id)
+    assert http.get(good).status_code == 200
     assert http.get(good.replace(str(job_id), str(uuid4()))).status_code == 403
     assert http.get(good[:-4] + '0000').status_code == 403
+    assert http.get(f'/api/ai/v1/playback/{job_id}').status_code == 422
+
 
 
 def png_bytes():

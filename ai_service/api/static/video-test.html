@@ -154,7 +154,7 @@ async function follow() {
       const play = await call(`/api/ai/v1/video-jobs/${encodeURIComponent(jobId)}/video?response_format=json`, { headers: headers() });
       $('player').src = play.url;
       $('player').hidden = false;
-      $('stageDetail').textContent = '완성! 아래에서 재생할 수 있습니다. 재생 주소는 5분 동안 유효합니다.';
+      $('stageDetail').textContent = '완성! 아래에서 재생할 수 있습니다.';
     } else if (job.status !== 'FAILED') {
       timer = setTimeout(follow, 5000);
     }

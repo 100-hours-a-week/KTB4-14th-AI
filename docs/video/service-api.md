@@ -117,11 +117,11 @@ stage는 QUEUED(대기 중) → ANALYZING_PHOTOS(사진 분석 중) → GENERATI
 
 ### 영상 제공
 
-`GET /api/ai/v1/video-jobs/{job_id}/video`는 소유권 확인 후 5분 유효한 RunPod 서명 URL로 307 응답합니다. `?response_format=json`을 붙이면 이동하지 않고 `{"url": "...", "expires_in": 300}`을 돌려주므로 백엔드가 주소만 받아 프론트에 전달하기 쉽습니다.
+`GET /api/ai/v1/video-jobs/{job_id}/video`는 소유권을 확인한 뒤 서비스가 서명한 재생 주소로 307 이동합니다. `?response_format=json`을 붙이면 `{"url": "...", "expires_in": null}`을 돌려줍니다. 재생 주소는 만료되지 않으며 MP4를 Range 요청(구간 탐색)과 함께 전달합니다. RunPod S3 게이트웨이는 presigned URL을 지원하지 않아 서비스가 직접 전달합니다.
 백엔드는 이 Location을 얻어 사용자에게 전달할 수 있습니다. 프론트가 직접 AI API의 서비스 토큰을 사용하지 않습니다.
-서명 URL을 아는 사람은 만료 전까지 파일을 읽을 수 있으므로 로그·공유 범위에 주의합니다.
-DB에는 만료 URL이 아닌 영구 파일 경로를 저장하므로 만료 후 다시 발급할 수 있습니다.
-실제 게이트웨이의 서명 요청, 브라우저 Range 탐색·CORS 동작은 배포 전 실환경 검증 대상입니다.
+재생 주소를 아는 사람은 누구나 그 영상을 볼 수 있으므로 로그·공유 범위에 주의합니다. 주소의 서명은 작업 번호만으로는 만들 수 없습니다.
+지금까지 발급한 모든 재생 주소를 막으려면 서버의 `VIDEO_PLAYBACK_SECRET`(없으면 `AUDIGO_API_TOKEN`) 값을 바꿉니다.
+DB에는 재생 주소가 아닌 파일 경로를 저장합니다. 2026-11-04 RunPod 실서버에서 원본과 같은 바이트 전달, Range 탐색, 브라우저 재생을 확인했습니다.
 
 ## 작업 중단과 운영에서 알아둘 내용
 

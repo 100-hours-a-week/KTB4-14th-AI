@@ -6,7 +6,6 @@ import io
 import os
 from pathlib import Path
 import re
-import time
 from uuid import UUID, uuid4
 from typing import Annotated, Literal
 
@@ -18,7 +17,6 @@ from ai_service.services.video.jobs import STAGES, connection
 from ai_service.services.video.storage import VolumeResults, VolumeSettings
 
 Owner = Annotated[int, Header(alias='X-Owner-ID', gt=0, le=9223372036854775807)]
-PLAYBACK_SECONDS = 300
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_BATCH_FILES = 30
 TEST_PAGE = Path(__file__).resolve().parents[1] / 'static' / 'video-test.html'
@@ -172,27 +170,27 @@ def router(settings):
                 'updated_at': row['updated_at'],
                 'video_url': f'/api/ai/v1/video-jobs/{job_id}/video' if row['status'] == 'COMPLETED' else None}
 
-    @routes.get('/api/ai/v1/video-jobs/{job_id}/video', summary='영상 재생 주소 발급 (5분 유효)')
+    @routes.get('/api/ai/v1/video-jobs/{job_id}/video', summary='영상 재생 주소 발급 (만료 없음)')
     def video(job_id: UUID, x_owner_id: Owner, request: Request,
               response_format: Literal['redirect', 'json'] = 'redirect'):
         row = find_job(job_id, x_owner_id)
         if row['status'] != 'COMPLETED':
             raise HTTPException(409, 'Video is not completed')
-        # RunPod's S3 gateway rejects presigned URLs, so the service signs its own short-lived URL.
-        expires = int(time.time()) + PLAYBACK_SECONDS
+        # RunPod's S3 gateway rejects presigned URLs, so the service signs its own permanent link.
+        # Changing VIDEO_PLAYBACK_SECRET invalidates every link issued so far.
         base = os.environ.get('VIDEO_PUBLIC_BASE_URL') or str(request.base_url)
-        url = f"{base.rstrip('/')}/api/ai/v1/playback/{job_id}?exp={expires}&sig={playback_signature(job_id, expires)}"
+        url = f"{base.rstrip('/')}/api/ai/v1/playback/{job_id}?sig={playback_signature(job_id)}"
         if response_format == 'json':
-            return JSONResponse({'url': url, 'expires_in': PLAYBACK_SECONDS}, headers={'Cache-Control': 'no-store'})
+            return JSONResponse({'url': url, 'expires_in': None}, headers={'Cache-Control': 'no-store'})
         return RedirectResponse(url, status_code=307, headers={'Cache-Control': 'no-store'})
 
     return routes
 
 
-def playback_signature(job_id, expires):
+def playback_signature(job_id):
     secret = os.environ.get('VIDEO_PLAYBACK_SECRET') or os.environ['AUDIGO_API_TOKEN']
     key = hashlib.sha256(b'audigo-playback:' + secret.encode()).digest()
-    return hmac.new(key, f'{job_id}:{expires}'.encode(), hashlib.sha256).hexdigest()
+    return hmac.new(key, f'permanent:{job_id}'.encode(), hashlib.sha256).hexdigest()
 
 
 def parse_range(header, size):
@@ -220,9 +218,9 @@ def playback_router():
         return HTMLResponse(TEST_PAGE.read_text(encoding='utf-8'), headers={'Cache-Control': 'no-store'})
 
     @routes.get('/api/ai/v1/playback/{job_id}', include_in_schema=False)
-    def playback(job_id: UUID, exp: int, sig: str, range: Annotated[str | None, Header()] = None):
-        if exp < time.time() or not hmac.compare_digest(sig, playback_signature(job_id, exp)):
-            raise HTTPException(403, 'Playback link expired or invalid')
+    def playback(job_id: UUID, sig: str, range: Annotated[str | None, Header()] = None):
+        if not hmac.compare_digest(sig, playback_signature(job_id)):
+            raise HTTPException(403, 'Playback link invalid')
         with connection() as conn:
             row = conn.execute("SELECT video_key FROM video_jobs WHERE id=%s AND status='COMPLETED'", (job_id,)).fetchone()
         if not row or not row['video_key']:
