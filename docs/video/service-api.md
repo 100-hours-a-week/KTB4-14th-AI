@@ -44,7 +44,21 @@ RunPod Network Volume(MooseFS)은 postgres 사용자에게 모든 폴더를 0777
 
 표와 열은 API·실행기가 시작할 때 자동으로 만들어지며, 이미 있는 데이터는 지우지 않습니다.
 
-## GPU 서버 구성 (2026-11-04)
+## 서버리스 GPU (2026-11-05, 현재 운영 방식)
+
+GPU는 RunPod 서버리스 **로드밸런싱 엔드포인트** `audigo-video-gpu`(`p0p8deqt3w7fg9`, 템플릿 `0y4yeq8clb`)에서 돌아갑니다. 작업 실행기가 GPU Pod를 직접 만들고 지우지 않습니다.
+
+- 켜고 끄기: 작업 실행기가 `https://p0p8deqt3w7fg9.api.runpod.ai`로 요청을 보내면 RunPod가 워커를 켭니다. 600초(`idleTimeout`) 동안 요청이 없으면 끕니다. 최대 워커 수는 1대입니다.
+- GPU: `AMPERE_80`(A100 80GB)입니다. 네트워크 볼륨 `i1rifh8j8j`가 있는 CA-MTL-3에서만 뜹니다. 시간당 약 $2.7이고 켜져 있는 초만큼만 청구됩니다.
+- 시작 시간: 이미지가 캐시돼 있으면 컨테이너 시작 후 모델 6개(53GB)를 Hugging Face에서 워커 디스크로 받는 데 약 4~5분 걸립니다. 그동안 `/ping`은 204(준비 중)를 돌려주고, 끝나면 200을 돌려줍니다.
+- 인증: RunPod 엣지는 `Authorization: Bearer <RUNPOD_API_KEY>`를 검사합니다. 그래서 게이트 토큰은 `X-Audigo-Token`으로 보냅니다(`VideoSettings.gpu_headers()`). `/ping`만 토큰 없이 응답합니다.
+- 볼륨 위치: 서버리스는 볼륨을 `/runpod-volume`에 붙입니다. `gpu_boot.sh`가 `/workspace`를 그곳으로 연결하므로 ComfyUI 설치와 다운로드 스크립트를 Pod와 똑같이 씁니다.
+- 제한: 요청 하나는 5.5분 안에 끝나야 하고, 요청·응답은 각각 30MB 이하여야 합니다. ComfyUI 호출(업로드, 작업 등록, 상태 조회, 결과 받기)은 모두 이 안에 들어옵니다.
+- CPU 서버 설정: `/data/config/overrides.env`에 `VIDEO_ENDPOINT_MODE=serverless`, `COMFYUI_URL=https://p0p8deqt3w7fg9.api.runpod.ai`, `VIDEO_GPU_AUTOSTART=0`이 있습니다. 이 파일을 바꾼 뒤 `supervisorctl -c /app/deploy/runpod-video/supervisord.conf restart api worker`를 실행하면 Pod 재시작 없이 적용됩니다.
+- 시작 스크립트를 바꾼 뒤에는 템플릿의 `dockerStartCmd`를 `gpu_power.START_COMMAND`로 다시 올려야 합니다.
+- 로그 보기: `runpodctl serverless logs p0p8deqt3w7fg9`
+
+## GPU Pod 구성 (2026-11-04, 이전 방식)
 
 - 모델 보관함: 몬트리올(CA-MTL-3) 네트워크 볼륨 `audigo-gpu-models-mtl`(`i1rifh8j8j`, 100GB)에 영상·음악 모델 6개(53GB)가 있습니다. 처음 한 번 `deploy/runpod-gpu/download_models.py`로 받았으며, GPU를 새로 만들어도 다시 받지 않습니다.
 - 필요할 때 GPU 만들기: `VIDEO_GPU_AUTOSTART=1`이면 작업 실행기가 이 볼륨에 선택한 GPU Pod(이름 `audigo-video-gpu-…`)를 준비합니다. 기본 선택지는 RTX PRO 6000 96GB와 A100 PCIe 80GB입니다. `AUTO`는 허용 목록 안에서 사용 가능한 GPU 한 대를 사용합니다. GPU 모델별로 준비된 Pod를 재사용하고, 대기열이 10분 동안 비면 관리 중인 Pod를 정리합니다.
