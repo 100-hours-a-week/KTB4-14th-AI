@@ -20,8 +20,10 @@ import sys
 
 COMFY = ('127.0.0.1', int(os.environ.get('COMFYUI_INTERNAL_PORT', 8188)))
 COMFY_DIR = Path(os.environ.get('COMFYUI_DIR', '/workspace/runpod-slim/ComfyUI'))
-# The pipeline uploads under input/audigo/... and saves with filename prefixes audigo/...
-OWNED = [COMFY_DIR / 'input' / 'audigo', COMFY_DIR / 'output' / 'audigo']
+# The pipeline uploads under input/audigo/... and saves with filename prefixes audigo/... Pods started by gpu_boot.sh
+# keep ComfyUI's input and output on the Pod's own disk (COMFYUI_IO_DIR) instead of the network volume.
+IO_DIR = Path(os.environ.get('COMFYUI_IO_DIR', str(COMFY_DIR)))
+OWNED = [IO_DIR / 'input' / 'audigo', IO_DIR / 'output' / 'audigo']
 HOP_BY_HOP = {'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer',
               'transfer-encoding', 'upgrade', 'host', 'authorization', 'content-length'}
 CHUNK = 1024 * 1024

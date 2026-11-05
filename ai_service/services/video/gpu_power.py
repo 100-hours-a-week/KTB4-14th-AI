@@ -18,7 +18,8 @@ DEFAULT_GPU_TYPES = ('NVIDIA A100 80GB PCIe', 'NVIDIA A100-SXM4-80GB')
 DEFAULT_IMAGE = 'runpod/comfyui:1.4.1-comfyuiv0.35.0-cuda12.8'
 GATE_PORT = 8189
 # The Pod publishes only the password gate (deploy/runpod-gpu/gate.py on the volume), never ComfyUI's 8188.
-START_COMMAND = 'python3 /workspace/audigo/gate.py >> /workspace/audigo/gate.log 2>&1 & exec /start.sh'
+# gpu_boot.sh starts the gate, copies the models to the Pod's own disk, then runs the image's /start.sh.
+START_COMMAND = 'bash /workspace/audigo/gpu_boot.sh'
 
 
 @dataclass(frozen=True)
@@ -74,7 +75,7 @@ class GpuPower:
         body = {'name': f'{self.settings.prefix}{int(time.time())}', 'imageName': self.settings.image,
                 'cloudType': 'SECURE', 'computeType': 'GPU', 'gpuTypeIds': list(self.settings.gpu_types),
                 'gpuCount': 1, 'networkVolumeId': self.settings.volume_id, 'volumeMountPath': '/workspace',
-                'containerDiskInGb': 40, 'ports': [f'{GATE_PORT}/http', '22/tcp'],
+                'containerDiskInGb': 100, 'ports': [f'{GATE_PORT}/http', '22/tcp'],  # 100 GB: 53 GB of local model copies plus inputs and outputs
                 'dockerEntrypoint': ['bash', '-c'], 'dockerStartCmd': [START_COMMAND],
                 'env': {'COMFYUI_API_TOKEN': self.settings.gate_token}}
         if self.settings.public_key:
