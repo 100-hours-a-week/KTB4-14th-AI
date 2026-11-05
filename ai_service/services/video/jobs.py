@@ -73,6 +73,8 @@ ALTER TABLE video_jobs ADD COLUMN IF NOT EXISTS completed_at timestamptz;
 ALTER TABLE video_jobs ADD COLUMN IF NOT EXISTS attempts integer NOT NULL DEFAULT 0;
 ALTER TABLE video_jobs ADD COLUMN IF NOT EXISTS notice text;
 ALTER TABLE video_jobs ADD COLUMN IF NOT EXISTS cancel_requested boolean NOT NULL DEFAULT false;
+-- When each stage began, e.g. {"ANALYZING_PHOTOS": "2026-11-05T06:20:00Z"}, so screens can show time per stage.
+ALTER TABLE video_jobs ADD COLUMN IF NOT EXISTS stage_times jsonb NOT NULL DEFAULT '{}'::jsonb;
 CREATE INDEX IF NOT EXISTS video_jobs_queue ON video_jobs(created_at) WHERE status='QUEUED';
 CREATE INDEX IF NOT EXISTS video_jobs_owner ON video_jobs(owner_id, created_at);
 CREATE TABLE IF NOT EXISTS video_worker (
@@ -102,9 +104,11 @@ def update(job_id, stage, *, status='RUNNING', publication=None, error=None, mes
     video_key = publication['assets']['video']['key'] if publication else None
     with connection() as conn:
         conn.execute('''UPDATE video_jobs SET stage=%s,status=%s,publication=%s,video_key=%s,error_code=%s,error_message=%s,
-                        completed_at=CASE WHEN %s IN ('COMPLETED','FAILED') THEN now() END,updated_at=now() WHERE id=%s''',
+                        completed_at=CASE WHEN %s IN ('COMPLETED','FAILED') THEN now() END,updated_at=now(),
+                        stage_times=CASE WHEN stage_times ? %s THEN stage_times ELSE stage_times || jsonb_build_object(%s, now()) END
+                        WHERE id=%s''',
                      (stage, status, Jsonb(publication) if publication else None, video_key, error,
-                      message[:500] if message else None, status, job_id))
+                      message[:500] if message else None, status, stage, stage, job_id))
 
 
 def set_notice(job_id, text):
@@ -150,7 +154,8 @@ def recover_interrupted(conn):
 
 
 def claim(conn):
-    return conn.execute("""UPDATE video_jobs SET status='RUNNING',stage='ANALYZING_PHOTOS',attempts=attempts+1,updated_at=now()
+    return conn.execute("""UPDATE video_jobs SET status='RUNNING',stage='ANALYZING_PHOTOS',attempts=attempts+1,updated_at=now(),
+        stage_times=jsonb_build_object('QUEUED', created_at, 'ANALYZING_PHOTOS', now())
         WHERE id=(SELECT id FROM video_jobs WHERE status='QUEUED' ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED)
         RETURNING *""").fetchone()
 

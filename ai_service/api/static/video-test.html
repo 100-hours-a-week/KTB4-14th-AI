@@ -28,6 +28,7 @@
   ol.steps { list-style: none; padding: 0; margin: 12px 0 0; }
   ol.steps li { padding: 4px 0; color: var(--muted); }
   ol.steps li.done { color: var(--ok); } ol.steps li.now { color: var(--text); font-weight: 600; }
+  ol.steps .took { font-weight: 400; color: var(--muted); font-variant-numeric: tabular-nums; margin-left: 6px; }
   dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 12px 0 0; font-size: 14px; }
   dt { color: var(--muted); } dd { margin: 0; }
   .jobs { list-style: none; padding: 0; margin: 8px 0 14px; display: grid; gap: 6px; }
@@ -266,15 +267,45 @@ function since(iso) {
   return minutes < 60 ? `${minutes}분` : `${Math.floor(minutes / 60)}시간 ${minutes % 60}분`;
 }
 
-function render(job) {
+function clock(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), r = s % 60;
+  return h ? `${h}시간 ${m}분 ${r}초` : m ? `${m}분 ${r}초` : `${r}초`;
+}
+
+// Time per stage from stage_times (when each stage began); the current stage keeps counting every second.
+function stepTimes(job) {
+  const times = { QUEUED: job.created_at, ...(job.stage_times || {}) };
+  const ended = job.completed_at ? Date.parse(job.completed_at) : Date.now();
+  return STEPS.map(([key], i) => {
+    if (!times[key]) return null;
+    const next = STEPS.slice(i + 1).map(([k]) => times[k]).find(Boolean);
+    // A stage with no later start time is only measurable when it is the current one (older jobs lack some times).
+    if (!next && key !== job.stage && !job.completed_at) return null;
+    return { ms: (next ? Date.parse(next) : ended) - Date.parse(times[key]), running: !next && !job.completed_at };
+  });
+}
+
+let shownJob = null;
+setInterval(() => { if (shownJob && !shownJob.completed_at) drawSteps(shownJob); }, 1000);
+
+function drawSteps(job) {
   const current = STEPS.findIndex(([key]) => key === job.stage);
+  const took = stepTimes(job);
   $('steps').innerHTML = STEPS.map(([key, label], i) => {
     const cls = job.status === 'COMPLETED' || i < current ? 'done' : i === current ? 'now' : '';
     const mark = cls === 'done' ? '✓' : cls === 'now' ? '▶' : '○';
-    return `<li class="${cls}">${mark} ${label}</li>`;
+    const time = took[i] ? `<span class="took">${clock(took[i].ms)}${took[i].running ? '째' : ''}</span>` : '';
+    return `<li class="${cls}">${mark} ${label}${time}</li>`;
   }).join('');
+}
+
+function render(job) {
+  shownJob = job;
+  drawSteps(job);
   const facts = [['사진', `${job.photo_count}장`], ['영상 길이', job.duration_seconds ? `${job.duration_seconds}초` : '-'],
-                 ['요청한 지', since(job.created_at)], ['작업 실행기', job.worker_state_label]];
+                 ['요청한 지', clock((job.completed_at ? Date.parse(job.completed_at) : Date.now()) - Date.parse(job.created_at))],
+                 ['작업 실행기', job.worker_state_label]];
   if (job.queue_position) facts.push(['대기 순번', job.queue_position === 1 ? '다음 차례' : `${job.queue_position}번째`]);
   if (job.estimate_note) facts.push(['예상 시간', job.estimate_note]);
   if (job.completed_at) facts.push(['완료 시각', new Date(job.completed_at).toLocaleString('ko-KR')]);

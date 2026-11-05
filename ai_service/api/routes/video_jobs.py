@@ -233,6 +233,7 @@ def router(settings):
         return {'job_id': str(job_id), 'status': row['status'], 'stage': row['stage'],
                 'stage_label': '취소하는 중' if cancelling else STAGES.get(row['stage'], row['stage']),
                 'cancel_requested': bool(row.get('cancel_requested')),
+                'stage_times': row.get('stage_times') or {},
                 'travel_plan_id': row.get('travel_plan_id'),
                 'photo_count': len(row.get('photo_keys') or request_body.get('upload_ids') or []),
                 'duration_seconds': request_body.get('duration_seconds'),
