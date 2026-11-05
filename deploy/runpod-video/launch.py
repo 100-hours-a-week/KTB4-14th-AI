@@ -2,6 +2,14 @@
 import json, os, sys, time
 from pathlib import Path
 os.environ.update(json.loads(Path('/data/config/database.json').read_text()))
+# Non-secret settings changed after boot (e.g. VIDEO_ENDPOINT_MODE). supervisord keeps the environment it booted
+# with, so this file lets `supervisorctl restart api worker` apply a change without restarting the Pod.
+overrides = Path('/data/config/overrides.env')
+if overrides.exists():
+    for line in overrides.read_text().splitlines():
+        if '=' in line and not line.lstrip().startswith('#'):
+            key, value = line.split('=', 1)
+            os.environ[key.strip()] = value.strip().strip('\'"')
 import subprocess
 from ai_service.services.video.jobs import connection, initialize
 for attempt in range(60):
