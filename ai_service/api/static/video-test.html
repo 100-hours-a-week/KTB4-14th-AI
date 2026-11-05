@@ -51,7 +51,7 @@
   <section>
     <h2>2. 사진 올리기</h2>
     <input id="files" type="file" accept="image/jpeg,image/png,image/webp" multiple>
-    <p class="muted">파일 선택 창에서 Shift 또는 Cmd(Ctrl)를 누른 채 여러 장을 고를 수 있습니다. 최대 120장.</p>
+    <p class="muted">파일 선택 창에서 Shift 또는 Cmd(Ctrl)를 누른 채 여러 장을 고를 수 있습니다. 최대 120장. 올리기 전에 긴 변 2560px로 줄여서 4개씩 동시에 보냅니다.</p>
     <button id="upload">사진 올리기</button>
     <p id="uploadSummary"></p>
     <ul id="uploadList"></ul>
@@ -98,6 +98,26 @@ async function call(path, options = {}) {
   return body;
 }
 
+// Photos are shrunk in the browser before upload: the pipeline analyses at 1024 px and generates at 768x448,
+// so a 2560 px long edge keeps every detail it uses while roughly halving each phone photo.
+const MAX_EDGE = 2560, PARALLEL = 4, PER_REQUEST = 3;
+
+async function shrink(file) {
+  try {
+    const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+    const scale = Math.min(1, MAX_EDGE / Math.max(bitmap.width, bitmap.height));
+    if (scale === 1 && file.size < 2_000_000) { bitmap.close(); return file; }
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(bitmap.width * scale); canvas.height = Math.round(bitmap.height * scale);
+    canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close();
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.88));
+    return blob && blob.size < file.size ? new File([blob], file.name.replace(/\.\w+$/, '') + '.jpg', { type: 'image/jpeg' }) : file;
+  } catch {
+    return file;  // A format the browser cannot decode goes up as is; the server decides.
+  }
+}
+
 $('upload').onclick = async () => {
   const files = [...$('files').files];
   const list = $('uploadList');
@@ -105,23 +125,45 @@ $('upload').onclick = async () => {
   if (files.length === 0) { $('uploadSummary').textContent = '사진을 먼저 골라 주세요.'; return; }
   $('upload').disabled = true;
   uploadIds = [];
+  const started = performance.now();
+  const results = new Array(files.length);
+  let done = 0, sentBytes = 0, originalBytes = 0;
+  const groups = [];
+  for (let i = 0; i < files.length; i += PER_REQUEST) groups.push(files.slice(i, i + PER_REQUEST).map((file, k) => [i + k, file]));
+  const progress = () => {
+    const seconds = (performance.now() - started) / 1000;
+    $('uploadSummary').textContent = `올리는 중… ${done}/${files.length} · ${(sentBytes / 1e6).toFixed(0)}MB 전송 · ${seconds.toFixed(0)}초`;
+  };
   try {
-    // The server takes at most 30 photos per request, so larger selections go in several requests.
-    for (let start = 0; start < files.length; start += 30) {
-      $('uploadSummary').textContent = `올리는 중… ${start}/${files.length}`;
-      const form = new FormData();
-      files.slice(start, start + 30).forEach(file => form.append('files', file));
-      const result = await call('/api/ai/v1/uploads/batch', { method: 'POST', headers: headers(), body: form });
-      for (const item of result.items) {
-        const li = document.createElement('li');
-        li.className = item.upload_id ? 'ok' : 'bad';
-        li.textContent = item.upload_id ? `${item.filename} ✓` : `${item.filename} ✗ ${item.error}`;
-        list.appendChild(li);
+    progress();
+    // Several requests at once: one connection through the RunPod proxy carries well under the link's capacity.
+    const worker = async () => {
+      while (groups.length) {
+        const group = groups.shift();
+        const form = new FormData();
+        for (const [, file] of group) {
+          const small = await shrink(file);
+          originalBytes += file.size; sentBytes += small.size;
+          form.append('files', small, small.name);
+        }
+        const result = await call('/api/ai/v1/uploads/batch', { method: 'POST', headers: headers(), body: form });
+        result.items.forEach((item, k) => { results[group[k][0]] = { ...item, filename: group[k][1].name }; });
+        done += group.length;
+        progress();
       }
-      uploadIds.push(...result.upload_ids);
+    };
+    await Promise.all(Array.from({ length: PARALLEL }, worker));
+    for (const item of results) {
+      const li = document.createElement('li');
+      li.className = item.upload_id ? 'ok' : 'bad';
+      li.textContent = item.upload_id ? `${item.filename} ✓` : `${item.filename} ✗ ${item.error}`;
+      list.appendChild(li);
+      if (item.upload_id) uploadIds.push(item.upload_id);  // keep the order the photos were chosen in
     }
     const failed = files.length - uploadIds.length;
-    $('uploadSummary').innerHTML = `<span class="ok">${uploadIds.length}장 올림</span>` + (failed ? ` · <span class="bad">${failed}장 실패</span>` : '');
+    const seconds = ((performance.now() - started) / 1000).toFixed(0);
+    $('uploadSummary').innerHTML = `<span class="ok">${uploadIds.length}장 올림</span>` + (failed ? ` · <span class="bad">${failed}장 실패</span>` : '')
+      + ` · ${seconds}초 · ${(originalBytes / 1e6).toFixed(0)}MB → ${(sentBytes / 1e6).toFixed(0)}MB로 줄여 전송`;
     $('create').disabled = uploadIds.length < 2;
     if (uploadIds.length < 2) $('uploadSummary').innerHTML += ' · 영상은 사진이 2장 이상 필요합니다.';
   } catch (error) {
