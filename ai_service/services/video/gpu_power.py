@@ -8,6 +8,7 @@ starts with the configured prefix are ever started, created or deleted.
 from dataclasses import dataclass
 import logging
 import os
+from pathlib import Path
 import re
 import time
 
@@ -18,8 +19,9 @@ DEFAULT_GPU_TYPES = ('NVIDIA A100 80GB PCIe', 'NVIDIA A100-SXM4-80GB')
 DEFAULT_IMAGE = 'runpod/comfyui:1.4.1-comfyuiv0.35.0-cuda12.8'
 GATE_PORT = 8189
 # The Pod publishes only the password gate (deploy/runpod-gpu/gate.py on the volume), never ComfyUI's 8188.
-# gpu_boot.sh starts the gate, copies the models to the Pod's own disk, then runs the image's /start.sh.
-START_COMMAND = 'bash /workspace/audigo/gpu_boot.sh'
+# gpu_boot.sh starts the gate, downloads the models to the Pod's own disk, then runs the image's /start.sh.
+# Its text is sent as the start command, so the Pod needs nothing on the volume beyond gate.py and the downloader.
+START_COMMAND = (Path(__file__).resolve().parents[3] / 'deploy' / 'runpod-gpu' / 'gpu_boot.sh').read_text()
 
 
 @dataclass(frozen=True)
