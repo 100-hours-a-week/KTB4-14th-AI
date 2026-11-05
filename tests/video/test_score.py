@@ -191,6 +191,22 @@ class ProductionScoreTests(unittest.IsolatedAsyncioTestCase):
             await self.generate(client, folder='no-fallback', policy=ScorePolicy(max_attempts=1))
         self.assertEqual(caught.exception.reason, 'score_quality_failed')
 
+    async def test_two_rejected_scores_use_full_length_preset_without_a_third_submission(self):
+        client = AudioClient([self.bad, self.bad])
+        path, report = await self.generate(client, allow_preset_fallback=True)
+
+        self.assertTrue(path.is_file())
+        self.assertEqual(len(client.submissions), 2)
+        self.assertEqual(report['source'], 'BUILTIN_PRESET_FALLBACK')
+        self.assertEqual(report['selected_preset'], 'BRIGHT')
+        self.assertTrue(report['fallback_used'])
+        self.assertEqual(report['audio']['duration_seconds'], 30)
+        self.assertGreater(report['activity']['active_fraction'], 0.9)
+        self.assertFalse(report['looping_applied'])
+
+        reused, _ = await self.generate(None, allow_preset_fallback=True)
+        self.assertEqual(reused, path)
+
     async def test_explicit_file_none_and_short_file_do_not_call_provider(self):
         user_folder = self.folder / 'user'
         path, report = await prepare_production_score(

@@ -44,6 +44,9 @@ class VideoSettings:
     hourly_usd: float = 1.11
     max_input_bytes: int = 25_000_000
     max_clip_bytes: int = 500_000_000
+    # 웹 작업 실행기는 자동 작곡이 탈락하면 기본 반주를 사용한다.
+    music_preset_fallback: bool = False
+    runpod_gpu_types: tuple[str, ...] = ()
 
     def __post_init__(self):
         if self.generation_profile not in {"standard", "fast"}:
@@ -84,7 +87,7 @@ class VideoSettings:
             "comfyui_token": ("COMFYUI_API_TOKEN", str),
             "runpod_api_key": ("RUNPOD_API_KEY", str),
             "runpod_prefix": ("RUNPOD_POD_PREFIX", str),
-            "runpod_pod_id": ("VIDEO_GPU_POD_ID", str),  # not RUNPOD_POD_ID: RunPod sets that to the current Pod
+            "runpod_pod_id": ("VIDEO_GPU_POD_ID", str),  # RUNPOD_POD_ID는 RunPod가 현재 Pod ID로 설정하므로 별도 변수를 쓴다.
             "runpod_port": ("RUNPOD_COMFYUI_PORT", int),
             "discovery_ttl": ("VIDEO_DISCOVERY_TTL_SECONDS", float),
             "workspace": ("VIDEO_WORKSPACE", Path),

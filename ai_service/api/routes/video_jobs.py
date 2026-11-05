@@ -1,4 +1,4 @@
-"""Private backend-to-AI HTTP contract; never expose the service token in browsers."""
+"""백엔드의 여행 사진 업로드, 영상 작업, GPU 선택, 결과 재생 API를 제공한다."""
 import asyncio
 import hashlib
 import hmac
@@ -13,6 +13,8 @@ from fastapi import APIRouter, File, Header, HTTPException, Query, Request, Resp
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from ai_service.services.video.config import VideoSettings
+from ai_service.services.video.gpu_power import AUTO_GPU, GPU_LABELS, default_gpu_type, gpu_selection_allowed, selectable_gpu_types
 from ai_service.services.video.jobs import STAGES, cancel, connection, failure_message
 from ai_service.services.video.storage import VolumeResults, VolumeSettings
 
@@ -29,7 +31,11 @@ class JobInput(BaseModel):
     duration_seconds: int = Field(default=30, ge=5, le=30)
     memory_context: str = Field(default='', max_length=500)
     memory_style: Literal['WARM', 'LIVELY', 'CINEMATIC'] = 'WARM'
-    music: Literal['AUTO', 'WARM', 'BRIGHT', 'CALM', 'NONE'] = 'AUTO'
+    music: Literal['AUTO', 'WARM', 'BRIGHT', 'CALM'] = 'AUTO'
+    gpu_type: str | None = Field(default=None, min_length=1, max_length=120)
+
+
+SERVERLESS_GPU_LABEL = os.environ.get('VIDEO_SERVERLESS_GPU_LABEL', 'A100 80GB ×1 (서버리스 자동)')
 
 
 def store():
@@ -49,6 +55,7 @@ WORKER_LABELS = {
     'CHECKING_GPU': 'GPU 연결 확인 중',
     'WAITING_FOR_GPU': 'GPU가 꺼져 있어 기다리는 중',
     'STARTING_GPU': 'GPU를 켜는 중 (몇 분 걸릴 수 있음)',
+    'WAITING_FOR_GPU_CAPACITY': '선택한 GPU의 사용 가능한 자리를 기다리는 중',
     'GPU_MODELS_MISSING': 'GPU는 켜졌지만 영상 모델이 없어 기다리는 중',
     'GPU_BUSY': 'GPU가 다른 작업을 처리하는 중',
     'BUSY': '영상 생성 중',
@@ -65,6 +72,8 @@ def estimate_note(status, position, worker):
     ahead = (position or 1) - 1
     wait = f'앞에 {ahead}개 작업이 있어 시작까지 약 {ahead * JOB_MINUTES}분, ' if ahead else ''
     boot = ' GPU가 꺼져 있으면 켜는 데 몇 분이 더 걸립니다.' if worker in ('WAITING_FOR_GPU', 'STARTING_GPU') else ''
+    if worker == 'WAITING_FOR_GPU_CAPACITY':
+        boot = ' GPU를 할당할 수 있을 때 시작합니다.'
     return f'{wait}시작 후 약 {JOB_MINUTES}분 걸립니다.{boot}'
 
 
@@ -126,6 +135,20 @@ def save_upload(data, owner):
 def router(settings):
     routes = APIRouter(tags=['V3 Video'])
 
+    @routes.get('/api/ai/v1/video-gpu-options', summary='영상 생성 GPU 선택지')
+    def gpu_options():
+        settings = VideoSettings.from_env()
+        if settings.endpoint_mode == 'serverless':
+            # One fixed GPU pool on the RunPod serverless endpoint: nothing to choose.
+            return {'default_gpu_type': None, 'items': [], 'serverless': {
+                'label': SERVERLESS_GPU_LABEL,
+                'note': '서버리스 GPU를 씁니다. 요청이 들어오면 RunPod가 GPU를 자동으로 켜고, 10분 동안 일이 없으면 끕니다. '
+                        '꺼져 있던 GPU가 켜지는 데 몇 분 걸리고, GPU가 일한 시간만큼만 요금이 나갑니다.'}}
+        models = selectable_gpu_types(settings)
+        choices = (*models, AUTO_GPU) if len(models) > 1 else models
+        return {'default_gpu_type': default_gpu_type(models),
+                'items': [{'id': model, 'label': GPU_LABELS.get(model, f'{model} ×1')} for model in choices]}
+
     # Declared so the /docs page offers a file picker for the raw image body.
     @routes.post('/api/ai/v1/uploads', status_code=201, summary='사진 1장 업로드', description='한 번에 1장만 올립니다. 여러 장은 `사진 여러 장 업로드`나 [테스트 페이지](/video-test)를 쓰세요.', openapi_extra={'requestBody': {'required': True, 'content': {
         kind: {'schema': {'type': 'string', 'format': 'binary'}} for kind in ('image/jpeg', 'image/png', 'image/webp')}}})
@@ -168,11 +191,17 @@ def router(settings):
         from psycopg.types.json import Jsonb
         if len(set(body.upload_ids)) != len(body.upload_ids):
             raise HTTPException(400, 'Duplicate upload IDs')
-        payload = body.model_dump(mode='json')
+        # GPU를 생략한 기존 요청과 같은 JSON을 유지해 멱등성 검사가 계속 동작하게 한다.
+        payload = body.model_dump(mode='json', exclude_none=True)
         with connection() as conn:
             conn.execute('SELECT pg_advisory_xact_lock(%s)', (x_owner_id,))
             existing = conn.execute('SELECT * FROM video_jobs WHERE id=%s', (body.request_id,)).fetchone()
             if existing is None:
+                settings = VideoSettings.from_env()
+                # A serverless endpoint has one GPU pool; the worker ignores a picked GPU there.
+                if (body.gpu_type is not None and settings.endpoint_mode != 'serverless'
+                        and not gpu_selection_allowed(body.gpu_type, selectable_gpu_types(settings))):
+                    raise HTTPException(422, '이 서버에서 선택할 수 없는 GPU 모델입니다.')
                 pending = conn.execute("SELECT count(*) AS n FROM video_jobs WHERE owner_id=%s AND status IN ('QUEUED','RUNNING')", (x_owner_id,)).fetchone()['n']
                 if pending >= 3:
                     raise HTTPException(429, 'At most three pending jobs per user')
@@ -237,6 +266,8 @@ def router(settings):
                 'travel_plan_id': row.get('travel_plan_id'),
                 'photo_count': len(row.get('photo_keys') or request_body.get('upload_ids') or []),
                 'duration_seconds': request_body.get('duration_seconds'),
+                'gpu_type': request_body.get('gpu_type'),
+                'assigned_gpu_type': row.get('assigned_gpu_type'),
                 'queue_position': position,
                 'worker_state': worker, 'worker_state_label': worker_label,
                 'estimate_note': estimate_note(row['status'], position, worker) if active else None,

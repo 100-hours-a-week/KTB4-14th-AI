@@ -8,8 +8,10 @@ set -u
 # A serverless worker mounts the network volume at /runpod-volume, a Pod at /workspace. The image and the
 # volume's ComfyUI install expect /workspace, so point it at the volume there.
 if [ -d /runpod-volume ] && ! mountpoint -q /workspace; then
-  rm -rf /workspace && ln -s /runpod-volume /workspace
+  # Leave /workspace first: a process whose working directory was deleted fails on os.getcwd().
+  cd / && rm -rf /workspace && ln -s /runpod-volume /workspace
 fi
+cd /workspace
 LOCAL=/local
 COMFY=/workspace/runpod-slim/ComfyUI
 LOG=/workspace/audigo/gpu_boot.log

@@ -14,6 +14,13 @@ from ai_service.services.video.errors import VideoError
 class GpuEndpoint:
     url: str
     pod_id: str | None = None
+    gpu_type: str | None = None
+
+
+def matches_single_gpu(pod: dict, gpu_type: str) -> bool:
+    """RunPod가 보고한 GPU 모델과 장착 수를 확인한다."""
+    gpu = pod.get('gpu') or {}
+    return gpu.get('id') == gpu_type and gpu.get('count') == 1
 
 
 class EndpointResolver:
@@ -74,9 +81,12 @@ class EndpointResolver:
                         or not isinstance(name, str) or not name.startswith(self.settings.runpod_prefix)
                         or pod.get("desiredStatus") != "RUNNING"
                         or f"{self.settings.runpod_port}/http" not in (pod.get("ports") or [])
+                        or (self.settings.runpod_gpu_types and not any(matches_single_gpu(pod, model)
+                                                                      for model in self.settings.runpod_gpu_types))
                         or (self.settings.runpod_pod_id and pod_id != self.settings.runpod_pod_id)):
                     continue
-                candidates.append(GpuEndpoint(f"https://{pod_id}-{self.settings.runpod_port}.proxy.runpod.net", pod_id))
+                candidates.append(GpuEndpoint(f"https://{pod_id}-{self.settings.runpod_port}.proxy.runpod.net",
+                                              pod_id, (pod.get('gpu') or {}).get('id')))
             # 후보를 일정한 순서로 살피며 실행 상태뿐 아니라 실제 ComfyUI 준비 여부도 확인한다.
             for endpoint in sorted(candidates, key=lambda e: e.pod_id):
                 if await self._ready(endpoint):

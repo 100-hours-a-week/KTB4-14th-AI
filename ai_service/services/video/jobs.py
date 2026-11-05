@@ -1,4 +1,4 @@
-"""PostgreSQL job ledger. Only trusted backend requests supply owner IDs."""
+"""영상 작업 대기열, 상태, 실제 사용한 GPU를 PostgreSQL에 기록한다."""
 import os
 from contextlib import contextmanager
 
@@ -22,14 +22,16 @@ FAILURE_MESSAGES = {
     'photo_quality_rejected': '영상에 쓸 수 있는 사진이 부족합니다. 흐리거나 어두운 사진 대신 선명한 사진을 더 올려 주세요.',
     'insufficient_usable_memory_scenes': '영상으로 만들 만한 장면을 충분히 찾지 못했습니다. 여행의 여러 순간이 담긴 사진을 더 올려 주세요.',
     'runpod_no_ready_pod': '영상을 만드는 GPU 서버에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.',
+    'video_gpu_not_selectable': '이 GPU 모델은 현재 선택할 수 없습니다. 다른 GPU로 다시 요청해 주세요.',
     'WORKER_INTERRUPTED': '작업 실행기가 반복해서 중단되어 생성을 포기했습니다. 다시 요청해 주세요.',
     'WORKER_PROCESS_FAILED': '영상 생성 프로세스가 비정상 종료되었습니다. 다시 요청해 주세요.',
+    'final_video_music_missing': '최종 영상에서 배경음악을 확인하지 못했습니다. 다시 요청해 주세요.',
     'CANCELLED_TEST': '배포 확인용 테스트 작업이라 GPU 실행 전에 취소했습니다.',
 }
 FAILURE_PREFIXES = [
-    ('score_', '자동 작곡한 배경음악이 품질 검사를 통과하지 못했습니다. 다시 요청하거나 음악 없이(NONE) 요청해 주세요.'),
-    ('ace_music_', '배경음악을 만드는 중 문제가 생겼습니다. 다시 요청하거나 음악 없이(NONE) 요청해 주세요.'),
-    ('music_', '배경음악 파일에 문제가 있습니다. 다른 음악을 고르거나 음악 없이 요청해 주세요.'),
+    ('score_', '배경음악을 준비하거나 검증하는 중 문제가 생겼습니다. 다시 요청해 주세요.'),
+    ('ace_music_', '배경음악을 만드는 중 문제가 생겼습니다. 다시 요청해 주세요.'),
+    ('music_', '배경음악 파일에 문제가 있습니다. 다른 음악을 골라 다시 요청해 주세요.'),
     ('photo_', '읽을 수 없거나 너무 큰 사진이 있습니다. JPEG·PNG·WebP 사진(20MB 이하)으로 다시 올려 주세요.'),
     ('memory_film_', 'AI가 만든 장면이 품질 검사를 충분히 통과하지 못했습니다. 다른 사진을 섞어 다시 요청해 주세요.'),
     ('memory_', '사진을 장면으로 묶는 중 문제가 생겼습니다. 다시 요청해 주세요.'),
@@ -75,6 +77,7 @@ ALTER TABLE video_jobs ADD COLUMN IF NOT EXISTS notice text;
 ALTER TABLE video_jobs ADD COLUMN IF NOT EXISTS cancel_requested boolean NOT NULL DEFAULT false;
 -- When each stage began, e.g. {"ANALYZING_PHOTOS": "2026-11-05T06:20:00Z"}, so screens can show time per stage.
 ALTER TABLE video_jobs ADD COLUMN IF NOT EXISTS stage_times jsonb NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE video_jobs ADD COLUMN IF NOT EXISTS assigned_gpu_type text;
 CREATE INDEX IF NOT EXISTS video_jobs_queue ON video_jobs(created_at) WHERE status='QUEUED';
 CREATE INDEX IF NOT EXISTS video_jobs_owner ON video_jobs(owner_id, created_at);
 CREATE TABLE IF NOT EXISTS video_worker (
@@ -97,24 +100,18 @@ def initialize():
         conn.execute(SCHEMA)
 
 
-def update(job_id, stage, *, status='RUNNING', publication=None, error=None, message=None):
+def update(job_id, stage, *, status='RUNNING', publication=None, error=None, message=None, notice=None):
     from psycopg.types.json import Jsonb
     if stage not in STAGES:
         raise ValueError(f'Unknown stage {stage}')
     video_key = publication['assets']['video']['key'] if publication else None
     with connection() as conn:
-        conn.execute('''UPDATE video_jobs SET stage=%s,status=%s,publication=%s,video_key=%s,error_code=%s,error_message=%s,
+        conn.execute('''UPDATE video_jobs SET stage=%s,status=%s,publication=%s,video_key=%s,error_code=%s,error_message=%s,notice=%s,
                         completed_at=CASE WHEN %s IN ('COMPLETED','FAILED') THEN now() END,updated_at=now(),
                         stage_times=CASE WHEN stage_times ? %s THEN stage_times ELSE stage_times || jsonb_build_object(%s, now()) END
                         WHERE id=%s''',
                      (stage, status, Jsonb(publication) if publication else None, video_key, error,
-                      message[:500] if message else None, status, stage, stage, job_id))
-
-
-def set_notice(job_id, text):
-    """A user-facing note on an otherwise successful job, such as a music fallback."""
-    with connection() as conn:
-        conn.execute('UPDATE video_jobs SET notice=%s,updated_at=now() WHERE id=%s', (text[:500], job_id))
+                      message[:500] if message else None, notice[:500] if notice else None, status, stage, stage, job_id))
 
 
 CANCELLED_MESSAGE = '요청에 따라 영상 생성을 취소했습니다.'
@@ -146,18 +143,18 @@ def recover_interrupted(conn):
     """Requeue jobs a dead worker left RUNNING; give up after MAX_ATTEMPTS claims."""
     conn.execute("""UPDATE video_jobs SET status='CANCELLED',stage='CANCELLED',error_message=%s,completed_at=now(),
                     updated_at=now() WHERE status='RUNNING' AND cancel_requested""", (CANCELLED_MESSAGE,))
-    conn.execute("""UPDATE video_jobs SET status='QUEUED',stage='QUEUED',updated_at=now()
+    conn.execute("""UPDATE video_jobs SET status='QUEUED',stage='QUEUED',assigned_gpu_type=NULL,updated_at=now()
                     WHERE status='RUNNING' AND attempts < %s""", (MAX_ATTEMPTS,))
     conn.execute("""UPDATE video_jobs SET status='FAILED',stage='FAILED',error_code='WORKER_INTERRUPTED',
                     error_message='작업 실행기가 반복해서 중단되어 생성을 포기했습니다.',completed_at=now(),updated_at=now()
                     WHERE status='RUNNING'""")
 
 
-def claim(conn):
-    return conn.execute("""UPDATE video_jobs SET status='RUNNING',stage='ANALYZING_PHOTOS',attempts=attempts+1,updated_at=now(),
-        stage_times=jsonb_build_object('QUEUED', created_at, 'ANALYZING_PHOTOS', now())
-        WHERE id=(SELECT id FROM video_jobs WHERE status='QUEUED' ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED)
-        RETURNING *""").fetchone()
+def claim(conn, job_id, assigned_gpu_type=None):
+    """GPU 준비를 확인한 작업만 가져온다. 대기 중 취소된 요청은 건너뛴다."""
+    return conn.execute("""UPDATE video_jobs SET status='RUNNING',stage='ANALYZING_PHOTOS',attempts=attempts+1,
+        assigned_gpu_type=%s,updated_at=now(),stage_times=jsonb_build_object('QUEUED', created_at, 'ANALYZING_PHOTOS', now())
+        WHERE id=%s AND status='QUEUED' RETURNING *""", (assigned_gpu_type, job_id)).fetchone()
 
 if __name__ == '__main__':
     initialize()

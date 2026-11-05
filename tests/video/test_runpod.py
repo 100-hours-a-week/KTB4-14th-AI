@@ -7,6 +7,7 @@ import httpx
 from ai_service.clients.runpod import EndpointResolver
 from ai_service.services.video.config import VideoSettings
 from ai_service.services.video.errors import VideoError
+from ai_service.services.video.gpu_power import A100_PCIE, RTX_PRO_6000
 
 
 def pod(identifier, *, name="audigo-video-test", status="RUNNING", ports=None):
@@ -53,6 +54,24 @@ class DiscoveryTests(unittest.IsolatedAsyncioTestCase):
             second = await resolver.resolve()
             self.assertEqual((first.pod_id, second.pod_id), ("old", "new"))
             self.assertEqual(len(lists), 2)
+
+    async def test_selection_ignores_other_models_and_multi_gpu_pods(self):
+        probes = []
+        pods = [dict(pod('a'), gpu={'id': RTX_PRO_6000, 'count': 1}),
+                dict(pod('b'), gpu={'id': A100_PCIE, 'count': 2}),
+                dict(pod('c'), gpu={'id': A100_PCIE, 'count': 1})]
+
+        def handle(request):
+            if request.url.host == 'rest.runpod.io':
+                return httpx.Response(200, json=pods)
+            probes.append(request.url.host)
+            return httpx.Response(200, json={'system': {}, 'devices': []})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            endpoint = await EndpointResolver(http, self.settings(runpod_gpu_types=(A100_PCIE,))).resolve()
+
+        self.assertEqual((endpoint.pod_id, endpoint.gpu_type), ('c', A100_PCIE))
+        self.assertEqual(probes, ['c-8188.proxy.runpod.net'])
 
     async def test_expired_cache_api_outage_no_candidates_and_pin(self):
         for response, reason in ((httpx.Response(503), "runpod_discovery_unavailable"),

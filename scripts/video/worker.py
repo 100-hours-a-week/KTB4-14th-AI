@@ -1,4 +1,4 @@
-"""Sequential PostgreSQL queue worker. One instance owns the configured GPU queue."""
+"""영상 작업을 순서대로 가져와 GPU를 배정하고, 생성과 결과 저장을 실행한다."""
 import asyncio
 from dataclasses import replace
 import hashlib
@@ -10,8 +10,8 @@ from pathlib import Path
 import httpx
 
 from ai_service.services.video.errors import VideoError
-from ai_service.services.video.jobs import (claim, connection, failure_message, mark_cancelled, recover_interrupted,
-                                             set_notice, update)
+from ai_service.services.video.gpu_power import AUTO_GPU, default_gpu_type, gpu_selection_allowed, selectable_gpu_types
+from ai_service.services.video.jobs import claim, connection, failure_message, mark_cancelled, recover_interrupted, update
 from ai_service.services.video.storage import VolumeResults, VolumeSettings
 from ai_service.services.video.config import VideoSettings
 from ai_service.schemas.video import MemoryVideoRequest, MusicSelection
@@ -71,11 +71,10 @@ def purge_media(folder: Path):
     return removed
 
 
-async def gpu_interrupt():
+async def gpu_interrupt(settings):
     """Stop whatever the GPU is generating and empty its queue. Each GPU Pod serves only this worker, so
     ComfyUI's global interrupt cannot touch anyone else's work."""
     from ai_service.clients.runpod import EndpointResolver
-    settings = VideoSettings.from_env()
     headers = settings.gpu_headers()
     try:
         async with httpx.AsyncClient(timeout=30) as http:
@@ -92,10 +91,9 @@ def cancel_requested(job_id):
     return bool(row and row['cancel_requested'])
 
 
-async def gpu_cleanup():
+async def gpu_cleanup(settings):
     """Ask the GPU's password gate to delete this service's ComfyUI inputs and outputs (best effort)."""
     from ai_service.clients.runpod import EndpointResolver
-    settings = VideoSettings.from_env()
     try:
         async with httpx.AsyncClient(timeout=60) as http:
             endpoint = await EndpointResolver(http, settings).resolve()
@@ -124,59 +122,43 @@ async def run_job(row):
         base = VideoSettings.from_env()
         workspace = base.workspace / f'job-{job_id}-attempt-{row["attempts"]}'
         workspace.mkdir(parents=True, exist_ok=True)
-        settings = replace(base, generation_profile='fast', workspace=workspace)
+        settings = replace(base, generation_profile='fast', workspace=workspace, music_preset_fallback=True)
         tracker = asyncio.create_task(track_progress(job_id, workspace))
         try:
-            await run_plans(job_id, payload, photos, settings)
+            await generate_and_publish(job_id, payload, photos, settings)
         finally:
             tracker.cancel()
             # Success or failure, no copy of the user's photos or video stays on the CPU work disk.
             logging.info('Job %s: removed %d local media file(s)', job_id, purge_media(workspace))
 
 
-async def run_plans(job_id, payload, photos, settings):
-    """Generate with each music plan until one works, then publish the finished video."""
-    for seed, preset, notice in music_plans(payload['music'], job_id):
-        request = MemoryVideoRequest(photos=photos, duration_seconds=payload['duration_seconds'],
-                                     memory_context=payload['memory_context'], memory_style=payload['memory_style'],
-                                     music=MusicSelection(preset=preset), seed=seed)
-        try:
-            async with httpx.AsyncClient(follow_redirects=False) as http:
-                result = await VideoPipeline(http, settings, execution_mode='live').generate(request)
-        except VideoError as error:
-            # Music is composed before any video scene, so a rejected score costs about a minute of GPU.
-            if error.reason != 'score_quality_failed':
-                raise
-            logging.warning('Job %s: generated music failed its quality check; trying the next music plan', job_id)
-            continue
-        if notice:
-            set_notice(job_id, notice)
-        break
-    else:
-        raise VideoError('score_quality_failed')
+MUSIC_FALLBACK_NOTICE = '자동 작곡 대신 여행 분위기에 맞는 기본 배경음악을 넣었습니다.'
+
+
+async def generate_and_publish(job_id, payload, photos, settings):
+    """배경음악이 들어간 최종 영상만 저장하고 작업을 완료한다."""
+    preset = payload.get('music', 'AUTO')
+    # 배포 전에 대기열에 들어온 무음 요청도 배경음악을 포함해 처리한다.
+    if preset == 'NONE':
+        preset = 'AUTO'
+    request = MemoryVideoRequest(photos=photos, duration_seconds=payload['duration_seconds'],
+                                 memory_context=payload['memory_context'], memory_style=payload['memory_style'],
+                                 music=MusicSelection(preset=preset), seed=job_seed(job_id))
+    async with httpx.AsyncClient(follow_redirects=False) as http:
+        result = await VideoPipeline(http, settings, execution_mode='live').generate(request)
     if result.get('status') != 'completed' or not result.get('output_file'):
         raise RuntimeError(result.get('failure_reason') or 'Pipeline did not complete')
+    if result['media'].get('audio_streams') != 1:
+        raise VideoError('final_video_music_missing')
+    notice = MUSIC_FALLBACK_NOTICE if result['music'].get('source') == 'BUILTIN_PRESET_FALLBACK' else None
     update(job_id, 'SAVING')
     publication = await publish_video(Path(result['output_file']))
-    update(job_id, 'COMPLETED', status='COMPLETED', publication=publication)
-
-
-MUSIC_FALLBACK_NOTICE = '자동 작곡한 음악이 품질 검사를 두 번 통과하지 못해, 이번 영상은 음악 없이 만들었습니다.'
+    update(job_id, 'COMPLETED', status='COMPLETED', publication=publication, notice=notice)
 
 
 def job_seed(job_id):
-    """Stable per-job seed. A fixed seed made every job compose the same two scores, so a rejected score
-    was rejected again in every later job."""
+    """작업 ID마다 서로 다른 시드를 사용해 작곡 결과를 바꾼다."""
     return int(hashlib.sha256(str(job_id).encode()).hexdigest()[:12], 16)
-
-
-def music_plans(preset, job_id):
-    """(seed, music preset, notice) to try in order: the requested music, the same music with another seed,
-    then no music with a notice, so a rejected score never discards the whole video."""
-    seed = job_seed(job_id)
-    if preset == 'NONE':
-        return [(seed, 'NONE', None)]
-    return [(seed, preset, None), (seed + 1_000_003, preset, None), (seed, 'NONE', MUSIC_FALLBACK_NOTICE)]
 
 
 def required_models(settings):
@@ -205,12 +187,11 @@ def missing_models(object_info, required):
     return missing
 
 
-async def gpu_check():
+async def gpu_check(settings):
     """READY, NO_GPU (no ComfyUI Pod answers), MODELS_MISSING or GPU_BUSY. Never claims a job on a GPU that
     lacks its models, so a freshly created empty Pod cannot fail queued jobs."""
     from ai_service.clients.runpod import EndpointResolver
     from ai_service.clients.comfyui import ComfyUI
-    settings = VideoSettings.from_env()
     try:
         async with httpx.AsyncClient() as http:
             endpoint = await EndpointResolver(http, settings).resolve()
@@ -222,12 +203,14 @@ async def gpu_check():
                 info.update(await client._json('GET', f'/object_info/{node}'))
             if missing := missing_models(info, required):
                 logging.warning('GPU Pod is up but lacks %d model file(s): %s', len(missing), ', '.join(missing))
-                return 'MODELS_MISSING'
+                return 'MODELS_MISSING', None
             queue = await client._json('GET', '/queue')
-            return 'GPU_BUSY' if queue.get('queue_running') or queue.get('queue_pending') else 'READY'
+            if queue.get('queue_running') or queue.get('queue_pending'):
+                return 'GPU_BUSY', None
+            return 'READY', endpoint
     except Exception as exc:
         logging.info('No usable GPU yet (%s: %s)', type(exc).__name__, getattr(exc, 'reason', '') or str(exc)[:160])
-        return 'NO_GPU'
+        return 'NO_GPU', None
 
 
 def heartbeat(conn, state):
@@ -240,7 +223,9 @@ async def main():
     logging.basicConfig(level=logging.INFO)
     power_settings = PowerSettings.from_env()
     power = GpuPower(power_settings) if power_settings else None
-    serverless = VideoSettings.from_env().endpoint_mode == 'serverless'
+    base = VideoSettings.from_env()
+    allowed_gpus = selectable_gpu_types(base)
+    serverless = base.endpoint_mode == 'serverless'
     if power and serverless:
         raise SystemExit('VIDEO_GPU_AUTOSTART creates GPU Pods; turn it off when VIDEO_ENDPOINT_MODE=serverless')
     with connection() as lease:
@@ -251,7 +236,7 @@ async def main():
         recover_interrupted(lease)
         while True:
             heartbeat(lease, 'IDLE')
-            pending = lease.execute("SELECT id FROM video_jobs WHERE status='QUEUED' LIMIT 1").fetchone()
+            pending = lease.execute("SELECT id,request FROM video_jobs WHERE status='QUEUED' ORDER BY created_at,id LIMIT 1").fetchone()
             if not pending:
                 if power:
                     await power.stop_if_idle()
@@ -259,12 +244,23 @@ async def main():
                 continue
             if power:
                 power.mark_busy()
+            # A serverless endpoint has one fixed GPU pool, so a GPU picked for the job is ignored there.
+            requested_gpu = None if serverless else pending['request'].get('gpu_type')
+            if requested_gpu is not None and not gpu_selection_allowed(requested_gpu, allowed_gpus):
+                failed = claim(lease, pending['id'])
+                if failed:
+                    reason = 'video_gpu_not_selectable'
+                    update(failed['id'], 'FAILED', status='FAILED', error=reason, message=failure_message(reason))
+                continue
+            gpu_type = requested_gpu or default_gpu_type(allowed_gpus)
+            candidates = allowed_gpus if gpu_type == AUTO_GPU else (gpu_type,) if gpu_type else ()
+            job_settings = replace(base, runpod_gpu_types=candidates)
             heartbeat(lease, 'CHECKING_GPU')
-            gpu = await gpu_check()
+            gpu, endpoint = await gpu_check(job_settings)
             if gpu != 'READY':
-                if gpu == 'NO_GPU' and power:
-                    await power.ensure_started()
-                    heartbeat(lease, 'STARTING_GPU')
+                if gpu == 'NO_GPU' and power and allowed_gpus:
+                    await power.ensure_started(gpu_type)
+                    heartbeat(lease, 'WAITING_FOR_GPU_CAPACITY' if gpu_type in power.capacity_waiting else 'STARTING_GPU')
                 elif gpu == 'NO_GPU' and serverless:
                     # The readiness request itself makes RunPod start a serverless worker.
                     heartbeat(lease, 'STARTING_GPU')
@@ -273,10 +269,16 @@ async def main():
                                       'GPU_BUSY': 'GPU_BUSY'}[gpu])
                 await asyncio.sleep(10)
                 continue
-            row = claim(lease)
+            row = claim(lease, pending['id'], endpoint.gpu_type)
             if row is None:
                 continue
-            process = await asyncio.create_subprocess_exec(sys.executable, '-m', 'scripts.video.worker', '--job', str(row['id']), start_new_session=True)
+            # 생성·취소·정리가 준비 상태를 확인한 같은 Pod를 대상으로 하도록 고정한다.
+            env = os.environ.copy()
+            if endpoint.pod_id:
+                job_settings = replace(job_settings, runpod_pod_id=endpoint.pod_id)
+                env['VIDEO_GPU_POD_ID'] = endpoint.pod_id
+            process = await asyncio.create_subprocess_exec(sys.executable, '-m', 'scripts.video.worker', '--job', str(row['id']),
+                                                           env=env, start_new_session=True)
             cancelled = False
             try:
                 async with asyncio.timeout(7200):
@@ -296,7 +298,7 @@ async def main():
                     except TimeoutError:
                         os.killpg(process.pid, signal.SIGKILL)
                         await process.wait()
-                    await gpu_interrupt()
+                    await gpu_interrupt(job_settings)
                     with connection() as conn:
                         mark_cancelled(conn, row['id'])
                     # The killed child cannot run its own cleanup, so remove its local copies here.
@@ -317,7 +319,7 @@ async def main():
                         os.killpg(process.pid, signal.SIGKILL)
                         await process.wait()
                 # Photos and clips uploaded to the GPU stay on its persistent volume unless removed.
-                await gpu_cleanup()
+                await gpu_cleanup(job_settings)
 
 
 async def child(job_id):

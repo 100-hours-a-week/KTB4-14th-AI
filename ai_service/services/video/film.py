@@ -1,4 +1,4 @@
-"""Input-independent, non-repeating memory-film executor with automatic gates."""
+"""사진별 장면을 생성하고 품질 검사를 거쳐 최종 여행 영상을 구성한다."""
 import asyncio,json,math,sys,time,hashlib
 from pathlib import Path
 from ai_service.clients.comfyui import ComfyUI
@@ -99,7 +99,11 @@ async def generate_diverse_film(http,settings,request,folder,*,resolver=None,cat
             # Validate all video nodes and weights before the first paid submission.
             for shot in plan.shots:
                 validate_workflow(build_ltx_quality_workflow(settings,images=['first.png','last.png'],duration=min(30,max(12,math.ceil(shot.duration_seconds+3))),prompt='Preflight coherent travel scene.',seed=request.seed,prefix='preflight'),info)
-            score,score_report=await prepare_production_score(media,client,request.music,folder,duration_seconds=request.duration_seconds,style=request.memory_style,context=request.memory_context,seed=request.seed,object_info=info)
+            score, score_report = await prepare_production_score(
+                media, client, request.music, folder, duration_seconds=request.duration_seconds,
+                style=request.memory_style, context=request.memory_context, seed=request.seed,
+                object_info=info, allow_preset_fallback=settings.music_preset_fallback,
+            )
             report['music']=score_report;save('generating_scenes')
             takes=[];used_scenes=set();used_sources=set();reserves=list(plan.reserves);extra_attempts=sum(e["status"]=="rejected" for e in report["clips"])
             existing=[e for e in report["clips"] if e["status"]=="accepted"]
@@ -225,7 +229,11 @@ async def finalize_accepted_scenes(http, settings, request, folder):
         if rejected:
             exclusions.extend(rejected);approved=[pair for pair in approved if pair[0] not in rejected];continue
         media=Media(settings)
-        score,music=await prepare_production_score(media,None,request.music,folder,duration_seconds=request.duration_seconds,style=request.memory_style,context=request.memory_context,seed=request.seed)
+        score, music = await prepare_production_score(
+            media, None, request.music, folder, duration_seconds=request.duration_seconds,
+            style=request.memory_style, context=request.memory_context, seed=request.seed,
+            allow_preset_fallback=settings.music_preset_fallback,
+        )
         result=await render_premium_film(media,takes,folder/('verified-film-'+str(round_number)),score,target_seconds=request.duration_seconds,music_volume=request.music.volume,opening_title=plan.title,closing_title=plan.closing_line)
         report.update(status='completed',output_file=result['output_file'],media=result['media'],scene_count=len(takes),scene_repeat_count=0,source_repeat_count=0,editing=result,music=music,quality_fallback='reallocated_and_rechecked_unique_scenes_with_independent_people_fidelity',excluded_source_slots=exclusions,final_source_indices=sorted(used))
         report['previous_failure_reason']=report.pop('failure_reason',None)

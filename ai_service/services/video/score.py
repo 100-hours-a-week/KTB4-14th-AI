@@ -1,10 +1,4 @@
-"""Prepare a continuous production score without hand-picked files or offsets.
-
-Waveform gates reject silent/short/truncated candidates; they do not certify
-instrument realism, emotion or musical quality. A configured file fallback is
-explicit. No synthesized demo, looping, time stretching or hidden resubmission
-is used when a model candidate fails.
-"""
+"""자동 작곡과 대체 배경음악을 준비하고 파형과 길이를 검증한다."""
 from __future__ import annotations
 
 import asyncio
@@ -24,7 +18,7 @@ from ai_service.services.video.ace_music import (
 )
 from ai_service.services.video.errors import VideoError
 from ai_service.services.video.media import Media
-from ai_service.services.video.music import choose_preset
+from ai_service.services.video.music import choose_preset, render_preset
 
 
 SAMPLE_RATE = 48000
@@ -268,6 +262,7 @@ async def prepare_production_score(
     duration_seconds: float, style: str = 'LIVELY', context: str = '', seed: int = 0,
     job_id: str = 'memory-film', object_info: dict | None = None,
     policy: ScorePolicy | None = None, fallback_file: Path | None = None,
+    allow_preset_fallback: bool = False,
 ) -> tuple[Path | None, dict]:
     """Honor user choice or generate, inspect and crop a bounded ACE score.
 
@@ -296,6 +291,8 @@ async def prepare_production_score(
         'file': file_identity, 'style': style, 'context': context, 'seed': seed,
         'policy': asdict(policy), 'fallback_file': str(Path(fallback_file).resolve()) if fallback_file else None,
     }
+    if allow_preset_fallback:
+        identity['allow_preset_fallback'] = True
     fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     if report_path.exists():
         old = json.loads(report_path.read_text())
@@ -426,9 +423,21 @@ async def prepare_production_score(
                 report.update(status='failed', reason=error.reason)
                 save()
                 raise
-    if fallback_file is not None:
+    if fallback_file is not None or allow_preset_fallback:
         report['fallback_used'] = True
-        return await prepare_file(fallback_file, 'CONFIGURED_FILE_FALLBACK', 0)
+        try:
+            if fallback_file is not None:
+                return await prepare_file(fallback_file, 'CONFIGURED_FILE_FALLBACK', 0)
+            fallback = working / 'preset-fallback.wav'
+            try:
+                await asyncio.to_thread(render_preset, fallback, preset, duration_seconds)
+            except OSError as error:
+                raise VideoError('score_preset_fallback_failed') from error
+            return await prepare_file(fallback, 'BUILTIN_PRESET_FALLBACK', 0)
+        except VideoError as error:
+            report.update(status='failed', reason=error.reason)
+            save()
+            raise
     report.update(status='failed', reason='score_quality_failed')
     save()
     raise VideoError('score_quality_failed', attempts=len(report['attempts']))

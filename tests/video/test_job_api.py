@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from types import SimpleNamespace
 from ai_service.api.routes import video_jobs
 from ai_service.core.auth import require_api_token
+from ai_service.services.video.gpu_power import A100_PCIE, AUTO_GPU, RTX_PRO_6000
 from fastapi import Depends
 
 
@@ -24,6 +25,48 @@ def test_private_api_rejects_missing_token():
 
 def test_owner_header_required():
     response = client().get(f'/api/ai/v1/video-jobs/{uuid4()}', headers={'Authorization': 'Bearer test-secret'})
+    assert response.status_code == 422
+
+
+def test_new_video_job_rejects_silent_music_choice():
+    response = client().post('/api/ai/v1/video-jobs',
+                             headers={'Authorization': 'Bearer test-secret', 'X-Owner-ID': '1'},
+                             json={'request_id': str(uuid4()), 'travel_plan_id': 1,
+                                   'upload_ids': [str(uuid4()), str(uuid4())], 'music': 'NONE'})
+    assert response.status_code == 422
+    assert response.json()['detail'][0]['loc'] == ['body', 'music']
+
+
+def test_gpu_choices_and_default_are_controlled_by_the_worker_configuration(monkeypatch):
+    monkeypatch.setenv('VIDEO_GPU_AUTOSTART', '1')
+    monkeypatch.setenv('VIDEO_ENDPOINT_MODE', 'runpod')
+    monkeypatch.setenv('VIDEO_GPU_POD_ID', '')
+    monkeypatch.setenv('VIDEO_GPU_TYPES', f'{A100_PCIE},{RTX_PRO_6000}')
+    response = client().get('/api/ai/v1/video-gpu-options', headers={'Authorization': 'Bearer test-secret'})
+    assert response.status_code == 200
+    assert response.json()['default_gpu_type'] == RTX_PRO_6000
+    assert {item['id'] for item in response.json()['items']} == {RTX_PRO_6000, A100_PCIE, AUTO_GPU}
+
+    monkeypatch.setenv('VIDEO_GPU_POD_ID', 'fixed')
+    assert client().get('/api/ai/v1/video-gpu-options', headers={'Authorization': 'Bearer test-secret'}).json()['items'] == []
+
+
+def test_unapproved_gpu_is_rejected_before_upload_lookup(monkeypatch):
+    @contextmanager
+    def no_existing_job():
+        def execute(sql, params):
+            assert 'pg_advisory_xact_lock' in sql or 'SELECT * FROM video_jobs' in sql
+            return SimpleNamespace(fetchone=lambda: None)
+        yield SimpleNamespace(execute=execute)
+
+    monkeypatch.setattr(video_jobs, 'connection', no_existing_job)
+    monkeypatch.setenv('VIDEO_GPU_AUTOSTART', '1')
+    monkeypatch.setenv('VIDEO_ENDPOINT_MODE', 'runpod')
+    monkeypatch.setenv('VIDEO_GPU_TYPES', RTX_PRO_6000)
+    response = client().post('/api/ai/v1/video-jobs',
+                             headers={'Authorization': 'Bearer test-secret', 'X-Owner-ID': '1'},
+                             json={'request_id': str(uuid4()), 'travel_plan_id': 1,
+                                   'upload_ids': [str(uuid4()), str(uuid4())], 'gpu_type': A100_PCIE})
     assert response.status_code == 422
 
 

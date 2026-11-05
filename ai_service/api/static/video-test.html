@@ -15,7 +15,7 @@
   section { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 14px; }
   h2 { font-size: 16px; margin: 0 0 10px; }
   label { display: block; font-size: 13px; color: var(--muted); margin: 8px 0 4px; }
-  input[type=text], input[type=password], input[type=number] { width: 100%; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; }
+  input[type=text], input[type=password], input[type=number], select { width: 100%; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; }
   button { margin-top: 12px; padding: 9px 16px; border: 0; border-radius: 8px; background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
   button:disabled { opacity: .45; cursor: default; }
   button.danger { background: var(--bad); margin-left: 8px; }
@@ -68,8 +68,11 @@
     <h2>3. 영상 만들기</h2>
     <label for="context">어떤 여행인가요? (선택)</label>
     <input id="context" type="text" maxlength="500" placeholder="예: 제주 바다 여행">
+    <label for="gpuType">영상 생성 GPU</label>
+    <select id="gpuType" aria-describedby="gpuHelp" disabled><option value="">서버 기본 GPU</option></select>
+    <p id="gpuHelp" class="muted">서비스 토큰을 입력하면 선택할 수 있는 GPU가 표시됩니다.</p>
     <button id="create" disabled>영상 만들기 요청</button>
-    <p class="muted">GPU가 꺼져 있으면 "GPU 대기" 상태로 기다립니다. GPU가 켜지면 생성이 시작되고 요금이 발생합니다.</p>
+    <p class="muted">GPU가 꺼져 있으면 요청이 들어올 때 켜지고, 켜지는 동안은 "GPU를 켜는 중"으로 표시됩니다. GPU가 일한 시간만큼만 요금이 나갑니다.</p>
   </section>
 
   <section>
@@ -96,6 +99,8 @@ const store = {
 };
 let uploadIds = [];
 let timer = null;
+const gpuLabels = new Map();
+let gpuOptionsReady = false;
 
 function headers(extra = {}) {
   const token = $('token').value.trim();
@@ -132,6 +137,42 @@ async function shrink(file) {
     return file;  // A format the browser cannot decode goes up as is; the server decides.
   }
 }
+
+async function loadGpuOptions() {
+  const token = $('token').value.trim();
+  const picker = $('gpuType');
+  const current = picker.value;
+  gpuOptionsReady = false;
+  picker.disabled = true;
+  picker.replaceChildren(new Option('서버 기본 GPU', ''));
+  $('gpuHelp').textContent = '서비스 토큰을 입력하면 선택할 수 있는 GPU가 표시됩니다.';
+  if (!token) return;
+  try {
+    const result = await call('/api/ai/v1/video-gpu-options', { headers: headers() });
+    if ($('token').value.trim() !== token) return;
+    gpuOptionsReady = true;
+    if (result.serverless) {
+      picker.replaceChildren(new Option(result.serverless.label, ''));
+      $('gpuHelp').textContent = result.serverless.note;
+      return;
+    }
+    if (result.items.length === 0) {
+      $('gpuHelp').textContent = '이 서버는 기본 GPU로 영상을 만듭니다.';
+      return;
+    }
+    picker.replaceChildren(...result.items.map(item => {
+      gpuLabels.set(item.id, item.label);
+      return new Option(item.label, item.id);
+    }));
+    picker.value = result.items.some(item => item.id === current) ? current : result.default_gpu_type;
+    picker.disabled = false;
+    $('gpuHelp').textContent = '모델을 지정하면 해당 GPU를 기다립니다. 자동 선택은 허용 목록에서 자리가 있는 GPU 1대를 사용합니다.';
+  } catch (error) {
+    if ($('token').value.trim() === token) $('gpuHelp').textContent = `GPU 목록을 불러오지 못했습니다. ${error.message}`;
+  }
+}
+
+$('token').addEventListener('change', loadGpuOptions);
 
 $('upload').onclick = async () => {
   const files = [...$('files').files];
@@ -191,10 +232,14 @@ $('upload').onclick = async () => {
 $('create').onclick = async () => {
   $('create').disabled = true;
   try {
+    if (!gpuOptionsReady) await loadGpuOptions();
+    if (!gpuOptionsReady) throw new Error('GPU 목록을 확인해 주세요.');
+    const gpuType = $('gpuType').value;
     const job = await call('/api/ai/v1/video-jobs', {
       method: 'POST', headers: headers({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ request_id: crypto.randomUUID(), travel_plan_id: Number($('travel').value),
-                             upload_ids: uploadIds.slice(0, 120), memory_context: $('context').value }),
+                             upload_ids: uploadIds.slice(0, 120), memory_context: $('context').value,
+                             ...(gpuType ? { gpu_type: gpuType } : {}) }),
     });
     pick(job.job_id);
     loadJobs(false);
@@ -306,6 +351,8 @@ function render(job) {
   const facts = [['사진', `${job.photo_count}장`], ['영상 길이', job.duration_seconds ? `${job.duration_seconds}초` : '-'],
                  ['요청한 지', clock((job.completed_at ? Date.parse(job.completed_at) : Date.now()) - Date.parse(job.created_at))],
                  ['작업 실행기', job.worker_state_label]];
+  if (job.gpu_type) facts.push(['선택한 GPU', gpuLabels.get(job.gpu_type) || `${job.gpu_type} ×1`]);
+  if (job.assigned_gpu_type) facts.push(['사용 GPU', gpuLabels.get(job.assigned_gpu_type) || job.assigned_gpu_type]);
   if (job.queue_position) facts.push(['대기 순번', job.queue_position === 1 ? '다음 차례' : `${job.queue_position}번째`]);
   if (job.estimate_note) facts.push(['예상 시간', job.estimate_note]);
   if (job.completed_at) facts.push(['완료 시각', new Date(job.completed_at).toLocaleString('ko-KR')]);
@@ -339,6 +386,8 @@ async function follow() {
     $('stage').innerHTML = `<span class="bad">${error.message}</span>`;
   }
 }
+
+loadGpuOptions();
 </script>
 </body>
 </html>

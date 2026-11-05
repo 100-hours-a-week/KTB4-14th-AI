@@ -1,9 +1,11 @@
 import asyncio
 import json
+from unittest.mock import AsyncMock, Mock
 
 import httpx
+import pytest
 
-from ai_service.services.video.gpu_power import GpuPower, PowerSettings
+from ai_service.services.video.gpu_power import A100_PCIE, AUTO_GPU, RTX_PRO_6000, GpuPower, PowerSettings
 from scripts.video.worker import stage_from_reports
 
 
@@ -40,6 +42,7 @@ class FakeRunPod:
     def __init__(self, pods=(), start_fails=False, create_fails=False):
         self.pods = {pod['id']: dict(pod) for pod in pods}
         self.start_fails, self.create_fails, self.calls = start_fails, create_fails, []
+        self.create_bodies = []
 
     def handle(self, request):
         path, method = request.url.path, request.method
@@ -53,9 +56,10 @@ class FakeRunPod:
             self.pods[path.split('/')[-2]]['desiredStatus'] = 'RUNNING'
             return httpx.Response(200, json={})
         if method == 'POST':
+            body = json.loads(request.content)
+            self.create_bodies.append(body)
             if self.create_fails:
                 return httpx.Response(500, text='There are no instances currently available')
-            body = json.loads(request.content)
             assert body['networkVolumeId'] == 'vol1' and body['name'].startswith('audigo-video-gpu-')
             assert body['ports'] == ['8189/http', '22/tcp'] and body['env']['COMFYUI_API_TOKEN'] == 'g' * 40
             assert 'gpu_boot.sh' in body['dockerStartCmd'][0] and body['containerDiskInGb'] >= 80
@@ -97,6 +101,31 @@ def test_no_free_gpu_keeps_jobs_waiting():
     assert not asyncio.run(power(api, Clock()).ensure_started())
 
 
+def test_explicit_gpu_stays_queued_when_sold_out_even_with_another_gpu_running():
+    warm = {'id': 'warm', 'name': 'audigo-video-gpu-1', 'desiredStatus': 'RUNNING',
+            'gpu': {'id': A100_PCIE, 'count': 1}}
+    api = FakeRunPod([warm], create_fails=True)
+    gpu = power(api, Clock())
+    assert not asyncio.run(gpu.ensure_started(RTX_PRO_6000))
+    assert RTX_PRO_6000 in gpu.capacity_waiting
+    assert api.create_bodies[0]['gpuTypeIds'] == [RTX_PRO_6000]
+    assert set(api.pods) == {'warm'}
+
+
+def test_auto_prefers_a_warm_approved_gpu_or_asks_runpod_for_available_models():
+    warm = {'id': 'warm', 'name': 'audigo-video-gpu-1', 'desiredStatus': 'RUNNING',
+            'gpu': {'id': A100_PCIE, 'count': 1}}
+    api = FakeRunPod([warm])
+    assert not asyncio.run(power(api, Clock()).ensure_started(AUTO_GPU))
+    assert not api.create_bodies
+
+    cold = FakeRunPod()
+    assert asyncio.run(power(cold, Clock()).ensure_started(AUTO_GPU))
+    assert cold.create_bodies[0]['gpuTypeIds'] == [RTX_PRO_6000, A100_PCIE]
+    assert cold.create_bodies[0]['gpuTypePriority'] == 'availability'
+    assert cold.create_bodies[0]['gpuCount'] == 1
+
+
 def test_idle_pods_are_deleted_only_after_the_idle_period():
     api, clock = FakeRunPod([{'id': 'p1', 'name': 'audigo-video-gpu-1', 'desiredStatus': 'RUNNING'}, OTHER]), Clock()
     gpu = power(api, clock)
@@ -133,9 +162,34 @@ def test_newer_combo_format_lists_models():
     assert missing_models(empty, required) == ['gemma.safetensors']
 
 
-def test_music_failure_falls_back_to_new_seed_then_no_music():
-    from uuid import uuid4
-    from scripts.video.worker import MUSIC_FALLBACK_NOTICE, music_plans
-    plans = music_plans('AUTO', uuid4())
-    assert [p[1] for p in plans] == ['AUTO', 'AUTO', 'NONE']
-    assert plans[0][0] != plans[1][0] and plans[2][2] == MUSIC_FALLBACK_NOTICE
+@pytest.mark.parametrize('audio_streams', [0, 1])
+def test_web_worker_requires_music_before_publishing(tmp_path, monkeypatch, audio_streams):
+    from ai_service.services.video.config import VideoSettings
+    from ai_service.services.video.errors import VideoError
+    from scripts.video import worker
+
+    output = tmp_path / 'final.mp4'
+    generate = AsyncMock(return_value={
+        'status': 'completed', 'output_file': str(output), 'media': {'audio_streams': audio_streams},
+        'music': {'source': 'BUILTIN_PRESET_FALLBACK'},
+    })
+    publish = AsyncMock(return_value={'video_key': 'jobs/final.mp4'})
+    update = Mock()
+    monkeypatch.setattr(worker, 'VideoPipeline', Mock(return_value=Mock(generate=generate)))
+    monkeypatch.setattr(worker, 'publish_video', publish)
+    monkeypatch.setattr(worker, 'update', update)
+    payload = {'music': 'NONE', 'duration_seconds': 30, 'memory_context': '', 'memory_style': 'WARM'}
+    task = worker.generate_and_publish('job', payload, [tmp_path / 'a.jpg', tmp_path / 'b.jpg'], VideoSettings())
+    if audio_streams:
+        asyncio.run(task)
+        publish.assert_awaited_once_with(output)
+        update.assert_called_with('job', 'COMPLETED', status='COMPLETED', publication=publish.return_value,
+                                  notice=worker.MUSIC_FALLBACK_NOTICE)
+    else:
+        with pytest.raises(VideoError) as failure:
+            asyncio.run(task)
+        assert failure.value.reason == 'final_video_music_missing'
+        publish.assert_not_awaited()
+        update.assert_not_called()
+    generate.assert_awaited_once()
+    assert generate.await_args.args[0].music.preset == 'AUTO'
