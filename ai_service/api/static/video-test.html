@@ -30,6 +30,12 @@
   ol.steps li.done { color: var(--ok); } ol.steps li.now { color: var(--text); font-weight: 600; }
   dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 12px 0 0; font-size: 14px; }
   dt { color: var(--muted); } dd { margin: 0; }
+  .jobs { list-style: none; padding: 0; margin: 8px 0 14px; display: grid; gap: 6px; }
+  .jobs button { margin: 0; width: 100%; display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; text-align: left;
+                 background: var(--bg); color: var(--text); border: 1px solid var(--line); font-weight: 400; padding: 9px 12px; }
+  .jobs button[aria-current="true"] { border-color: var(--accent); }
+  .jobs .when { color: var(--muted); font-size: 13px; } .jobs .what { font-weight: 600; } .jobs .id { color: var(--muted); font-size: 12px; }
+  button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--line); margin-top: 0; padding: 5px 12px; font-size: 13px; }
 </style>
 </head>
 <body>
@@ -45,7 +51,7 @@
       <div><label for="owner">테스트 사용자 번호</label><input id="owner" type="number" min="1" value="1"></div>
       <div><label for="travel">여행 번호</label><input id="travel" type="number" min="1" value="101"></div>
     </div>
-    <p class="muted">토큰은 이 페이지를 닫으면 사라지며 어디에도 저장하지 않습니다.</p>
+    <p class="muted">토큰은 이 탭에만 기억해서 새로고침해도 유지되고, 탭을 닫으면 지워집니다.</p>
   </section>
 
   <section>
@@ -67,6 +73,9 @@
 
   <section>
     <h2>4. 진행 상황</h2>
+    <div class="row" style="align-items:center"><div><b>내 영상 작업</b> <span class="muted">· 새로고침해도 여기서 다시 고를 수 있습니다</span></div>
+      <div style="flex:0"><button id="reloadJobs" class="ghost">목록 새로고침</button></div></div>
+    <ul id="jobs" class="jobs"><li class="muted">토큰을 넣으면 내 작업 목록이 나타납니다.</li></ul>
     <label for="jobId">작업 번호 (이미 있는 작업을 확인할 때 직접 입력)</label>
     <input id="jobId" type="text" placeholder="영상 요청을 보내면 자동으로 채워집니다">
     <button id="check">상태 확인</button><button id="cancel" class="danger" hidden>이 작업 취소</button>
@@ -79,6 +88,11 @@
 </main>
 <script>
 const $ = id => document.getElementById(id);
+// Per-tab convenience only: storage can be unavailable (private mode), so every access is guarded.
+const store = {
+  get: (area, key) => { try { return window[area].getItem(key) || ''; } catch { return ''; } },
+  set: (area, key, value) => { try { value ? window[area].setItem(key, value) : window[area].removeItem(key); } catch {} },
+};
 let uploadIds = [];
 let timer = null;
 
@@ -181,8 +195,8 @@ $('create').onclick = async () => {
       body: JSON.stringify({ request_id: crypto.randomUUID(), travel_plan_id: Number($('travel').value),
                              upload_ids: uploadIds.slice(0, 120), memory_context: $('context').value }),
     });
-    $('jobId').value = job.job_id;
-    follow();
+    pick(job.job_id);
+    loadJobs(false);
   } catch (error) {
     $('stage').innerHTML = `<span class="bad">${error.message}</span>`;
     $('create').disabled = false;
@@ -190,6 +204,44 @@ $('create').onclick = async () => {
 };
 
 $('check').onclick = follow;
+
+const ACTIVE = ['QUEUED', 'RUNNING', 'HELD'];
+function pick(jobId) {
+  $('jobId').value = jobId;
+  store.set('localStorage', 'video-test:last-job', jobId);
+  document.querySelectorAll('#jobs button').forEach(b => b.setAttribute('aria-current', String(b.dataset.id === jobId)));
+  follow();
+}
+
+async function loadJobs(autoSelect) {
+  if (!$('token').value.trim()) return;
+  try {
+    const { items } = await call('/api/ai/v1/video-jobs', { headers: headers() });
+    const list = $('jobs');
+    list.innerHTML = items.length ? '' : '<li class="muted">아직 요청한 영상이 없습니다.</li>';
+    for (const job of items.slice(0, 10)) {
+      const li = document.createElement('li');
+      const when = new Date(job.created_at).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+      li.innerHTML = `<button type="button" data-id="${job.id}"><span class="what">${job.stage_label} · 사진 ${job.photo_count}장</span>`
+        + `<span class="when">${when}</span><span class="id">${job.id.slice(0, 8)}…</span></button>`;
+      li.querySelector('button').onclick = () => pick(job.id);
+      list.appendChild(li);
+    }
+    if (autoSelect && !$('jobId').value.trim() && items.length) {
+      // Resume what the viewer was watching: a running job first, else the last one they opened, else the newest.
+      const last = store.get('localStorage', 'video-test:last-job');
+      const chosen = items.find(j => ACTIVE.includes(j.status)) || items.find(j => j.id === last) || items[0];
+      pick(chosen.id);
+    }
+  } catch (error) {
+    $('jobs').innerHTML = `<li class="bad">${error.message}</li>`;
+  }
+}
+
+$('reloadJobs').onclick = () => loadJobs(false);
+$('token').addEventListener('change', () => { store.set('sessionStorage', 'video-test:token', $('token').value.trim()); loadJobs(true); });
+$('token').value = store.get('sessionStorage', 'video-test:token');
+loadJobs(true);
 
 $('cancel').onclick = async () => {
   const jobId = $('jobId').value.trim();
