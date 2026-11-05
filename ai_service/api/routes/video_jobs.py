@@ -9,7 +9,7 @@ import re
 from uuid import UUID, uuid4
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, File, Header, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, File, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -204,14 +204,16 @@ def router(settings):
                             status_code=200 if result == 'CANCELLED' else 202)
 
     @routes.get('/api/ai/v1/video-jobs', summary='내 영상 작업 목록')
-    def list_jobs(x_owner_id: Owner, offset: int = 0):
+    def list_jobs(x_owner_id: Owner, offset: int = 0,
+                  travel_plan_id: Annotated[int | None, Query(gt=0, description='이 여행의 작업만 (백엔드가 작업번호를 따로 저장하지 않아도 됨)')] = None):
         if offset < 0:
             raise HTTPException(400, 'Invalid offset')
         with connection() as conn:
-            rows = conn.execute('''SELECT id,status,stage,error_code,error_message,notice,created_at,completed_at,updated_at,
-                                          coalesce(cardinality(photo_keys), 0) AS photo_count
-                                   FROM video_jobs WHERE owner_id=%s ORDER BY created_at DESC LIMIT 50 OFFSET %s''',
-                                (x_owner_id, offset)).fetchall()
+            rows = conn.execute('''SELECT id,travel_plan_id,status,stage,error_code,error_message,notice,created_at,completed_at,
+                                          updated_at,coalesce(cardinality(photo_keys), 0) AS photo_count
+                                   FROM video_jobs WHERE owner_id=%s AND (%s::bigint IS NULL OR travel_plan_id=%s)
+                                   ORDER BY created_at DESC LIMIT 50 OFFSET %s''',
+                                (x_owner_id, travel_plan_id, travel_plan_id, offset)).fetchall()
         items = [{**row, 'stage_label': STAGES.get(row['stage'], row['stage']), 'error_message': korean_failure(row),
                   'video_url': f"/api/ai/v1/video-jobs/{row['id']}/video" if row['status'] == 'COMPLETED' else None}
                  for row in rows]

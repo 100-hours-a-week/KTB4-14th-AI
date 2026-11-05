@@ -145,3 +145,13 @@ def test_cancel_queued_running_finished_and_other_owner(api):
         jobs.recover_interrupted(conn)  # a worker restart honours the pending cancel instead of requeueing
         status = conn.execute('SELECT status FROM video_jobs WHERE id=%s', (running['request_id'],)).fetchone()['status']
     assert status == 'CANCELLED'
+
+
+def test_list_filters_by_travel_plan(api):
+    client, photos = api
+    trip_a, trip_b = payload(photos), {**payload(photos), 'travel_plan_id': 202}
+    client.post('/api/ai/v1/video-jobs', headers=headers(), json=trip_a)
+    client.post('/api/ai/v1/video-jobs', headers=headers(), json=trip_b)
+    items = client.get('/api/ai/v1/video-jobs', params={'travel_plan_id': 202}, headers=headers()).json()['items']
+    assert [i['id'] for i in items] == [trip_b['request_id']] and items[0]['travel_plan_id'] == 202
+    assert len(client.get('/api/ai/v1/video-jobs', headers=headers()).json()['items']) == 2
