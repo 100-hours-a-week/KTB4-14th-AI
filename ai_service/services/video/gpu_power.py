@@ -21,7 +21,18 @@ GATE_PORT = 8189
 # The Pod publishes only the password gate (deploy/runpod-gpu/gate.py on the volume), never ComfyUI's 8188.
 # gpu_boot.sh starts the gate, downloads the models to the Pod's own disk, then runs the image's /start.sh.
 # Its text is sent as the start command, so the Pod needs nothing on the volume beyond gate.py and the downloader.
-START_COMMAND = (Path(__file__).resolve().parents[3] / 'deploy' / 'runpod-gpu' / 'gpu_boot.sh').read_text()
+_GPU_DIR = Path(__file__).resolve().parents[3] / 'deploy' / 'runpod-gpu'
+
+
+def start_command():
+    """gpu_boot.sh preceded by the current gate.py, so a Pod or serverless worker never runs a stale gate."""
+    gate = (_GPU_DIR / 'gate.py').read_text()
+    assert 'AUDIGO_GATE_EOF' not in gate
+    return (f"mkdir -p /local && cat > /local/gate.py <<'AUDIGO_GATE_EOF'\n{gate}AUDIGO_GATE_EOF\n"
+            + (_GPU_DIR / 'gpu_boot.sh').read_text())
+
+
+START_COMMAND = start_command()
 
 
 @dataclass(frozen=True)

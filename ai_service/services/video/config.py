@@ -48,11 +48,13 @@ class VideoSettings:
     def __post_init__(self):
         if self.generation_profile not in {"standard", "fast"}:
             raise ValueError("VIDEO_GENERATION_PROFILE must be standard or fast")
-        if self.endpoint_mode not in {"static", "runpod"}:
-            raise ValueError("VIDEO_ENDPOINT_MODE must be static or runpod")
+        if self.endpoint_mode not in {"static", "runpod", "serverless"}:
+            raise ValueError("VIDEO_ENDPOINT_MODE must be static, runpod or serverless")
+        if self.endpoint_mode == "serverless" and not (self.runpod_api_key and self.comfyui_token):
+            raise ValueError("VIDEO_ENDPOINT_MODE=serverless needs RUNPOD_API_KEY and COMFYUI_API_TOKEN")
         if min(self.ltx_width,self.ltx_height)<64 or self.ltx_width%32 or self.ltx_height%32:
             raise ValueError('LTX dimensions must be multiples of 32')
-        if self.endpoint_mode == "static":
+        if self.endpoint_mode in {"static", "serverless"}:
             url = urlsplit(self.comfyui_url)
             if url.scheme not in {"http", "https"} or not url.hostname or url.username or url.password or url.query or url.fragment:
                 raise ValueError("COMFYUI_URL must be an HTTP(S) base URL without credentials/query")
@@ -65,6 +67,13 @@ class VideoSettings:
             raise ValueError("Invalid discovery TTL/text encoder device")
         if min(self.max_input_bytes, self.max_clip_bytes) <= 0:
             raise ValueError("Input/download size limits must be positive")
+
+    def gpu_headers(self) -> dict:
+        """Headers for every request to the GPU's password gate. A serverless endpoint checks the RunPod API key
+        in Authorization at RunPod's edge, so the gate token travels in X-Audigo-Token there."""
+        if self.endpoint_mode == "serverless":
+            return {"Authorization": f"Bearer {self.runpod_api_key}", "X-Audigo-Token": self.comfyui_token}
+        return {"Authorization": f"Bearer {self.comfyui_token}"} if self.comfyui_token else {}
 
     @classmethod
     def from_env(cls, env_file: Path = ENV_FILE):

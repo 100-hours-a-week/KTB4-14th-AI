@@ -5,13 +5,20 @@
 # (about 5 minutes measured in CA-MTL-3) and point ComfyUI there. Inputs and outputs stay on local disk too, so
 # user photos and clips never reach the persistent volume and vanish with the Pod.
 set -u
+# A serverless worker mounts the network volume at /runpod-volume, a Pod at /workspace. The image and the
+# volume's ComfyUI install expect /workspace, so point it at the volume there.
+if [ -d /runpod-volume ] && ! mountpoint -q /workspace; then
+  rm -rf /workspace && ln -s /runpod-volume /workspace
+fi
 LOCAL=/local
 COMFY=/workspace/runpod-slim/ComfyUI
 LOG=/workspace/audigo/gpu_boot.log
 mkdir -p "$LOCAL/models" "$LOCAL/io/input" "$LOCAL/io/output" /workspace/audigo
 echo "$(date -u +%FT%TZ) boot $(hostname)" > "$LOG"
 # The password gate comes up first; until ComfyUI is ready it answers 502, which the worker treats as not ready.
-COMFYUI_IO_DIR="$LOCAL/io" python3 /workspace/audigo/gate.py >> /workspace/audigo/gate.log 2>&1 &
+# gpu_power.start_command() writes the current gate to /local/gate.py ahead of this script.
+GATE=/local/gate.py; [ -f "$GATE" ] || GATE=/workspace/audigo/gate.py
+COMFYUI_IO_DIR="$LOCAL/io" python3 "$GATE" >> /workspace/audigo/gate.log 2>&1 &
 start=$(date +%s)
 if timeout 1500 python3 /workspace/download_models.py --models-dir "$LOCAL/models" > /workspace/audigo/model_download_local.log 2>&1; then
   # is_default puts the local copies first, so ComfyUI loads them instead of the volume's files with the same name.
@@ -23,6 +30,7 @@ else
   rm -f "$COMFY/extra_model_paths.yaml"
   echo "$(date -u +%FT%TZ) local model download failed after $(( $(date +%s) - start ))s; using the volume's models" >> "$LOG"
 fi
+touch "$LOCAL/ready"  # the gate's /ping answers 200 once ComfyUI is up too
 printf '%s\n' '# Written by gpu_boot.sh' "--input-directory $LOCAL/io/input" "--output-directory $LOCAL/io/output" \
   > /workspace/runpod-slim/comfyui_args.txt
 exec /start.sh

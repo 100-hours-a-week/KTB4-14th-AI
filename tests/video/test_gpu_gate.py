@@ -16,6 +16,7 @@ def load_gate(monkeypatch, upstream_port, comfy_dir):
     monkeypatch.setenv('COMFYUI_API_TOKEN', TOKEN)
     monkeypatch.setenv('COMFYUI_INTERNAL_PORT', str(upstream_port))
     monkeypatch.setenv('COMFYUI_DIR', str(comfy_dir))
+    monkeypatch.setenv('AUDIGO_READY_FILE', str(comfy_dir.parent / 'ready'))
     spec = importlib.util.spec_from_file_location('gate', SCRIPT)
     gate = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(gate)
@@ -64,6 +65,17 @@ def gate_url(tmp_path, monkeypatch):
     upstream.shutdown()
 
 
+@pytest.fixture
+def gate_parts(tmp_path, monkeypatch):
+    FakeComfy.seen = []
+    upstream = serve(FakeComfy)
+    gate = load_gate(monkeypatch, upstream.server_address[1], tmp_path / 'ComfyUI')
+    front = serve(gate.Gate)
+    yield f'http://127.0.0.1:{front.server_address[1]}', tmp_path / 'ready'
+    front.shutdown()
+    upstream.shutdown()
+
+
 def test_requests_without_the_password_never_reach_comfyui(gate_url):
     url, _ = gate_url
     assert httpx.get(url + '/queue').status_code == 401
@@ -106,3 +118,28 @@ def test_worker_purges_media_but_keeps_reports(tmp_path):
         (tmp_path / name).write_bytes(b'x')
     assert purge_media(tmp_path) == 3
     assert [p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob('*') if p.is_file()] == ['run/report.json']
+
+
+def test_serverless_edge_key_in_authorization_and_gate_token_in_its_own_header(gate_url):
+    url, _ = gate_url
+    edge = {'Authorization': 'Bearer runpod-edge-key'}
+    assert httpx.get(url + '/queue', headers=edge).status_code == 401
+    assert httpx.get(url + '/queue', headers={**edge, 'X-Audigo-Token': 'wrong'}).status_code == 401
+    assert httpx.get(url + '/queue', headers={**edge, 'X-Audigo-Token': TOKEN}).status_code == 200
+    assert FakeComfy.seen == [('GET', '/queue', None)]  # neither key is passed on to ComfyUI
+
+
+def test_ping_reports_initializing_until_boot_finishes(gate_parts):
+    url, ready = gate_parts
+    assert httpx.get(url + '/ping').status_code == 204  # no token needed; still booting
+    ready.write_text('')
+    assert httpx.get(url + '/ping').status_code == 200
+
+
+def test_serverless_settings_send_both_keys():
+    from ai_service.services.video.config import VideoSettings
+    settings = VideoSettings(endpoint_mode='serverless', comfyui_url='https://abc.api.runpod.ai',
+                             comfyui_token=TOKEN, runpod_api_key='edge')
+    assert settings.gpu_headers() == {'Authorization': 'Bearer edge', 'X-Audigo-Token': TOKEN}
+    with pytest.raises(ValueError):
+        VideoSettings(endpoint_mode='serverless', comfyui_url='https://abc.api.runpod.ai')

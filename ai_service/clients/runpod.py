@@ -29,7 +29,7 @@ class EndpointResolver:
             self._expires = 0.0
 
     async def _ready(self, endpoint: GpuEndpoint) -> bool:
-        headers = {"Authorization": f"Bearer {self.settings.comfyui_token}"} if self.settings.comfyui_token else {}
+        headers = self.settings.gpu_headers()
         try:
             response = await self.http.get(endpoint.url + "/system_stats", headers=headers, timeout=self.settings.request_timeout)
             response.raise_for_status()
@@ -45,7 +45,7 @@ class EndpointResolver:
                 if await self._ready(self._cached):
                     return self._cached
                 self._cached = None
-            if self.settings.endpoint_mode == "static":
+            if self.settings.endpoint_mode in {"static", "serverless"}:
                 endpoint = GpuEndpoint(self.settings.comfyui_url.rstrip("/"))
                 if not await self._ready(endpoint):
                     raise VideoError("comfyui_not_ready")

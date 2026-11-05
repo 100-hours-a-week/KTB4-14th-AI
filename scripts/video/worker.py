@@ -76,7 +76,7 @@ async def gpu_interrupt():
     ComfyUI's global interrupt cannot touch anyone else's work."""
     from ai_service.clients.runpod import EndpointResolver
     settings = VideoSettings.from_env()
-    headers = {'Authorization': f'Bearer {settings.comfyui_token}'}
+    headers = settings.gpu_headers()
     try:
         async with httpx.AsyncClient(timeout=30) as http:
             endpoint = await EndpointResolver(http, settings).resolve()
@@ -100,7 +100,7 @@ async def gpu_cleanup():
         async with httpx.AsyncClient(timeout=60) as http:
             endpoint = await EndpointResolver(http, settings).resolve()
             response = await http.post(endpoint.url + '/_audigo/cleanup',
-                                       headers={'Authorization': f'Bearer {settings.comfyui_token}'})
+                                       headers=settings.gpu_headers())
             response.raise_for_status()
             logging.info('GPU cleanup removed %s file(s)', response.json().get('removed_files'))
     except Exception as exc:
@@ -240,6 +240,9 @@ async def main():
     logging.basicConfig(level=logging.INFO)
     power_settings = PowerSettings.from_env()
     power = GpuPower(power_settings) if power_settings else None
+    serverless = VideoSettings.from_env().endpoint_mode == 'serverless'
+    if power and serverless:
+        raise SystemExit('VIDEO_GPU_AUTOSTART creates GPU Pods; turn it off when VIDEO_ENDPOINT_MODE=serverless')
     with connection() as lease:
         lease.autocommit = True
         if not lease.execute('SELECT pg_try_advisory_lock(41420261104) AS acquired').fetchone()['acquired']:
@@ -261,6 +264,9 @@ async def main():
             if gpu != 'READY':
                 if gpu == 'NO_GPU' and power:
                     await power.ensure_started()
+                    heartbeat(lease, 'STARTING_GPU')
+                elif gpu == 'NO_GPU' and serverless:
+                    # The readiness request itself makes RunPod start a serverless worker.
                     heartbeat(lease, 'STARTING_GPU')
                 else:
                     heartbeat(lease, {'NO_GPU': 'WAITING_FOR_GPU', 'MODELS_MISSING': 'GPU_MODELS_MISSING',

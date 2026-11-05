@@ -5,7 +5,10 @@ ComfyUI, its uploaded photos or its outputs without the shared token:
 
     COMFYUI_API_TOKEN=... python3 gate.py      # started by the Pod's start command before /start.sh
 
-Every request must carry `Authorization: Bearer <COMFYUI_API_TOKEN>`; others get 401 and are never forwarded.
+Every request must carry `Authorization: Bearer <COMFYUI_API_TOKEN>` or, behind a RunPod serverless endpoint
+(whose edge takes Authorization for the RunPod API key), `X-Audigo-Token: <COMFYUI_API_TOKEN>`; others get 401
+and are never forwarded. GET /ping needs no token: the serverless load balancer polls it and gets 200 once
+ComfyUI answers and the boot script has finished (marker file AUDIGO_READY_FILE), 204 before that.
 POST /_audigo/cleanup deletes this service's uploaded photos and generated files from ComfyUI's input and output
 folders, which live on the persistent network volume. Standard library only.
 """
@@ -25,9 +28,21 @@ COMFY_DIR = Path(os.environ.get('COMFYUI_DIR', '/workspace/runpod-slim/ComfyUI')
 IO_DIR = Path(os.environ.get('COMFYUI_IO_DIR', str(COMFY_DIR)))
 OWNED = [IO_DIR / 'input' / 'audigo', IO_DIR / 'output' / 'audigo']
 HOP_BY_HOP = {'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer',
-              'transfer-encoding', 'upgrade', 'host', 'authorization', 'content-length'}
+              'transfer-encoding', 'upgrade', 'host', 'authorization', 'content-length', 'x-audigo-token'}
 CHUNK = 1024 * 1024
 TOKEN = os.environ.get('COMFYUI_API_TOKEN', '')
+READY_FILE = Path(os.environ.get('AUDIGO_READY_FILE', '/local/ready'))
+
+
+def comfy_up():
+    connection = HTTPConnection(*COMFY, timeout=5)
+    try:
+        connection.request('GET', '/system_stats')
+        return connection.getresponse().status == 200
+    except OSError:
+        return False
+    finally:
+        connection.close()
 
 
 def cleanup(folders=OWNED):
@@ -47,8 +62,10 @@ class Gate(BaseHTTPRequestHandler):
         pass
 
     def _authorized(self):
-        supplied = self.headers.get('Authorization', '')
-        return bool(TOKEN) and hmac.compare_digest(supplied.encode(), f'Bearer {TOKEN}'.encode())
+        bearer = self.headers.get('Authorization', '').encode()
+        gate = self.headers.get('X-Audigo-Token', '').encode()
+        return bool(TOKEN) and (hmac.compare_digest(bearer, f'Bearer {TOKEN}'.encode())
+                                or hmac.compare_digest(gate, TOKEN.encode()))
 
     def _reply(self, status, payload):
         body = json.dumps(payload).encode()
@@ -59,6 +76,12 @@ class Gate(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _handle(self):
+        if self.path == '/ping' and self.command == 'GET':
+            if READY_FILE.exists() and comfy_up():
+                return self._reply(200, {'status': 'healthy'})
+            self.send_response(204)
+            self.end_headers()
+            return
         if not self._authorized():
             return self._reply(401, {'error': 'unauthorized'})
         if self.path == '/_audigo/cleanup' and self.command == 'POST':
