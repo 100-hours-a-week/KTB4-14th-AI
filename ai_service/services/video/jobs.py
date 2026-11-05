@@ -108,7 +108,7 @@ def update(job_id, stage, *, status='RUNNING', publication=None, error=None, mes
     with connection() as conn:
         conn.execute('''UPDATE video_jobs SET stage=%s,status=%s,publication=%s,video_key=%s,error_code=%s,error_message=%s,notice=%s,
                         completed_at=CASE WHEN %s IN ('COMPLETED','FAILED') THEN now() END,updated_at=now(),
-                        stage_times=CASE WHEN stage_times ? %s THEN stage_times ELSE stage_times || jsonb_build_object(%s, now()) END
+                        stage_times=CASE WHEN stage_times ? %s::text THEN stage_times ELSE stage_times || jsonb_build_object(%s::text, now()) END
                         WHERE id=%s''',
                      (stage, status, Jsonb(publication) if publication else None, video_key, error,
                       message[:500] if message else None, notice[:500] if notice else None, status, stage, stage, job_id))
