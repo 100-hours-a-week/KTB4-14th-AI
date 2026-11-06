@@ -7,8 +7,8 @@ from ai_service.services.video.errors import VideoError
 
 def test_small_album_reallocation_does_not_relax_large_album_diversity_floor():
     from ai_service.services.video.film import fallback_minimum
-    assert fallback_minimum(30,6)==5
-    assert fallback_minimum(30,5)==5
+    assert fallback_minimum(30,6)==3
+    assert fallback_minimum(30,4)==3  # the Gangneung album: 3 of 4 scenes kept still makes a 30 s film
     assert fallback_minimum(30,15)==7
 
 def test_rejected_pair_can_keep_first_reference_without_reusing_other_scenes():

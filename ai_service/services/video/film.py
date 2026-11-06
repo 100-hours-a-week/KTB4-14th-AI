@@ -24,17 +24,32 @@ def recovery_shot(shot, reserves, frame_count):
             'camera_path':'Keep the camera locked in the reference framing. No pan, zoom or newly revealed areas. Animate only the evidenced subjects and natural environmental motion.'})
     raise VideoError('memory_film_no_usable_reserve')
 
+# Every generated clip is at least 12 s long, so a kept scene can fill up to 10 s of the film.
+SMALL_PLAN_MAX_SCENE_SECONDS = 10
+
+
+def clip_frame_count(path):
+    import cv2
+    capture=cv2.VideoCapture(str(path))
+    try:
+        return int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    finally:
+        capture.release()
+
+
 def fallback_minimum(duration, planned_count):
-    # Small albums already allocate up to six seconds per distinct memory.
-    maximum=6 if planned_count<=6 else 4.5
+    """Fewest distinct scenes a film may be finished with after rejections. A plan of six scenes or fewer may
+    stretch each kept scene to 10 s (a 30 s film from 3 scenes) instead of failing the whole video; larger plans
+    keep their 4.5 s diversity floor and recover with unused photos instead."""
+    maximum=SMALL_PLAN_MAX_SCENE_SECONDS if planned_count<=6 else 4.5
     return min(math.ceil(duration/maximum),planned_count)
 
-def unused_photo_reserves(plan, clips, frames):
-    """Small-album recovery: at most two untried photos, still subject to every gate."""
+def unused_photo_reserves(plan, clips, frames, limit=2):
+    """Recovery scenes from at most `limit` untried photos, still subject to every gate."""
     from ai_service.services.video.diversity import MemoryFilmShot,usable_photo
     tried={i for c in clips if c['status']=='accepted' or len(c['source_indices'])==1 for i in c['source_indices']}
     photos=sorted((p for p in plan.catalog.photos if p.source_index not in tried and usable_photo(p)),
-                  key=lambda p:(p.motion_potential,p.visual_quality),reverse=True)[:2]
+                  key=lambda p:(p.motion_potential,p.visual_quality),reverse=True)[:limit]
     return [MemoryFilmShot(scene_key=f'recovery-{p.source_index}-{p.scene_key}',
         source_index=p.source_index,end_source_index=p.source_index,role=p.category,
         people_visible=p.people_visible,visible_scene=p.visible_scene,subject_action=p.safe_action,
@@ -180,9 +195,12 @@ async def generate_diverse_film(http,settings,request,folder,*,resolver=None,cat
             except VideoError as fallback_error:
                 report['fallback_failure_reason']=fallback_error.reason;save('fallback_failed')
                 if (fallback_error.reason=='memory_film_insufficient_approved_scenes'
-                        and not report.get('recovery_pass_started') and len(plan.shots)<=6
-                        and len(request.photos)<=10):
-                    extra=unused_photo_reserves(plan,report['clips'],round(request.duration_seconds/len(plan.shots)*24))
+                        and not report.get('recovery_pass_started')):
+                    # Any album size: replace the missing scenes with photos that were never tried, one spare.
+                    accepted=sum(c['status']=='accepted' for c in report['clips'])
+                    missing=fallback_minimum(request.duration_seconds,len(plan.shots))-accepted
+                    extra=unused_photo_reserves(plan,report['clips'],round(request.duration_seconds/len(plan.shots)*24),
+                                                limit=min(4,max(2,missing+1)))
                     if extra:
                         plan.reserves.extend(extra)
                         (folder/'plan.json').write_text(plan.model_dump_json(indent=2))
@@ -213,7 +231,10 @@ async def finalize_accepted_scenes(http, settings, request, folder):
             if scene.scene_key in keys or used.intersection(entry['source_indices']):raise VideoError('memory_film_repeated_scene')
             source=folder/f'scene-{slot:02d}-attempt-{entry["attempt"]:02d}'/'native.mp4'
             refs=[folder/f'photo-{i:04d}.png' for i in entry['source_indices']]
-            anchor=entry['start_frame']
+            # A stretched scene may run past the end of its clip from the old start; start earlier so the
+            # whole window fits, and let the re-review below judge the new frames.
+            native=clip_frame_count(source)
+            anchor=min(entry['start_frame'],max(0,native-count)) if native else entry['start_frame']
             review=await select_reviewed_take(http,settings,source,refs,duration_seconds=count/24,visible_scene=scene.visible_scene,subject_action=scene.subject_action,excluded_ranges=((0,anchor),(anchor+count,10000000)))
             if not review['accepted']:
                 if review.get('review_status')=='unavailable':raise VideoError('memory_film_review_unavailable')
