@@ -104,8 +104,15 @@ AI 서버는 전달받은 사용자 번호로 작업·업로드 소유자를 검
 ### 사진 업로드
 
 `POST /api/ai/v1/uploads`의 본문에 사진 한 장의 원본 바이트를 보냅니다. multipart가 아닙니다.
-JPEG·PNG·WebP, 20 MiB 및 4천만 픽셀 이하입니다. 201 응답은 `{"upload_id":"UUID"}`입니다.
-JPEG에는 휴대폰이 저장하는 MPO 형식(확장자 .JPG)도 포함됩니다.
+JPEG·PNG·WebP·HEIC(아이폰 기본 형식), 20 MiB 및 4천만 픽셀 이하입니다. 201 응답은 `{"upload_id":"UUID"}`입니다.
+JPEG에는 휴대폰이 저장하는 MPO 형식(확장자 .JPG)도 포함됩니다. HEIC는 방향을 바로잡은 JPEG로 바꿔 저장합니다.
+이 API만으로 영상이 만들어지지는 않습니다. 영상 생성 요청에는 upload_id가 2장 이상 필요하고, 1장 업로드는 1장씩 올리거나 실패한 사진을 다시 올릴 때 씁니다.
+
+영상 API의 오류 응답은 `{"message":"<오류 코드>","data":{"error_message":"<한글 설명>"}}`입니다.
+코드: `invalid_image`, `unsupported_image_format`, `image_too_many_pixels`, `image_too_large`, `upload_timeout`,
+`daily_upload_limit_exceeded`, `invalid_photo_count`, `duplicate_upload_ids`, `upload_not_found`, `request_id_conflict`,
+`too_many_pending_jobs`, `gpu_not_selectable`, `invalid_offset`, `job_not_found`, `job_already_finished`, `video_not_ready`,
+`playback_signature_invalid`, `range_not_satisfiable`, `video_not_found`. 여러 장 업로드의 실패 항목에도 같은 `code`가 들어갑니다.
 
 여러 장은 `POST /api/ai/v1/uploads/batch`에 multipart `files` 필드로 한 번에 최대 30장까지 보냅니다.
 사진마다 따로 저장하며, 모두 성공하면 201, 일부만 성공하면 207을 돌려줍니다.
