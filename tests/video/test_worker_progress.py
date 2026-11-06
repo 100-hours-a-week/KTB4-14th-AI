@@ -214,4 +214,6 @@ def test_progress_detail_names_the_exact_step(tmp_path):
     report.update(planned_scene_count=6, clips=[{'status': 'accepted'}, {'status': 'rejected'}])
     (run / 'report.json').write_text(json.dumps(report))
     (run / 'scene-01-attempt-01').mkdir()
-    assert progress_detail(tmp_path, 10) == 'GPU에서 장면 2/6 만드는 중 (2번째 시도) · 통과 1개, 탈락 1개'
+    assert progress_detail(tmp_path, 10) == 'GPU에서 장면 2/6 (2번째 시도) 만드는 중 · 통과 1개, 탈락 1개'
+    (run / 'scene-03-attempt-00').mkdir()
+    assert progress_detail(tmp_path, 10) == 'GPU 2대에서 장면 2/6 (2번째 시도), 4/6 (1번째 시도) 만드는 중 · 통과 1개, 탈락 1개'

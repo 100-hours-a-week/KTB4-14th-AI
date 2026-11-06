@@ -1,5 +1,6 @@
 """사진별 장면을 생성하고 품질 검사를 거쳐 최종 여행 영상을 구성한다."""
 import asyncio,json,math,sys,time,hashlib
+from dataclasses import replace
 from pathlib import Path
 from ai_service.clients.comfyui import ComfyUI
 from ai_service.clients.runpod import EndpointResolver
@@ -14,6 +15,27 @@ from ai_service.services.video.workflow import validate_workflow
 from ai_service.services.video.media import Media
 from ai_service.services.video.premium_render import render_premium_film
 from ai_service.services.video.errors import VideoError
+
+
+async def run_lanes(primary, extras):
+    """Run the primary scene lane and any extra GPU lanes. Once the primary lane has no work left, extra lanes
+    that are not in the middle of a scene (for example a second GPU still booting) are stopped, so a slow or
+    sold-out second GPU can never delay the film. The first failure stops every lane."""
+    states=[{'busy':False} for _ in range(1+len(extras))]
+    tasks=[asyncio.create_task(primary(states[0]))]+[asyncio.create_task(make(state)) for make,state in zip(extras,states[1:])]
+    try:
+        await tasks[0]
+        for task,state in zip(tasks[1:],states[1:]):
+            if not state['busy']:
+                task.cancel()
+        for result in await asyncio.gather(*tasks[1:],return_exceptions=True):
+            if isinstance(result,BaseException) and not isinstance(result,asyncio.CancelledError):
+                raise result
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks,return_exceptions=True)
+        raise
 
 def recovery_shot(shot, reserves, frame_count):
     """Try a reserve, or remove a rejected cross-photo guide without inventing a new scene."""
@@ -127,17 +149,23 @@ async def generate_diverse_film(http,settings,request,folder,*,resolver=None,cat
             reserves=[r for r in reserves if r.scene_key not in already_used]
             pending=[*plan.shots,*[s.with_frames(round(request.duration_seconds/len(plan.shots)*24),24)
                      for s in plan.reserves if s.scene_key in report.get('recovery_scene_keys',[])]]
+            # Scenes run in lanes, one per GPU endpoint (COMFYUI_EXTRA_URLS adds serverless endpoints of one
+            # worker each, so a lane's upload, submit, wait and download always reach the same GPU). Takes are
+            # kept by slot, so the film order never depends on which lane finished first.
+            takes_by_slot={};queue=[];budget={'extra':extra_attempts}
             for number,initial in enumerate(pending):
                 if number in existing_by_slot:
                     entry=existing_by_slot[number];path=folder/f'scene-{number:02d}-attempt-{entry["attempt"]:02d}'/'native.mp4'
                     if not path.is_file():raise VideoError('memory_film_resume_asset_missing')
-                    takes.append(FilmTake(path,entry['start_frame'],entry['frame_count'],entry['scene_key']))
+                    takes_by_slot[number]=FilmTake(path,entry['start_frame'],entry['frame_count'],entry['scene_key'])
                     used_scenes.add(entry['scene_key']);used_sources.update(entry['source_indices']);continue
+                queue.append((number,initial))
+            async def run_slot(number,initial,client):
                 shot=initial;local_attempt=max([e.get('attempt',0)+1 for e in report['clips'] if e.get('scene_key')==initial.scene_key]+[0])
                 if number in report.get('skipped_slots',[]) or local_attempt>=3:
                     report.setdefault('skipped_slots',[])
                     if number not in report['skipped_slots']:report['skipped_slots'].append(number)
-                    save('scene_skipped');continue
+                    save('scene_skipped');return
                 if local_attempt>1:
                     shot=recovery_shot(shot,reserves,initial.frame_count)
                 while True:
@@ -171,17 +199,29 @@ async def generate_diverse_film(http,settings,request,folder,*,resolver=None,cat
                             review.update(accepted=False,reasons=['people_fidelity_rejected'],retryable_generation=not fidelity.get('unavailable',False))
                     (attempt_folder/'quality.json').write_text(json.dumps(review,ensure_ascii=False,indent=2))
                     if review['accepted']:
-                        takes.append(FilmTake(output,review['start_frame'],shot.frame_count,shot.scene_key));used_scenes.add(shot.scene_key);used_sources.update(shot.source_indices)
-                        entry.update(status='accepted',start_frame=review['start_frame'],frame_count=shot.frame_count);save('scene_accepted');break
+                        takes_by_slot[number]=FilmTake(output,review['start_frame'],shot.frame_count,shot.scene_key);used_scenes.add(shot.scene_key);used_sources.update(shot.source_indices)
+                        entry.update(status='accepted',start_frame=review['start_frame'],frame_count=shot.frame_count);save('scene_accepted');return
                     entry.update(status='rejected',reasons=review.get('reasons'));save('scene_rejected')
                     if not review.get('retryable_generation'):raise VideoError('memory_film_quality_gate_failed',scene=number)
-                    if extra_attempts>=4:
-                        report.setdefault('skipped_slots',[]).append(number);save('scene_skipped');break
-                    extra_attempts+=1;local_attempt+=1
+                    if budget['extra']>=4:
+                        report.setdefault('skipped_slots',[]).append(number);save('scene_skipped');return
+                    budget['extra']+=1;local_attempt+=1
                     if local_attempt>1:
                         try:shot=recovery_shot(shot,reserves,initial.frame_count)
                         except VideoError:
-                            report.setdefault('skipped_slots',[]).append(number);save('scene_skipped');break
+                            report.setdefault('skipped_slots',[]).append(number);save('scene_skipped');return
+            async def lane(lane_client,state):
+                while queue:
+                    number,initial=queue.pop(0);state['busy']=True
+                    try:await run_slot(number,initial,lane_client)
+                    finally:state['busy']=False
+            async def extra_lane(url,state):
+                # A second GPU that is still booting joins when it is ready; the first lane never waits for it.
+                try:second=await EndpointResolver(http,replace(settings,comfyui_url=url)).resolve()
+                except VideoError:return
+                await lane(ComfyUI(http,second,settings),state)
+            await run_lanes(lambda state:lane(client,state),[(lambda state,url=url:extra_lane(url,state)) for url in settings.comfyui_extra_urls])
+            takes=[takes_by_slot[number] for number in sorted(takes_by_slot)]
             if report.get('skipped_slots'):raise VideoError('memory_film_quality_gate_failed')
             if len(used_scenes)!=len(takes) or len({t.source for t in takes})!=len(takes):raise VideoError('memory_film_repeated_scene')
             result=await render_premium_film(media,takes,folder/'film',score,target_seconds=request.duration_seconds,music_volume=request.music.volume,opening_title=plan.title,closing_title=plan.closing_line,opening_window=(.3,min(2.4,request.duration_seconds-.1)))

@@ -48,6 +48,7 @@ RunPod Network Volume(MooseFS)은 postgres 사용자에게 모든 폴더를 0777
 
 GPU는 RunPod 서버리스 **로드밸런싱 엔드포인트** `audigo-video-gpu-anyregion`(`4p4q8wwokz241c`, 템플릿 `po7qysviu7`)에서 돌아갑니다. 네트워크 볼륨을 붙이지 않아 모든 데이터센터의 GPU를 씁니다. 이전 몬트리올 전용 엔드포인트 `p0p8deqt3w7fg9`는 GPU 품절(`throttled`)로 멈춘 적이 있어 최대 워커 0으로 꺼 두었습니다. 작업 실행기가 GPU Pod를 직접 만들고 지우지 않습니다.
 
+- 장면 동시 생성: 두 번째 엔드포인트 `audigo-video-gpu-anyregion-2`(`381eowoojkelqh`, 같은 템플릿, `idleTimeout` 300초)를 `COMFYUI_EXTRA_URLS`로 붙여 장면을 두 줄로 나눠 만듭니다. 엔드포인트마다 워커가 1대라서 한 장면의 업로드·생성·다운로드가 항상 같은 GPU로 갑니다. 두 번째 GPU가 늦게 켜지거나 품절이어도 첫 번째 GPU 혼자 계속 만들고, 첫 번째 줄이 끝나면 아직 켜지는 중인 두 번째 GPU는 기다리지 않습니다.
 - 켜고 끄기: 작업 실행기가 `https://4p4q8wwokz241c.api.runpod.ai`로 요청을 보내면 RunPod가 워커를 켭니다. 600초(`idleTimeout`) 동안 요청이 없으면 끕니다. 최대 워커 수는 1대입니다.
 - GPU: `AMPERE_80`(A100 80GB) → `BLACKWELL_96`(RTX PRO 6000 96GB) → `ADA_80_PRO`(H100 80GB) 순서로, 비어 있는 GPU 1대를 씁니다. 한 종류가 품절이어도 다음 종류로 켜집니다. 켜져 있는 초만큼만 청구됩니다(A100 약 $2.7/시간, H100은 더 비쌈).
 - 품절 표시: 세 종류가 모든 데이터센터에서 없으면 작업 실행기 상태가 `GPU_SOLD_OUT`("GPU 품절")이 되고, 빈 GPU가 생기면 바로 시작합니다.

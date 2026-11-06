@@ -48,6 +48,8 @@ class VideoSettings:
     music_preset_fallback: bool = False
     # Serverless only: how long the first GPU call of a job waits for a cold worker instead of failing.
     gpu_wait_seconds: float = 0.0
+    # Extra serverless endpoints (one worker each) that generate scenes in parallel with COMFYUI_URL.
+    comfyui_extra_urls: tuple = field(default=(), repr=False)
     runpod_gpu_types: tuple[str, ...] = ()
 
     def __post_init__(self):
@@ -63,6 +65,10 @@ class VideoSettings:
             url = urlsplit(self.comfyui_url)
             if url.scheme not in {"http", "https"} or not url.hostname or url.username or url.password or url.query or url.fragment:
                 raise ValueError("COMFYUI_URL must be an HTTP(S) base URL without credentials/query")
+        for extra in self.comfyui_extra_urls:
+            parts = urlsplit(extra)
+            if self.endpoint_mode != "serverless" or parts.scheme != "https" or not parts.hostname or parts.query:
+                raise ValueError("COMFYUI_EXTRA_URLS takes HTTPS serverless endpoint URLs and needs VIDEO_ENDPOINT_MODE=serverless")
         if not self.runpod_prefix or not 1 <= self.runpod_port <= 65535:
             raise ValueError("Invalid RunPod prefix/port")
         for name in ("request_timeout", "prompt_timeout", "job_timeout", "poll_interval", "ffmpeg_timeout", "hourly_usd"):
@@ -115,5 +121,6 @@ class VideoSettings:
             "story_model": ("VIDEO_STORY_MODEL", str),
             "hourly_usd": ("VIDEO_GPU_HOURLY_USD", float),
             "gpu_wait_seconds": ("VIDEO_GPU_WAIT_SECONDS", float),
+            "comfyui_extra_urls": ("COMFYUI_EXTRA_URLS", lambda text: tuple(u.strip().rstrip("/") for u in text.split(",") if u.strip())),
         }
         return cls(**{key: cast(values[env]) for key, (env, cast) in mapping.items() if values.get(env)})

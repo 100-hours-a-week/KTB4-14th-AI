@@ -75,10 +75,16 @@ def progress_detail(workspace: Path, photo_count: int):
     accepted = sum(clip.get('status') == 'accepted' for clip in clips)
     rejected = sum(clip.get('status') == 'rejected' for clip in clips)
     scenes = sorted(run.glob('scene-*-attempt-*'), key=lambda path: path.stat().st_mtime)
-    if scenes:
-        _, slot, _, attempt = scenes[-1].name.split('-')
-        return (f'GPU에서 장면 {int(slot) + 1}/{total} 만드는 중 ({int(attempt) + 1}번째 시도) · '
-                f'통과 {accepted}개, 탈락 {rejected}개')
+    # A scene folder without quality.json is still being generated or reviewed; two GPUs work on two at once.
+    working = [path for path in scenes if not (path / 'quality.json').exists()] or scenes[-1:]
+    if working:
+        parts = []
+        for path in working:
+            _, slot, _, attempt = path.name.split('-')
+            parts.append(f'{int(slot) + 1}/{total} ({int(attempt) + 1}번째 시도)')
+        where = 'GPU 2대에서 장면 ' if len(parts) > 1 else 'GPU에서 장면 '
+        return f'{where}{", ".join(parts)} 만드는 중 · 통과 {accepted}개, 탈락 {rejected}개'
+
     return 'GPU에서 장면 생성을 시작하는 중'
 
 
@@ -124,18 +130,24 @@ def purge_media(folder: Path):
     return removed
 
 
+def gpu_endpoints(settings):
+    """Settings for every GPU endpoint this job may use: COMFYUI_URL plus COMFYUI_EXTRA_URLS."""
+    return [settings, *[replace(settings, comfyui_url=url, comfyui_extra_urls=()) for url in settings.comfyui_extra_urls]]
+
+
 async def gpu_interrupt(settings):
     """Stop whatever the GPU is generating and empty its queue. Each GPU Pod serves only this worker, so
     ComfyUI's global interrupt cannot touch anyone else's work."""
     from ai_service.clients.runpod import EndpointResolver
-    headers = settings.gpu_headers()
-    try:
-        async with httpx.AsyncClient(timeout=30) as http:
-            endpoint = await EndpointResolver(http, settings).resolve()
-            await http.post(endpoint.url + '/queue', json={'clear': True}, headers=headers)
-            await http.post(endpoint.url + '/interrupt', headers=headers)
-    except Exception as exc:
-        logging.warning('GPU interrupt skipped (%s)', type(exc).__name__)
+    for each in gpu_endpoints(settings):
+        headers = each.gpu_headers()
+        try:
+            async with httpx.AsyncClient(timeout=30) as http:
+                endpoint = await EndpointResolver(http, each).resolve()
+                await http.post(endpoint.url + '/queue', json={'clear': True}, headers=headers)
+                await http.post(endpoint.url + '/interrupt', headers=headers)
+        except Exception as exc:
+            logging.warning('GPU interrupt skipped (%s)', type(exc).__name__)
 
 
 def cancel_requested(job_id):
@@ -147,15 +159,15 @@ def cancel_requested(job_id):
 async def gpu_cleanup(settings):
     """Ask the GPU's password gate to delete this service's ComfyUI inputs and outputs (best effort)."""
     from ai_service.clients.runpod import EndpointResolver
-    try:
-        async with httpx.AsyncClient(timeout=60) as http:
-            endpoint = await EndpointResolver(http, settings).resolve()
-            response = await http.post(endpoint.url + '/_audigo/cleanup',
-                                       headers=settings.gpu_headers())
-            response.raise_for_status()
-            logging.info('GPU cleanup removed %s file(s)', response.json().get('removed_files'))
-    except Exception as exc:
-        logging.warning('GPU cleanup skipped (%s)', type(exc).__name__)
+    for each in gpu_endpoints(settings):
+        try:
+            async with httpx.AsyncClient(timeout=60) as http:
+                endpoint = await EndpointResolver(http, each).resolve()
+                response = await http.post(endpoint.url + '/_audigo/cleanup', headers=each.gpu_headers())
+                response.raise_for_status()
+                logging.info('GPU cleanup removed %s file(s)', response.json().get('removed_files'))
+        except Exception as exc:
+            logging.warning('GPU cleanup skipped (%s)', type(exc).__name__)
 
 
 async def run_job(row):
@@ -359,7 +371,7 @@ async def main():
                 # job's first GPU call waits for it (VIDEO_GPU_WAIT_SECONDS). The GPU starts at the same moment
                 # as before, so this only removes the minutes it used to sit idle during analysis.
                 gpu, endpoint = 'READY', None
-                warmup = asyncio.create_task(warm_gpu(job_settings))
+                warmup = asyncio.gather(*[warm_gpu(each) for each in gpu_endpoints(job_settings)])
             else:
                 gpu, endpoint = await with_heartbeat(lease, 'CHECKING_GPU', gpu_check(job_settings))
             if gpu != 'READY':
