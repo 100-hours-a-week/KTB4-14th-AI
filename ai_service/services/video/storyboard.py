@@ -72,11 +72,28 @@ def validate_storyboard(storyboard, candidate_indices, max_photos):
     return indices
 
 
-def scene_candidates(selection, *, limit=128):
+NEAR_DUPLICATE_BITS = 6  # pHash bits that may differ for two photos to count as the same shot
+
+
+def drop_near_duplicates(rows):
+    """Keep one photo per near-identical shot (burst shots, retakes): the sharpest by quality score."""
+    kept = []
+    for row in sorted(rows, key=lambda row: -row.get('quality_score', 0)):
+        code = row.get('phash')
+        if code and any(other.get('phash') and bin(int(code, 16) ^ int(other['phash'], 16)).count('1')
+                        <= NEAR_DUPLICATE_BITS for other in kept):
+            continue
+        kept.append(row)
+    return {row['source_index'] for row in kept}
+
+
+def scene_candidates(selection, *, limit=128, dedupe=False):
     """여행 전체의 좋은 사진을 검토한다. 대규모 입력만 시간 구간별 대표+이웃으로 제한한다."""
     representatives=selection['selected_source_indices']
     eligible={row['source_index'] for row in selection['photos']
               if row['decision'] not in {'quality_rejected','invalid_input'}}
+    if dedupe:
+        eligible=drop_near_duplicates([row for row in selection['photos'] if row['source_index'] in eligible])
     if len(eligible)<=limit:return sorted(eligible)
     rows=[row for row in selection['photos'] if row['source_index'] in eligible]
     representatives=[]
@@ -218,15 +235,15 @@ def _input_signature(candidates, context=""):
     return digest.hexdigest()
 
 
-async def catalog_memory_photos(http, settings, candidates, *, context='', batch_size=24,
-                                concurrency=3):
+async def catalog_memory_photos(http, settings, candidates, *, context='', batch_size=12,
+                                concurrency=4):
     """Read all candidate images, then reconcile scene units across image batches.
 
     No image/index is selected manually. No catalog is borrowed from a previous
     collection. The complete input digest supports safe resumable service work.
     """
     if (type(batch_size) is not int or not 1 <= batch_size <= 24
-            or type(concurrency) is not int or not 1 <= concurrency <= 3):
+            or type(concurrency) is not int or not 1 <= concurrency <= 4):
         raise ValueError('Invalid memory catalog batching')
     indices = [index for index, _ in candidates]
     if (not indices or len(indices) > 128 or len(set(indices)) != len(indices)

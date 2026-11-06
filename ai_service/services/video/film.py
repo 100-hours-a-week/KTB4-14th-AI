@@ -46,6 +46,9 @@ def recovery_shot(shot, reserves, frame_count):
             'camera_path':'Keep the camera locked in the reference framing. No pan, zoom or newly revealed areas. Animate only the evidenced subjects and natural environmental motion.'})
     raise VideoError('memory_film_no_usable_reserve')
 
+# A 30 s film uses 10-15 scenes, so the OpenAI photo reading needs at most this many photos (2026-11-06: 102
+# photos took 98 s there, most of it waiting; see storyboard.scene_candidates).
+VISION_PHOTO_LIMIT = 36
 # Every generated clip is at least 12 s long, so a kept scene can fill up to 10 s of the film.
 SMALL_PLAN_MAX_SCENE_SECONDS = 10
 # Larger plans keep more distinct scenes: 6 s each, a 30 s film from at least 5 (was 4.5 s, 7 scenes, which
@@ -110,10 +113,10 @@ async def generate_diverse_film(http,settings,request,folder,*,resolver=None,cat
                         info=await asyncio.to_thread(prepare_photo,source,path,settings.max_input_bytes,fit=request.photo_fit)
                         warnings=info['quality']['warnings']
                         decision='quality_rejected' if set(warnings)&{'BLURRY','UNDEREXPOSED','OVEREXPOSED','LOW_RESOLUTION'} else 'selected'
-                        rows.append({'source_index':i,'decision':decision,'quality_score':quality_score(info),'quality':info['quality']})
+                        rows.append({'source_index':i,'decision':decision,'quality_score':quality_score(info),'quality':info['quality'],'phash':info.get('visual_signature',{}).get('phash')})
                         prepared[i]=path
                     except VideoError as e:rows.append({'source_index':i,'decision':'invalid_input','reason':e.reason})
-                candidates=scene_candidates({'photos':rows,'selected_source_indices':[r['source_index'] for r in rows if r['decision']=='selected']})
+                candidates=scene_candidates({'photos':rows,'selected_source_indices':[r['source_index'] for r in rows if r['decision']=='selected']},limit=VISION_PHOTO_LIMIT,dedupe=True)
             report['photo_screening']=rows;save('planning')
             if resume:
                 from ai_service.services.video.diversity import MemoryFilmPlan
