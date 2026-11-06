@@ -82,8 +82,10 @@ def progress_detail(workspace: Path, photo_count: int):
     return 'GPU에서 장면 생성을 시작하는 중'
 
 
-async def track_progress(job_id, workspace: Path, photo_count=0):
+async def track_progress(job_id, workspace: Path, photo_count=0, settings=None):
     current, detail = PROGRESS[0], None
+    settings = settings or VideoSettings.from_env()
+    gpu_state, checked = 'STARTING_GPU', -1e9
     while True:
         await asyncio.sleep(2)
         stage = stage_from_reports(workspace)
@@ -94,6 +96,12 @@ async def track_progress(job_id, workspace: Path, photo_count=0):
             text = progress_detail(workspace, photo_count)
         except OSError:
             continue
+        if text == 'GPU 연결과 모델 확인 중' and settings.endpoint_mode == 'serverless':
+            now = asyncio.get_running_loop().time()
+            if now - checked > 15:
+                gpu_state, checked = await serverless_state(settings), now
+            text = ('GPU 품절: 빈 GPU가 생기기를 기다리는 중 (사진 분석은 끝남)' if gpu_state == 'GPU_SOLD_OUT'
+                    else 'GPU가 켜지기를 기다리는 중 (사진 분석은 끝남, 켜는 데 약 4~5분)')
         if text != detail:
             await asyncio.to_thread(set_detail, job_id, text)
             detail = text
@@ -169,7 +177,7 @@ async def run_job(row):
         workspace = base.workspace / f'job-{job_id}-attempt-{row["attempts"]}'
         workspace.mkdir(parents=True, exist_ok=True)
         settings = replace(base, generation_profile='fast', workspace=workspace, music_preset_fallback=True)
-        tracker = asyncio.create_task(track_progress(job_id, workspace, len(photos)))
+        tracker = asyncio.create_task(track_progress(job_id, workspace, len(photos), settings))
         try:
             await generate_and_publish(job_id, payload, photos, settings)
         finally:
@@ -273,6 +281,25 @@ async def serverless_state(settings):
     return 'GPU_SOLD_OUT' if workers.get('throttled') and not starting else 'STARTING_GPU'
 
 
+GPU_WAIT_SECONDS = 1800  # a cold start takes 4-5 minutes; a sold-out GPU may take longer
+
+
+async def warm_gpu(settings):
+    """Ask the serverless endpoint for ComfyUI until it answers, so RunPod boots the GPU while the CPU analyses
+    the photos. Only readiness requests are sent; nothing is submitted to the GPU here."""
+    from ai_service.clients.runpod import EndpointResolver
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + GPU_WAIT_SECONDS
+    async with httpx.AsyncClient() as http:
+        resolver = EndpointResolver(http, settings)
+        while loop.time() < deadline:
+            from ai_service.clients.runpod import GpuEndpoint
+            if await resolver._ready(GpuEndpoint(settings.comfyui_url.rstrip('/'))):
+                logging.info('Serverless GPU is ready')
+                return
+            await asyncio.sleep(10)
+
+
 async def with_heartbeat(conn, state, awaitable):
     """Keep the worker's heartbeat fresh while a slow call runs: a cold serverless GPU can hold a readiness
     request for two minutes, which used to show the worker as not responding."""
@@ -326,7 +353,15 @@ async def main():
             candidates = allowed_gpus if gpu_type == AUTO_GPU else (gpu_type,) if gpu_type else ()
             job_settings = replace(base, runpod_gpu_types=candidates)
             heartbeat(lease, 'CHECKING_GPU')
-            gpu, endpoint = await with_heartbeat(lease, 'CHECKING_GPU', gpu_check(job_settings))
+            warmup = None
+            if serverless:
+                # Start the job now: photo analysis runs on this CPU server while RunPod boots the GPU, and the
+                # job's first GPU call waits for it (VIDEO_GPU_WAIT_SECONDS). The GPU starts at the same moment
+                # as before, so this only removes the minutes it used to sit idle during analysis.
+                gpu, endpoint = 'READY', None
+                warmup = asyncio.create_task(warm_gpu(job_settings))
+            else:
+                gpu, endpoint = await with_heartbeat(lease, 'CHECKING_GPU', gpu_check(job_settings))
             if gpu != 'READY':
                 if gpu == 'NO_GPU' and power and allowed_gpus:
                     await power.ensure_started(gpu_type)
@@ -339,12 +374,16 @@ async def main():
                                       'GPU_BUSY': 'GPU_BUSY'}[gpu])
                 await asyncio.sleep(10)
                 continue
-            row = claim(lease, pending['id'], endpoint.gpu_type)
+            row = claim(lease, pending['id'], endpoint.gpu_type if endpoint else None)
             if row is None:
+                if warmup:
+                    warmup.cancel()
                 continue
             # 생성·취소·정리가 준비 상태를 확인한 같은 Pod를 대상으로 하도록 고정한다.
             env = os.environ.copy()
-            if endpoint.pod_id:
+            if serverless:
+                env.setdefault('VIDEO_GPU_WAIT_SECONDS', str(GPU_WAIT_SECONDS))
+            if endpoint and endpoint.pod_id:
                 job_settings = replace(job_settings, runpod_pod_id=endpoint.pod_id)
                 env['VIDEO_GPU_POD_ID'] = endpoint.pod_id
             process = await asyncio.create_subprocess_exec(sys.executable, '-m', 'scripts.video.worker', '--job', str(row['id']),
@@ -380,6 +419,8 @@ async def main():
                                     error_message='영상 생성 프로세스가 비정상 종료되었습니다.',completed_at=now(),updated_at=now()
                                     WHERE id=%s AND status='RUNNING'""", (row['id'],))
             finally:
+                if warmup:
+                    warmup.cancel()
                 # Lease loss / shutdown / timeout kills the whole child process group, including encoders.
                 if process.returncode is None:
                     os.killpg(process.pid, signal.SIGTERM)

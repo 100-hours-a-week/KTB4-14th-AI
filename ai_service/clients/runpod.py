@@ -54,8 +54,13 @@ class EndpointResolver:
                 self._cached = None
             if self.settings.endpoint_mode in {"static", "serverless"}:
                 endpoint = GpuEndpoint(self.settings.comfyui_url.rstrip("/"))
-                if not await self._ready(endpoint):
-                    raise VideoError("comfyui_not_ready")
+                # A job's photos are analysed while its serverless GPU boots, so the first GPU call may find the
+                # worker still starting; wait for it (each readiness request also keeps RunPod starting it).
+                deadline = time.monotonic() + (self.settings.gpu_wait_seconds if self.settings.endpoint_mode == "serverless" else 0)
+                while not await self._ready(endpoint):
+                    if time.monotonic() >= deadline:
+                        raise VideoError("comfyui_not_ready")
+                    await asyncio.sleep(10)
                 return endpoint
             if not self.settings.runpod_api_key:
                 raise VideoError("runpod_key_missing")

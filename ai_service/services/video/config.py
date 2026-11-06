@@ -46,6 +46,8 @@ class VideoSettings:
     max_clip_bytes: int = 500_000_000
     # 웹 작업 실행기는 자동 작곡이 탈락하면 기본 반주를 사용한다.
     music_preset_fallback: bool = False
+    # Serverless only: how long the first GPU call of a job waits for a cold worker instead of failing.
+    gpu_wait_seconds: float = 0.0
     runpod_gpu_types: tuple[str, ...] = ()
 
     def __post_init__(self):
@@ -112,5 +114,6 @@ class VideoSettings:
             "ltx_height": ("VIDEO_LTX_HEIGHT", int),
             "story_model": ("VIDEO_STORY_MODEL", str),
             "hourly_usd": ("VIDEO_GPU_HOURLY_USD", float),
+            "gpu_wait_seconds": ("VIDEO_GPU_WAIT_SECONDS", float),
         }
         return cls(**{key: cast(values[env]) for key, (env, cast) in mapping.items() if values.get(env)})
