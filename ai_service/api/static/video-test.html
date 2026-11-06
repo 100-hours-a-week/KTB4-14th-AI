@@ -118,9 +118,10 @@ async function call(path, options = {}) {
   return body;
 }
 
-// Photos are shrunk in the browser before upload: the pipeline analyses at 1024 px and generates at 768x448,
-// so a 2560 px long edge keeps every detail it uses while roughly halving each phone photo.
-const MAX_EDGE = 2560, PARALLEL = 4, PER_REQUEST = 3;
+// Photos are shrunk in the browser before upload: the film is 1920x1080 and the pipeline analyses at 1024 px,
+// so a 1920 px long edge keeps every detail it uses. Most upload time is the trip to the US server, so smaller
+// files and more parallel requests are what make it faster.
+const MAX_EDGE = 1920, PARALLEL = 6, PER_REQUEST = 3;
 
 async function shrink(file) {
   try {

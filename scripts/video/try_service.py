@@ -6,6 +6,8 @@ Reads AUDIGO_API_TOKEN from the environment or .env. GPU generation is billed wh
     uv run python -m scripts.video.try_service --job JOB_ID     # check an existing job again
 """
 import argparse
+from concurrent.futures import ThreadPoolExecutor
+import io
 import os
 from pathlib import Path
 import sys
@@ -17,12 +19,38 @@ import httpx
 
 DEFAULT_URL = 'https://bggrh1188jif0b-8000.proxy.runpod.net'
 PHOTO_TYPES = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp'}
+# Same as the test page: the film is 1920x1080, so a 1920 px long edge loses nothing it uses, and most of the
+# upload time is the trip to the US server, so smaller files and parallel requests are what make it faster.
+MAX_EDGE, PARALLEL = 1920, 6
+
+
+def shrunk(photo: Path):
+    """(bytes, content type) of the photo as a JPEG with a 1920 px long edge, or the original when that is
+    not smaller or Pillow cannot read it (the server then decides)."""
+    data = photo.read_bytes()
+    try:
+        from PIL import Image, ImageOps
+        with Image.open(io.BytesIO(data)) as image:
+            image = ImageOps.exif_transpose(image).convert('RGB')
+            image.thumbnail((MAX_EDGE, MAX_EDGE))
+            out = io.BytesIO()
+            image.save(out, 'JPEG', quality=88)
+        if out.tell() < len(data):
+            return out.getvalue(), 'image/jpeg'
+    except Exception:
+        pass
+    return data, PHOTO_TYPES[photo.suffix.lower()]
 
 
 def follow(http, job_id, interval):
     last = None
     while True:
-        job = http.get(f'/api/ai/v1/video-jobs/{job_id}').raise_for_status().json()
+        try:
+            job = http.get(f'/api/ai/v1/video-jobs/{job_id}').raise_for_status().json()
+        except httpx.TransportError as error:  # a brief network drop must not end the watch
+            print(time.strftime('%H:%M:%S'), f'연결 오류, 다시 시도합니다 ({type(error).__name__})', flush=True)
+            time.sleep(interval)
+            continue
         line = f"{job['stage_label']} ({job['status']}, 실행기: {job['worker_state']})"
         if line != last:
             print(time.strftime('%H:%M:%S'), line, flush=True)
@@ -60,14 +88,17 @@ def main():
         photos = sorted(p for p in args.photos.expanduser().iterdir() if p.suffix.lower() in PHOTO_TYPES)[:args.limit]
         if len(photos) < 2:
             sys.exit('At least two photos are required')
-        upload_ids = []
-        for index, photo in enumerate(photos, 1):
-            response = http.post('/api/ai/v1/uploads', content=photo.read_bytes(),
-                                 headers={'Content-Type': PHOTO_TYPES[photo.suffix.lower()]})
+        def upload(photo):
+            data, kind = shrunk(photo)
+            response = http.post('/api/ai/v1/uploads', content=data, headers={'Content-Type': kind})
             if response.status_code != 201:
                 sys.exit(f'{photo.name} 업로드 실패: HTTP {response.status_code} {response.text[:200]}')
-            upload_ids.append(response.json()['upload_id'])
-            print(f'사진 업로드 {index}/{len(photos)}: {photo.name}', flush=True)
+            return response.json()['upload_id']
+
+        started = time.monotonic()
+        with ThreadPoolExecutor(PARALLEL) as pool:
+            upload_ids = list(pool.map(upload, photos))  # keeps the album order
+        print(f'사진 {len(photos)}장 업로드 완료 ({time.monotonic() - started:.1f}초)', flush=True)
         body = {'request_id': str(uuid4()), 'travel_plan_id': args.travel, 'upload_ids': upload_ids,
                 'duration_seconds': args.duration, 'memory_context': args.context}
         job = http.post('/api/ai/v1/video-jobs', json=body).raise_for_status().json()
