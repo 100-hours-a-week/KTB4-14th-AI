@@ -351,6 +351,7 @@ function render(job) {
   const facts = [['사진', `${job.photo_count}장`], ['영상 길이', job.duration_seconds ? `${job.duration_seconds}초` : '-'],
                  ['요청한 지', clock((job.completed_at ? Date.parse(job.completed_at) : Date.now()) - Date.parse(job.created_at))],
                  ['작업 실행기', job.worker_state_label]];
+  if (job.progress_detail) facts.unshift(['지금 하는 일', job.progress_detail]);
   if (job.gpu_type) facts.push(['선택한 GPU', gpuLabels.get(job.gpu_type) || `${job.gpu_type} ×1`]);
   if (job.assigned_gpu_type) facts.push(['사용 GPU', gpuLabels.get(job.assigned_gpu_type) || job.assigned_gpu_type]);
   if (job.queue_position) facts.push(['대기 순번', job.queue_position === 1 ? '다음 차례' : `${job.queue_position}번째`]);
@@ -366,7 +367,8 @@ async function follow() {
   if (!jobId) { $('stage').textContent = '작업 번호가 없습니다.'; return; }
   try {
     const job = await call(`/api/ai/v1/video-jobs/${encodeURIComponent(jobId)}`, { headers: headers() });
-    $('stage').textContent = job.stage_label;
+    const doing = job.progress_detail || (job.status === 'QUEUED' ? job.worker_state_label : '');
+    $('stage').textContent = doing ? `${job.stage_label} — ${doing}` : job.stage_label;
     render(job);
     $('cancel').hidden = !['QUEUED', 'RUNNING', 'HELD'].includes(job.status) || job.cancel_requested;
     const checked = new Date().toLocaleTimeString('ko-KR');

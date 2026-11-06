@@ -78,6 +78,8 @@ ALTER TABLE video_jobs ADD COLUMN IF NOT EXISTS cancel_requested boolean NOT NUL
 -- When each stage began, e.g. {"ANALYZING_PHOTOS": "2026-11-05T06:20:00Z"}, so screens can show time per stage.
 ALTER TABLE video_jobs ADD COLUMN IF NOT EXISTS stage_times jsonb NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE video_jobs ADD COLUMN IF NOT EXISTS assigned_gpu_type text;
+-- What the job is doing right now inside its stage, e.g. '장면 3/6 만드는 중 (2번째 시도)'.
+ALTER TABLE video_jobs ADD COLUMN IF NOT EXISTS progress_detail text;
 CREATE INDEX IF NOT EXISTS video_jobs_queue ON video_jobs(created_at) WHERE status='QUEUED';
 CREATE INDEX IF NOT EXISTS video_jobs_owner ON video_jobs(owner_id, created_at);
 CREATE TABLE IF NOT EXISTS video_worker (
@@ -112,6 +114,12 @@ def update(job_id, stage, *, status='RUNNING', publication=None, error=None, mes
                         WHERE id=%s''',
                      (stage, status, Jsonb(publication) if publication else None, video_key, error,
                       message[:500] if message else None, notice[:500] if notice else None, status, stage, stage, job_id))
+
+
+def set_detail(job_id, text):
+    """Plain-language step inside the current stage, shown under the stage on status screens."""
+    with connection() as conn:
+        conn.execute('UPDATE video_jobs SET progress_detail=%s WHERE id=%s', (text[:300] if text else None, job_id))
 
 
 CANCELLED_MESSAGE = '요청에 따라 영상 생성을 취소했습니다.'
@@ -153,7 +161,7 @@ def recover_interrupted(conn):
 def claim(conn, job_id, assigned_gpu_type=None):
     """GPU 준비를 확인한 작업만 가져온다. 대기 중 취소된 요청은 건너뛴다."""
     return conn.execute("""UPDATE video_jobs SET status='RUNNING',stage='ANALYZING_PHOTOS',attempts=attempts+1,
-        assigned_gpu_type=%s,updated_at=now(),stage_times=jsonb_build_object('QUEUED', created_at, 'ANALYZING_PHOTOS', now())
+        assigned_gpu_type=%s,updated_at=now(),progress_detail=NULL,stage_times=jsonb_build_object('QUEUED', created_at, 'ANALYZING_PHOTOS', now())
         WHERE id=%s AND status='QUEUED' RETURNING *""", (assigned_gpu_type, job_id)).fetchone()
 
 if __name__ == '__main__':

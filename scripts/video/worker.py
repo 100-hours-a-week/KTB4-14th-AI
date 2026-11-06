@@ -8,10 +8,11 @@ import tempfile
 from pathlib import Path
 
 import httpx
+from urllib.parse import urlsplit
 
 from ai_service.services.video.errors import VideoError
 from ai_service.services.video.gpu_power import AUTO_GPU, default_gpu_type, gpu_selection_allowed, selectable_gpu_types
-from ai_service.services.video.jobs import claim, connection, failure_message, mark_cancelled, recover_interrupted, update
+from ai_service.services.video.jobs import claim, connection, failure_message, mark_cancelled, recover_interrupted, set_detail, update
 from ai_service.services.video.storage import VolumeResults, VolumeSettings
 from ai_service.services.video.config import VideoSettings
 from ai_service.schemas.video import MemoryVideoRequest, MusicSelection
@@ -44,14 +45,58 @@ def stage_from_reports(workspace: Path):
     return PROGRESS[best]
 
 
-async def track_progress(job_id, workspace: Path):
-    current = PROGRESS[0]
+def progress_detail(workspace: Path, photo_count: int):
+    """What the pipeline is doing inside its stage, read from the files and report.json it writes."""
+    runs = [path for path in workspace.iterdir() if path.is_dir()] if workspace.is_dir() else []
+    if not runs:
+        return '사진을 작업 폴더로 옮기는 중'
+    run = max(runs, key=lambda path: path.stat().st_mtime)
+    try:
+        report = json.loads((run / 'report.json').read_text())
+    except (OSError, ValueError):
+        done = len(list(run.glob('photo-*.png')))
+        return f'OpenCV로 사진 품질 검사 중 (흐림·노출·해상도, {done}/{photo_count}장)'
+    events = [item.get('stage') for item in report.get('events', [])]
+    last = events[-1] if events else ''
+    if last == 'planning':
+        selected = sum(row.get('decision') == 'selected' for row in report.get('photo_screening', []))
+        return f'OpenAI가 사진 내용을 보고 장면을 구성하는 중 (통과한 사진 {selected}/{photo_count}장)'
+    if last == 'planned':
+        attempts = len(list((run / 'score').glob('attempt-*'))) if (run / 'score').is_dir() else 0
+        if attempts:
+            return f'GPU에서 배경음악 작곡 중 ({attempts}번째 시도)'
+        return 'GPU 연결과 모델 확인 중'
+    if last in ('encoding', 'completed') or (run / 'film').exists() or any(run.glob('verified-film-*')):
+        return 'ffmpeg로 장면과 음악을 합쳐 최종 영상을 만드는 중'
+    if last == 'recovering_unused_photos':
+        return '탈락한 장면을 남은 사진으로 다시 채우는 중'
+    clips = report.get('clips', [])
+    total = report.get('planned_scene_count') or 0
+    accepted = sum(clip.get('status') == 'accepted' for clip in clips)
+    rejected = sum(clip.get('status') == 'rejected' for clip in clips)
+    scenes = sorted(run.glob('scene-*-attempt-*'), key=lambda path: path.stat().st_mtime)
+    if scenes:
+        _, slot, _, attempt = scenes[-1].name.split('-')
+        return (f'GPU에서 장면 {int(slot) + 1}/{total} 만드는 중 ({int(attempt) + 1}번째 시도) · '
+                f'통과 {accepted}개, 탈락 {rejected}개')
+    return 'GPU에서 장면 생성을 시작하는 중'
+
+
+async def track_progress(job_id, workspace: Path, photo_count=0):
+    current, detail = PROGRESS[0], None
     while True:
         await asyncio.sleep(2)
         stage = stage_from_reports(workspace)
         if PROGRESS.index(stage) > PROGRESS.index(current):
             await asyncio.to_thread(update, job_id, stage)
             current = stage
+        try:
+            text = progress_detail(workspace, photo_count)
+        except OSError:
+            continue
+        if text != detail:
+            await asyncio.to_thread(set_detail, job_id, text)
+            detail = text
 
 
 # User photos and generated media; text reports stay for debugging.
@@ -114,6 +159,7 @@ async def run_job(row):
     keys = {str(photo['id']): photo['storage_key'] for photo in rows}
     with tempfile.TemporaryDirectory(prefix='audigo-video-') as folder:
         photos = []
+        set_detail(job_id, f"저장소에서 사진 {len(payload['upload_ids'])}장을 내려받는 중")
         for index, upload_id in enumerate(payload['upload_ids']):
             path = Path(folder) / f'{index:04d}.png'
             await asyncio.to_thread(volume.client.download_file, volume.settings.volume_id, keys[upload_id], str(path))
@@ -123,7 +169,7 @@ async def run_job(row):
         workspace = base.workspace / f'job-{job_id}-attempt-{row["attempts"]}'
         workspace.mkdir(parents=True, exist_ok=True)
         settings = replace(base, generation_profile='fast', workspace=workspace, music_preset_fallback=True)
-        tracker = asyncio.create_task(track_progress(job_id, workspace))
+        tracker = asyncio.create_task(track_progress(job_id, workspace, len(photos)))
         try:
             await generate_and_publish(job_id, payload, photos, settings)
         finally:
@@ -213,6 +259,30 @@ async def gpu_check(settings):
         return 'NO_GPU', None
 
 
+async def serverless_state(settings):
+    """GPU_SOLD_OUT when RunPod has no free GPU of any allowed type for the endpoint, else STARTING_GPU."""
+    endpoint_id = urlsplit(settings.comfyui_url).hostname.split('.')[0]
+    try:
+        async with httpx.AsyncClient(timeout=20) as http:
+            response = await http.get(f'https://api.runpod.ai/v2/{endpoint_id}/health',
+                                      headers={'Authorization': f'Bearer {settings.runpod_api_key}'})
+            workers = response.json().get('workers', {})
+    except (httpx.HTTPError, ValueError, AttributeError):
+        return 'STARTING_GPU'
+    starting = workers.get('initializing', 0) + workers.get('running', 0) + workers.get('ready', 0)
+    return 'GPU_SOLD_OUT' if workers.get('throttled') and not starting else 'STARTING_GPU'
+
+
+async def with_heartbeat(conn, state, awaitable):
+    """Keep the worker's heartbeat fresh while a slow call runs: a cold serverless GPU can hold a readiness
+    request for two minutes, which used to show the worker as not responding."""
+    task = asyncio.ensure_future(awaitable)
+    while not task.done():
+        heartbeat(conn, state)
+        await asyncio.wait({task}, timeout=10)
+    return task.result()
+
+
 def heartbeat(conn, state):
     conn.execute("INSERT INTO video_worker(id,state) VALUES(1,%s) ON CONFLICT(id) DO UPDATE SET state=EXCLUDED.state,heartbeat_at=now()", (state,))
 
@@ -256,14 +326,14 @@ async def main():
             candidates = allowed_gpus if gpu_type == AUTO_GPU else (gpu_type,) if gpu_type else ()
             job_settings = replace(base, runpod_gpu_types=candidates)
             heartbeat(lease, 'CHECKING_GPU')
-            gpu, endpoint = await gpu_check(job_settings)
+            gpu, endpoint = await with_heartbeat(lease, 'CHECKING_GPU', gpu_check(job_settings))
             if gpu != 'READY':
                 if gpu == 'NO_GPU' and power and allowed_gpus:
                     await power.ensure_started(gpu_type)
                     heartbeat(lease, 'WAITING_FOR_GPU_CAPACITY' if gpu_type in power.capacity_waiting else 'STARTING_GPU')
                 elif gpu == 'NO_GPU' and serverless:
                     # The readiness request itself makes RunPod start a serverless worker.
-                    heartbeat(lease, 'STARTING_GPU')
+                    heartbeat(lease, await serverless_state(job_settings))
                 else:
                     heartbeat(lease, {'NO_GPU': 'WAITING_FOR_GPU', 'MODELS_MISSING': 'GPU_MODELS_MISSING',
                                       'GPU_BUSY': 'GPU_BUSY'}[gpu])

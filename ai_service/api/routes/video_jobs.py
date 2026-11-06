@@ -54,7 +54,8 @@ WORKER_LABELS = {
     'IDLE': '작업 실행기 대기 중',
     'CHECKING_GPU': 'GPU 연결 확인 중',
     'WAITING_FOR_GPU': 'GPU가 꺼져 있어 기다리는 중',
-    'STARTING_GPU': 'GPU를 켜는 중 (몇 분 걸릴 수 있음)',
+    'STARTING_GPU': 'GPU를 켜는 중 (모델 내려받기 포함 약 4~5분)',
+    'GPU_SOLD_OUT': 'GPU 품절: RunPod에 빈 GPU가 없어 자리가 날 때까지 기다리는 중',
     'WAITING_FOR_GPU_CAPACITY': '선택한 GPU의 사용 가능한 자리를 기다리는 중',
     'GPU_MODELS_MISSING': 'GPU는 켜졌지만 영상 모델이 없어 기다리는 중',
     'GPU_BUSY': 'GPU가 다른 작업을 처리하는 중',
@@ -72,6 +73,8 @@ def estimate_note(status, position, worker):
     ahead = (position or 1) - 1
     wait = f'앞에 {ahead}개 작업이 있어 시작까지 약 {ahead * JOB_MINUTES}분, ' if ahead else ''
     boot = ' GPU가 꺼져 있으면 켜는 데 몇 분이 더 걸립니다.' if worker in ('WAITING_FOR_GPU', 'STARTING_GPU') else ''
+    if worker == 'GPU_SOLD_OUT':
+        boot = ' 지금은 허용한 GPU가 모두 품절이라, 빈 GPU가 생기면 바로 시작합니다.'
     if worker == 'WAITING_FOR_GPU_CAPACITY':
         boot = ' GPU를 할당할 수 있을 때 시작합니다.'
     return f'{wait}시작 후 약 {JOB_MINUTES}분 걸립니다.{boot}'
@@ -273,6 +276,7 @@ def router(settings):
                 'estimate_note': estimate_note(row['status'], position, worker) if active else None,
                 'error_code': row['error_code'], 'error_message': korean_failure(row),
                 'notice': row.get('notice'),
+                'progress_detail': row.get('progress_detail') if row['status'] == 'RUNNING' else None,
                 'created_at': row.get('created_at'), 'completed_at': row.get('completed_at'),
                 'updated_at': row['updated_at'],
                 'video_url': f'/api/ai/v1/video-jobs/{job_id}/video' if row['status'] == 'COMPLETED' else None}

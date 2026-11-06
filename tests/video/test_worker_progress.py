@@ -193,3 +193,25 @@ def test_web_worker_requires_music_before_publishing(tmp_path, monkeypatch, audi
         update.assert_not_called()
     generate.assert_awaited_once()
     assert generate.await_args.args[0].music.preset == 'AUTO'
+
+
+def test_progress_detail_names_the_exact_step(tmp_path):
+    import json
+    from scripts.video.worker import progress_detail
+    assert progress_detail(tmp_path, 10) == '사진을 작업 폴더로 옮기는 중'
+    run = tmp_path / 'abc'
+    run.mkdir()
+    (run / 'photo-0000.png').write_bytes(b'x')
+    assert 'OpenCV' in progress_detail(tmp_path, 10) and '1/10장' in progress_detail(tmp_path, 10)
+    report = {'events': [{'stage': 'planning'}], 'photo_screening': [{'decision': 'selected'}] * 7}
+    (run / 'report.json').write_text(json.dumps(report))
+    assert progress_detail(tmp_path, 10) == 'OpenAI가 사진 내용을 보고 장면을 구성하는 중 (통과한 사진 7/10장)'
+    report['events'].append({'stage': 'planned'})
+    (run / 'report.json').write_text(json.dumps(report))
+    (run / 'score' / 'attempt-0').mkdir(parents=True)
+    assert progress_detail(tmp_path, 10) == 'GPU에서 배경음악 작곡 중 (1번째 시도)'
+    report['events'].append({'stage': 'scene_rejected'})
+    report.update(planned_scene_count=6, clips=[{'status': 'accepted'}, {'status': 'rejected'}])
+    (run / 'report.json').write_text(json.dumps(report))
+    (run / 'scene-01-attempt-01').mkdir()
+    assert progress_detail(tmp_path, 10) == 'GPU에서 장면 2/6 만드는 중 (2번째 시도) · 통과 1개, 탈락 1개'
