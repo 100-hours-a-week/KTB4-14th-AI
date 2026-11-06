@@ -175,7 +175,7 @@ def test_batch_upload_stores_each_photo_and_reports_failures(monkeypatch):
     saved = []
     def fake_save(data, owner):
         if not data.startswith(b'\x89PNG'):
-            raise video_jobs.HTTPException(400, 'Invalid image')
+            raise video_jobs.VideoError(400, 'invalid_image', 'Invalid image')
         saved.append((len(data), owner))
         return {'upload_id': f'id-{len(saved)}'}
     monkeypatch.setattr(video_jobs, 'save_upload', fake_save)
@@ -191,7 +191,7 @@ def test_batch_upload_stores_each_photo_and_reports_failures(monkeypatch):
                           files=[('files', ('c.png', photo, 'image/png')), ('files', ('notes.txt', b'hello', 'text/plain'))])
     assert mixed.status_code == 207
     assert mixed.json()['upload_ids'] == ['id-3']
-    assert mixed.json()['items'][1] == {'filename': 'notes.txt', 'error': 'Invalid image', 'status_code': 400}
+    assert mixed.json()['items'][1] == {'filename': 'notes.txt', 'status_code': 400, 'code': 'invalid_image', 'error': 'Invalid image'}
 
 
 def test_batch_upload_limits_file_count(monkeypatch):
@@ -288,3 +288,50 @@ def test_running_job_with_cancel_request_says_cancelling(monkeypatch):
     monkeypatch.setattr(video_jobs, 'find_job', lambda job, owner: row)
     data = client().get(f'/api/ai/v1/video-jobs/{uuid4()}', headers={'Authorization': 'Bearer test-secret', 'X-Owner-ID': '1'}).json()
     assert data['stage_label'] == '취소하는 중' and data['cancel_requested'] is True
+
+
+def fake_storage(monkeypatch):
+    stored = []
+    s3 = SimpleNamespace(put_object=lambda **kw: stored.append(kw), delete_object=lambda **kw: None)
+    monkeypatch.setattr(video_jobs, 'store', lambda: SimpleNamespace(settings=SimpleNamespace(volume_id='v'), client=s3))
+    @contextmanager
+    def conn():
+        yield SimpleNamespace(execute=lambda *a: SimpleNamespace(fetchone=lambda: {'n': 0}))
+    monkeypatch.setattr(video_jobs, 'connection', conn)
+    return stored
+
+
+def test_iphone_heic_is_stored_as_upright_jpeg(monkeypatch):
+    from PIL import Image
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+    photo = Image.new('RGB', (40, 20), (200, 100, 50))
+    exif = photo.getexif()
+    exif[0x0112] = 6  # iPhone portrait: rotate 90 degrees when shown
+    buffer = io.BytesIO()
+    photo.save(buffer, 'HEIF', exif=exif.tobytes())
+    stored = fake_storage(monkeypatch)
+    assert 'upload_id' in video_jobs.save_upload(buffer.getvalue(), 1)
+    with Image.open(io.BytesIO(stored[0]['Body'])) as saved:
+        assert saved.format == 'JPEG'
+        assert saved.size == (20, 40)
+        assert saved.getexif().get(0x0112) is None
+
+
+def test_video_errors_have_distinct_codes(monkeypatch):
+    from ai_service.core.handlers import register_exception_handlers
+    fake_storage(monkeypatch)
+    app = FastAPI()
+    register_exception_handlers(app)
+    app.include_router(video_jobs.router(None), dependencies=[Depends(require_api_token('test-secret'))])
+    http = TestClient(app)
+    headers = {'Authorization': 'Bearer test-secret', 'X-Owner-ID': '1'}
+    bad = http.post('/api/ai/v1/uploads', headers=headers, content=b'not an image')
+    assert bad.status_code == 400
+    assert bad.json()['message'] == 'invalid_image'
+    assert bad.json()['data']['error_message']
+    gif = io.BytesIO()
+    from PIL import Image
+    Image.new('RGB', (4, 4)).save(gif, 'GIF')
+    unsupported = http.post('/api/ai/v1/uploads', headers=headers, content=gif.getvalue())
+    assert unsupported.json()['message'] == 'unsupported_image_format'

@@ -96,6 +96,13 @@ def register_exception_handlers(app: FastAPI):
 
     @app.exception_handler(StarletteHTTPException)
     async def handle_http_error(request: Request, exc: StarletteHTTPException):
+        if getattr(exc, 'code', None):
+            # Video API errors carry their own code so callers can tell e.g. 409 request_id_conflict from 409 video_not_ready.
+            record('request_failed', level=logging.ERROR if exc.status_code >= 500 else logging.WARNING,
+                   http_status=exc.status_code, code=exc.code, error_type=type(exc).__name__,
+                   message_ko=exc.detail, **request_log_context(request))
+            return JSONResponse(status_code=exc.status_code, headers=exc.headers,
+                                content={"message": exc.code, "data": {"error_message": exc.detail}})
         reason = ('service_token_missing' if exc.status_code==503 and exc.detail=='AUDIGO_API_TOKEN is not configured'
                   else 'service_token_invalid' if exc.status_code==401
                   else 'method_not_allowed' if exc.status_code==405 else None)

@@ -18,7 +18,7 @@ from dotenv import dotenv_values, find_dotenv
 import httpx
 
 DEFAULT_URL = 'https://bggrh1188jif0b-8000.proxy.runpod.net'
-PHOTO_TYPES = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp'}
+PHOTO_TYPES = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp', '.heic': 'image/heic', '.heif': 'image/heif'}
 # Same as the test page: the film is 1920x1080, so a 1920 px long edge loses nothing it uses, and most of the
 # upload time is the trip to the US server, so smaller files and parallel requests are what make it faster.
 MAX_EDGE, PARALLEL = 1920, 6
@@ -30,6 +30,8 @@ def shrunk(photo: Path):
     data = photo.read_bytes()
     try:
         from PIL import Image, ImageOps
+        from pillow_heif import register_heif_opener
+        register_heif_opener()
         with Image.open(io.BytesIO(data)) as image:
             image = ImageOps.exif_transpose(image).convert('RGB')
             image.thumbnail((MAX_EDGE, MAX_EDGE))

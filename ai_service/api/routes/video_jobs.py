@@ -46,7 +46,7 @@ def find_job(job_id, owner):
     with connection() as conn:
         row = conn.execute('SELECT * FROM video_jobs WHERE id=%s AND owner_id=%s', (job_id, owner)).fetchone()
     if not row:
-        raise HTTPException(404, 'Job not found')
+        raise VideoError(404, 'job_not_found', '작업을 찾지 못했습니다. job_id와 X-Owner-ID를 확인해 주세요.')
     return row
 
 
@@ -107,16 +107,46 @@ def worker_state():
 DAILY_UPLOAD_LIMIT = 1000
 
 
+ALLOWED_FORMATS = {'JPEG', 'MPO', 'PNG', 'WEBP', 'HEIF'}
+MAX_PIXELS = 40_000_000
+
+
+class VideoError(HTTPException):
+    """HTTP error with a stable machine code; the handler returns {"message": code, "data": {"error_message": ...}}."""
+
+    def __init__(self, status_code, code, message, headers=None):
+        super().__init__(status_code, message, headers=headers)
+        self.code = code
+
+
+def heic_to_jpeg(photo):
+    """iPhone HEIC is stored as an upright JPEG so the OpenCV and ffmpeg steps read it like any other photo."""
+    from PIL import ImageOps
+    upright = ImageOps.exif_transpose(photo).convert('RGB')
+    exif = upright.getexif()
+    exif.pop(0x0112, None)  # orientation is already applied
+    buffer = io.BytesIO()
+    upright.save(buffer, 'JPEG', quality=92, exif=exif.tobytes())
+    return buffer.getvalue()
+
+
 def save_upload(data, owner):
     from PIL import Image, UnidentifiedImageError
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
     try:
         with Image.open(io.BytesIO(data)) as photo:
             # MPO is the JPEG variant phones save with depth or preview frames; its first frame is a normal JPEG.
-            if photo.format not in {'JPEG', 'MPO', 'PNG', 'WEBP'} or photo.width * photo.height > 40_000_000:
-                raise HTTPException(400, 'Unsupported image or image too large')
+            if photo.format not in ALLOWED_FORMATS:
+                raise VideoError(400, 'unsupported_image_format',
+                                 f'지원하지 않는 사진 형식({photo.format})입니다. JPEG·PNG·WebP·HEIC만 올릴 수 있습니다.')
+            if photo.width * photo.height > MAX_PIXELS:
+                raise VideoError(400, 'image_too_many_pixels', '사진 화소가 너무 큽니다 (4000만 화소 이하).')
             photo.load()
+            if photo.format == 'HEIF':
+                data = heic_to_jpeg(photo)
     except (UnidentifiedImageError, OSError, SyntaxError, ValueError, Image.DecompressionBombError) as exc:
-        raise HTTPException(400, 'Invalid image') from exc
+        raise VideoError(400, 'invalid_image', '사진 파일이 아니거나 손상된 파일입니다.') from exc
     upload_id = uuid4()
     key = f'uploads/{owner}/{upload_id}.image'
     volume = store()
@@ -129,7 +159,7 @@ def save_upload(data, owner):
             count = conn.execute("SELECT count(*) AS n FROM video_uploads WHERE owner_id=%s AND created_at > now() - interval '24 hours'",
                                  (owner,)).fetchone()['n']
             if count >= DAILY_UPLOAD_LIMIT:
-                raise HTTPException(429, f'하루 업로드 한도({DAILY_UPLOAD_LIMIT}장)를 넘었습니다. 내일 다시 올리거나 관리자에게 문의해 주세요.')
+                raise VideoError(429, 'daily_upload_limit_exceeded', f'하루 업로드 한도({DAILY_UPLOAD_LIMIT}장)를 넘었습니다. 내일 다시 올리거나 관리자에게 문의해 주세요.')
             volume.client.put_object(Bucket=volume.settings.volume_id, Key=key, Body=data,
                                      ContentType='application/octet-stream')
             uploaded = True
@@ -161,7 +191,7 @@ def router(settings):
 
     # Declared so the /docs page offers a file picker for the raw image body.
     @routes.post('/api/ai/v1/uploads', status_code=201, summary='사진 1장 업로드', description='한 번에 1장만 올립니다. 여러 장은 `사진 여러 장 업로드`나 [테스트 페이지](/video-test)를 쓰세요.', openapi_extra={'requestBody': {'required': True, 'content': {
-        kind: {'schema': {'type': 'string', 'format': 'binary'}} for kind in ('image/jpeg', 'image/png', 'image/webp')}}})
+        kind: {'schema': {'type': 'string', 'format': 'binary'}} for kind in ('image/jpeg', 'image/png', 'image/webp', 'image/heic')}}})
     async def upload(request: Request, x_owner_id: Owner):
         # Raw image body avoids multipart buffering and requires no multipart dependency.
         data = bytearray()
@@ -169,28 +199,29 @@ def router(settings):
             async with asyncio.timeout(120):
                 async for chunk in request.stream():
                     if len(data) + len(chunk) > MAX_UPLOAD_BYTES:
-                        raise HTTPException(413, 'Maximum image size is 20 MiB')
+                        raise VideoError(413, 'image_too_large', '사진 1장은 20MB 이하만 올릴 수 있습니다.')
                     data.extend(chunk)
         except TimeoutError:
-            raise HTTPException(408, 'Upload timed out') from None
+            raise VideoError(408, 'upload_timeout', '120초 안에 업로드가 끝나지 않았습니다. 사진을 줄이거나 다시 올려 주세요.') from None
         return await asyncio.to_thread(save_upload, bytes(data), x_owner_id)
 
     @routes.post('/api/ai/v1/uploads/batch', status_code=201, summary='사진 여러 장 업로드 (최대 30장)')
     async def upload_batch(x_owner_id: Owner, response: Response,
-                           files: Annotated[list[UploadFile], File(description='사진 최대 30장 (JPEG·PNG·WebP·아이폰 MPO). Swagger에서는 칸 하나에 파일 1개만 고를 수 있으니 "Add string item"으로 칸을 늘려 사진마다 하나씩 선택하세요.')]):
+                           files: Annotated[list[UploadFile], File(description='사진 최대 30장 (JPEG·PNG·WebP·HEIC·아이폰 MPO). Swagger에서는 칸 하나에 파일 1개만 고를 수 있으니 "Add string item"으로 칸을 늘려 사진마다 하나씩 선택하세요.')]):
         """Several photos in one multipart request; each is stored independently so failed ones can be retried."""
         if not 1 <= len(files) <= MAX_BATCH_FILES:
-            raise HTTPException(400, f'Send between 1 and {MAX_BATCH_FILES} photos per request')
+            raise VideoError(400, 'invalid_photo_count', f'한 번에 1~{MAX_BATCH_FILES}장만 올릴 수 있습니다. 나눠서 보내 주세요.')
         items = []
         for photo in files:
             data = await photo.read(MAX_UPLOAD_BYTES + 1)
             try:
                 if len(data) > MAX_UPLOAD_BYTES:
-                    raise HTTPException(413, 'Maximum image size is 20 MiB')
+                    raise VideoError(413, 'image_too_large', '사진 1장은 20MB 이하만 올릴 수 있습니다.')
                 saved = await asyncio.to_thread(save_upload, data, x_owner_id)
                 items.append({'filename': photo.filename, 'upload_id': saved['upload_id']})
             except HTTPException as exc:
-                items.append({'filename': photo.filename, 'error': exc.detail, 'status_code': exc.status_code})
+                items.append({'filename': photo.filename, 'status_code': exc.status_code,
+                              'code': getattr(exc, 'code', 'http_error'), 'error': exc.detail})
         upload_ids = [item['upload_id'] for item in items if 'upload_id' in item]
         if len(upload_ids) != len(items):
             response.status_code = 207  # Multi-Status: some photos failed; retry only those.
@@ -200,7 +231,7 @@ def router(settings):
     def create(body: JobInput, x_owner_id: Owner):
         from psycopg.types.json import Jsonb
         if len(set(body.upload_ids)) != len(body.upload_ids):
-            raise HTTPException(400, 'Duplicate upload IDs')
+            raise VideoError(400, 'duplicate_upload_ids', 'upload_ids에 같은 사진이 두 번 들어 있습니다.')
         # GPU를 생략한 기존 요청과 같은 JSON을 유지해 멱등성 검사가 계속 동작하게 한다.
         payload = body.model_dump(mode='json', exclude_none=True)
         with connection() as conn:
@@ -211,14 +242,14 @@ def router(settings):
                 # A serverless endpoint has one GPU pool; the worker ignores a picked GPU there.
                 if (body.gpu_type is not None and settings.endpoint_mode != 'serverless'
                         and not gpu_selection_allowed(body.gpu_type, selectable_gpu_types(settings))):
-                    raise HTTPException(422, '이 서버에서 선택할 수 없는 GPU 모델입니다.')
+                    raise VideoError(422, 'gpu_not_selectable', '이 서버에서 선택할 수 없는 GPU 모델입니다.')
                 pending = conn.execute("SELECT count(*) AS n FROM video_jobs WHERE owner_id=%s AND status IN ('QUEUED','RUNNING')", (x_owner_id,)).fetchone()['n']
                 if pending >= 3:
-                    raise HTTPException(429, 'At most three pending jobs per user')
+                    raise VideoError(429, 'too_many_pending_jobs', '이 사용자의 대기·진행 중 작업이 이미 3개입니다. 하나가 끝난 뒤 다시 요청해 주세요.')
             found = conn.execute('SELECT id,storage_key FROM video_uploads WHERE owner_id=%s AND id=ANY(%s)',
                                  (x_owner_id, body.upload_ids)).fetchall()
             if len(found) != len(body.upload_ids):
-                raise HTTPException(404, 'Upload not found')
+                raise VideoError(404, 'upload_not_found', 'upload_ids 중 없는 사진이 있습니다 (다른 사용자의 사진 포함).')
             keys = {row['id']: row['storage_key'] for row in found}
             conn.execute('''INSERT INTO video_jobs(id,owner_id,request,travel_plan_id,photo_keys) VALUES(%s,%s,%s,%s,%s)
                             ON CONFLICT(id) DO NOTHING''',
@@ -226,7 +257,7 @@ def router(settings):
                           [keys[upload_id] for upload_id in body.upload_ids]))
             row = conn.execute('SELECT * FROM video_jobs WHERE id=%s', (body.request_id,)).fetchone()
             if row['owner_id'] != x_owner_id or row['request'] != payload:
-                raise HTTPException(409, 'Request ID already used')
+                raise VideoError(409, 'request_id_conflict', '이미 다른 내용으로 쓴 request_id입니다. 새 UUID로 요청해 주세요.')
         return {'job_id': str(body.request_id), 'status': row['status'],
                 'status_url': f'/api/ai/v1/video-jobs/{body.request_id}'}
 
@@ -235,9 +266,9 @@ def router(settings):
     def cancel_job(job_id: UUID, x_owner_id: Owner):
         result = cancel(job_id, x_owner_id)
         if result is None:
-            raise HTTPException(404, 'Job not found')
+            raise VideoError(404, 'job_not_found', '작업을 찾지 못했습니다. job_id와 X-Owner-ID를 확인해 주세요.')
         if result == 'FINISHED':
-            raise HTTPException(409, 'Job already finished')
+            raise VideoError(409, 'job_already_finished', '이미 끝난 작업(완료·실패·취소)이라 취소할 수 없습니다.')
         message = '취소했습니다.' if result == 'CANCELLED' else '취소를 요청했습니다. 만들던 작업을 멈추는 중입니다 (보통 수십 초).'
         return JSONResponse({'job_id': str(job_id), 'status': result, 'message': message},
                             status_code=200 if result == 'CANCELLED' else 202)
@@ -246,7 +277,7 @@ def router(settings):
     def list_jobs(x_owner_id: Owner, offset: int = 0,
                   travel_plan_id: Annotated[int | None, Query(gt=0, description='이 여행의 작업만 (백엔드가 작업번호를 따로 저장하지 않아도 됨)')] = None):
         if offset < 0:
-            raise HTTPException(400, 'Invalid offset')
+            raise VideoError(400, 'invalid_offset', 'offset은 0 이상이어야 합니다.')
         with connection() as conn:
             rows = conn.execute('''SELECT id,travel_plan_id,status,stage,error_code,error_message,notice,created_at,completed_at,
                                           updated_at,coalesce(cardinality(photo_keys), 0) AS photo_count
@@ -293,7 +324,7 @@ def router(settings):
               response_format: Literal['redirect', 'json'] = 'redirect'):
         row = find_job(job_id, x_owner_id)
         if row['status'] != 'COMPLETED':
-            raise HTTPException(409, 'Video is not completed')
+            raise VideoError(409, 'video_not_ready', '영상이 아직 완성되지 않았습니다. 상태가 COMPLETED가 된 뒤 요청해 주세요.')
         # RunPod's S3 gateway rejects presigned URLs, so the service signs its own permanent link.
         # Changing VIDEO_PLAYBACK_SECRET invalidates every link issued so far.
         base = os.environ.get('VIDEO_PUBLIC_BASE_URL') or str(request.base_url)
@@ -322,7 +353,7 @@ def parse_range(header, size):
     else:
         start, end = int(start), min(int(end), size - 1) if end else size - 1
     if start > end or start >= size:
-        raise HTTPException(416, 'Range not satisfiable', headers={'Content-Range': f'bytes */{size}'})
+        raise VideoError(416, 'range_not_satisfiable', 'Range 범위가 영상 크기를 넘었습니다.', headers={'Content-Range': f'bytes */{size}'})
     return start, end
 
 
@@ -338,11 +369,11 @@ def playback_router():
     @routes.get('/api/ai/v1/playback/{job_id}', include_in_schema=False)
     def playback(job_id: UUID, sig: str, range: Annotated[str | None, Header()] = None):
         if not hmac.compare_digest(sig, playback_signature(job_id)):
-            raise HTTPException(403, 'Playback link invalid')
+            raise VideoError(403, 'playback_signature_invalid', '재생 링크의 서명이 틀렸습니다. 재생 주소를 다시 발급받아 주세요.')
         with connection() as conn:
             row = conn.execute("SELECT video_key FROM video_jobs WHERE id=%s AND status='COMPLETED'", (job_id,)).fetchone()
         if not row or not row['video_key']:
-            raise HTTPException(404, 'Video not found')
+            raise VideoError(404, 'video_not_found', '영상 파일을 찾지 못했습니다.')
         volume = store()
         size = volume.client.head_object(Bucket=volume.settings.volume_id, Key=row['video_key'])['ContentLength']
         window = parse_range(range, size)

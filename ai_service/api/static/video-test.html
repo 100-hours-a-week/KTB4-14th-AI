@@ -57,7 +57,7 @@
 
   <section>
     <h2>2. 사진 올리기</h2>
-    <input id="files" type="file" accept="image/jpeg,image/png,image/webp" multiple>
+    <input id="files" type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif,.heic,.heif" multiple>
     <p class="muted">파일 선택 창에서 Shift 또는 Cmd(Ctrl)를 누른 채 여러 장을 고를 수 있습니다. 최대 120장. 올리기 전에 긴 변 2560px로 줄여서 4개씩 동시에 보냅니다.</p>
     <button id="upload">사진 올리기</button>
     <p id="uploadSummary"></p>
@@ -112,7 +112,7 @@ async function call(path, options = {}) {
   const response = await fetch(path, options);
   const body = await response.json().catch(() => ({}));
   if (!response.ok && response.status !== 207) {
-    const reason = response.status === 401 ? '토큰이 올바르지 않습니다.' : (body.detail || body.message || '');
+    const reason = response.status === 401 ? '토큰이 올바르지 않습니다.' : (body.data?.error_message ? `${body.data.error_message} (${body.message})` : body.detail || body.message || '');
     throw new Error(`요청 실패 (HTTP ${response.status}) ${reason}`);
   }
   return body;
