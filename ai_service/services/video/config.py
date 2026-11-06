@@ -48,6 +48,10 @@ class VideoSettings:
     music_preset_fallback: bool = False
     # Serverless only: how long the first GPU call of a job waits for a cold worker instead of failing.
     gpu_wait_seconds: float = 0.0
+    # OpenAI review of each generated scene (content matches the photo, same people). Off by default since
+    # 2026-11-06: it rejected 43 % of scenes that were mostly fine, which cost time and failed whole videos.
+    # Technical checks (unreadable, frozen or too short clips) always run.
+    scene_model_review: bool = False
     # Extra serverless endpoints (one worker each) that generate scenes in parallel with COMFYUI_URL.
     comfyui_extra_urls: tuple = field(default=(), repr=False)
     runpod_gpu_types: tuple[str, ...] = ()
@@ -121,6 +125,7 @@ class VideoSettings:
             "story_model": ("VIDEO_STORY_MODEL", str),
             "hourly_usd": ("VIDEO_GPU_HOURLY_USD", float),
             "gpu_wait_seconds": ("VIDEO_GPU_WAIT_SECONDS", float),
+            "scene_model_review": ("VIDEO_SCENE_MODEL_REVIEW", lambda text: text.strip().lower() in {"1", "true", "on", "yes"}),
             "comfyui_extra_urls": ("COMFYUI_EXTRA_URLS", lambda text: tuple(u.strip().rstrip("/") for u in text.split(",") if u.strip())),
         }
         return cls(**{key: cast(values[env]) for key, (env, cast) in mapping.items() if values.get(env)})
