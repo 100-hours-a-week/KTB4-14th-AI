@@ -40,7 +40,7 @@ def stage_from_reports(workspace: Path):
             elif name in GENERATING_EVENTS or name.startswith(('scene_', 'comfyui_')):
                 best = max(best, 1)
         # The film backend renders into these folders without emitting a separate event.
-        if (report.parent / 'film').exists() or any(report.parent.glob('verified-film-*')):
+        if (report.parent / 'film').exists() or any(report.parent.glob('verified-film*')):
             best = 2
     return PROGRESS[best]
 
@@ -66,7 +66,7 @@ def progress_detail(workspace: Path, photo_count: int):
         if attempts:
             return f'GPU에서 배경음악 작곡 중 ({attempts}번째 시도)'
         return 'GPU 연결과 모델 확인 중'
-    if last in ('encoding', 'completed') or (run / 'film').exists() or any(run.glob('verified-film-*')):
+    if last in ('encoding', 'completed') or (run / 'film').exists() or any(run.glob('verified-film*')):
         return 'ffmpeg로 장면과 음악을 합쳐 최종 영상을 만드는 중'
     if last == 'recovering_unused_photos':
         return '탈락한 장면을 남은 사진으로 다시 채우는 중'

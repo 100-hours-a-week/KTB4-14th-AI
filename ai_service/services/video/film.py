@@ -244,52 +244,69 @@ async def generate_diverse_film(http,settings,request,folder,*,resolver=None,cat
         raise
 
 async def finalize_accepted_scenes(http, settings, request, folder):
-    """Graceful scene-count reduction, with every resized take checked again."""
-    from ai_service.services.video.diversity import MemoryFilmPlan,allocate_scene_frames
+    """Finish the film with fewer scenes after rejections, in at most two review rounds.
+
+    Round 1 reviews every approved scene at the length it gets if all of them are used. If any fails, round 2
+    reviews the survivors once at the longest length a scene can ever need (duration / minimum scene count).
+    A scene's final length is never longer than the window it passed, so dropping more scenes never triggers
+    another review. The old loop re-reviewed every scene after each drop; the reviewer's run-to-run variation
+    then rejected scenes that had already passed and the film failed with enough approved scenes
+    (2026-11-06: 9 approved, 5 needed)."""
+    from ai_service.services.video.diversity import MemoryFilmPlan
     from ai_service.services.video.quality import review_people_fidelity
     folder=Path(folder);report=json.loads((folder/'report.json').read_text())
     plan=MemoryFilmPlan.model_validate_json((folder/'plan.json').read_text())
     approved=[(e.get('slot',i),e) for i,e in enumerate(e for e in report['clips'] if e['status']=='accepted')]
     minimum=fallback_minimum(request.duration_seconds,len(plan.shots))
     lookup={s.scene_key:s for s in [*plan.shots,*plan.reserves]}
-    exclusions=[]
-    for round_number in range(3):
-        if len(approved)<minimum:raise VideoError('memory_film_insufficient_approved_scenes')
-        scenes=[lookup[e['scene_key']] for _,e in approved]
-        counts=allocate_scene_frames(scenes,request.duration_seconds,24)
-        maximum=max(LARGE_PLAN_MAX_SCENE_SECONDS,request.duration_seconds/minimum)
-        if any(n/24>maximum for n in counts):
-            total=round(request.duration_seconds*24);counts=[total//len(approved)+(i<total%len(approved)) for i in range(len(approved))]
-        takes=[];used=set();keys=set();reviews=[];rejected=[]
-        for (slot,entry),scene,count in zip(approved,scenes,counts):
-            if scene.scene_key in keys or used.intersection(entry['source_indices']):raise VideoError('memory_film_repeated_scene')
+    total=round(request.duration_seconds*24)
+    if len(approved)<minimum:raise VideoError('memory_film_insufficient_approved_scenes')
+    keys=set();used=set()
+    for _,entry in approved:
+        if entry['scene_key'] in keys or used.intersection(entry['source_indices']):raise VideoError('memory_film_repeated_scene')
+        keys.add(entry['scene_key']);used.update(entry['source_indices'])
+    reviews=[]
+    async def review_round(round_number,pairs,frames):
+        passed=[]
+        for slot,entry in pairs:
+            scene=lookup[entry['scene_key']]
             source=folder/f'scene-{slot:02d}-attempt-{entry["attempt"]:02d}'/'native.mp4'
             refs=[folder/f'photo-{i:04d}.png' for i in entry['source_indices']]
-            # Any window of the clip may be used: the resized take gets the full semantic and people review again,
-            # and requiring the old start frame failed whenever it was not on the review's sampling grid.
-            review=await select_reviewed_take(http,settings,source,refs,duration_seconds=count/24,visible_scene=scene.visible_scene,subject_action=scene.subject_action)
-            if not review['accepted']:
-                if review.get('review_status')=='unavailable':raise VideoError('memory_film_review_unavailable')
-                rejected.append(slot);reviews.append({'scene_key':scene.scene_key,'frame_count':count,'review':review});continue
-            fidelity=await review_people_fidelity(http,settings,source,refs,start_frame=review['start_frame'],frame_count=count)
-            reviews.append({'scene_key':scene.scene_key,'frame_count':count,'review':review,'people_fidelity':fidelity})
-            (folder/f'final-fidelity-reviews-round-{round_number}.json').write_text(json.dumps(reviews,ensure_ascii=False,indent=2))
+            review=await select_reviewed_take(http,settings,source,refs,duration_seconds=frames/24,visible_scene=scene.visible_scene,subject_action=scene.subject_action)
+            row={'round':round_number,'scene_key':scene.scene_key,'frame_count':frames,'review':review}
+            reviews.append(row)
+            if review['accepted']:
+                fidelity=await review_people_fidelity(http,settings,source,refs,start_frame=review['start_frame'],frame_count=frames)
+                row['people_fidelity']=fidelity
+                if fidelity['accepted']:
+                    passed.append((slot,entry,scene,source,review['start_frame']))
+                elif fidelity.get('unavailable'):raise VideoError('memory_film_people_review_unavailable')
+            elif review.get('review_status')=='unavailable':raise VideoError('memory_film_review_unavailable')
             (folder/'final-fidelity-reviews.json').write_text(json.dumps(reviews,ensure_ascii=False,indent=2))
-            if not fidelity['accepted']:
-                if fidelity.get('unavailable'):raise VideoError('memory_film_people_review_unavailable')
-                rejected.append(slot);continue
-            takes.append(FilmTake(source,review['start_frame'],count,scene.scene_key));keys.add(scene.scene_key);used.update(entry['source_indices'])
-        if rejected:
-            exclusions.extend(rejected);approved=[pair for pair in approved if pair[0] not in rejected];continue
-        media=Media(settings)
-        score, music = await prepare_production_score(
-            media, None, request.music, folder, duration_seconds=request.duration_seconds,
-            style=request.memory_style, context=request.memory_context, seed=request.seed,
-            allow_preset_fallback=settings.music_preset_fallback,
-        )
-        result=await render_premium_film(media,takes,folder/('verified-film-'+str(round_number)),score,target_seconds=request.duration_seconds,music_volume=request.music.volume,opening_title=plan.title,closing_title=plan.closing_line)
-        report.update(status='completed',output_file=result['output_file'],media=result['media'],scene_count=len(takes),scene_repeat_count=0,source_repeat_count=0,editing=result,music=music,quality_fallback='reallocated_and_rechecked_unique_scenes_with_independent_people_fidelity',excluded_source_slots=exclusions,final_source_indices=sorted(used))
-        report['previous_failure_reason']=report.pop('failure_reason',None)
-        (folder/'report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n')
-        return report
-    raise VideoError('memory_film_fallback_review_failed')
+        return passed
+    # Frames divisible into the film: each round's length must map to whole frames for the review.
+    first_frames=total//len(approved)
+    passed=await review_round(0,approved,first_frames)
+    reviewed=first_frames
+    if len(passed)<len(approved):
+        worst=-(-total//minimum)
+        passed=await review_round(1,[(slot,entry) for slot,entry,*_ in passed],worst)
+        reviewed=worst
+    if len(passed)<minimum:raise VideoError('memory_film_insufficient_approved_scenes')
+    counts=[total//len(passed)+(i<total%len(passed)) for i in range(len(passed))]
+    if max(counts)>reviewed:raise VideoError('memory_film_fallback_review_failed')
+    # Each take starts where its reviewed window starts and is never longer than it.
+    takes=[FilmTake(source,start,count,scene.scene_key) for (slot,entry,scene,source,start),count in zip(passed,counts)]
+    exclusions=sorted({slot for slot,_ in approved}-{slot for slot,*_ in passed})
+    final_sources=sorted({i for _,entry,*_ in passed for i in entry['source_indices']})
+    media=Media(settings)
+    score, music = await prepare_production_score(
+        media, None, request.music, folder, duration_seconds=request.duration_seconds,
+        style=request.memory_style, context=request.memory_context, seed=request.seed,
+        allow_preset_fallback=settings.music_preset_fallback,
+    )
+    result=await render_premium_film(media,takes,folder/'verified-film',score,target_seconds=request.duration_seconds,music_volume=request.music.volume,opening_title=plan.title,closing_title=plan.closing_line)
+    report.update(status='completed',output_file=result['output_file'],media=result['media'],scene_count=len(takes),scene_repeat_count=0,source_repeat_count=0,editing=result,music=music,quality_fallback='fewer_scenes_each_within_its_reviewed_window_with_independent_people_fidelity',excluded_source_slots=exclusions,final_source_indices=final_sources)
+    report['previous_failure_reason']=report.pop('failure_reason',None)
+    (folder/'report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n')
+    return report
