@@ -103,6 +103,9 @@ def worker_state():
     return worker['state'] if worker and worker['alive'] else 'OFFLINE'
 
 
+DAILY_UPLOAD_LIMIT = 1000
+
+
 def save_upload(data, owner):
     from PIL import Image, UnidentifiedImageError
     try:
@@ -120,9 +123,12 @@ def save_upload(data, owner):
     try:
         with connection() as conn:
             conn.execute('SELECT pg_advisory_xact_lock(%s)', (owner,))
-            count = conn.execute('SELECT count(*) AS n FROM video_uploads WHERE owner_id=%s', (owner,)).fetchone()['n']
-            if count >= 1000:
-                raise HTTPException(429, 'Upload quota reached; contact administrator')
+            # Abuse guard per user and day. It used to count every upload ever made, so a test user that had
+            # made 1,000 uploads since 2026-11-04 could not upload at all (2026-11-06).
+            count = conn.execute("SELECT count(*) AS n FROM video_uploads WHERE owner_id=%s AND created_at > now() - interval '24 hours'",
+                                 (owner,)).fetchone()['n']
+            if count >= DAILY_UPLOAD_LIMIT:
+                raise HTTPException(429, f'하루 업로드 한도({DAILY_UPLOAD_LIMIT}장)를 넘었습니다. 내일 다시 올리거나 관리자에게 문의해 주세요.')
             volume.client.put_object(Bucket=volume.settings.volume_id, Key=key, Body=data,
                                      ContentType='application/octet-stream')
             uploaded = True
