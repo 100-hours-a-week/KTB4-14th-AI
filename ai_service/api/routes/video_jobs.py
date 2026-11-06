@@ -62,14 +62,15 @@ WORKER_LABELS = {
     'BUSY': '영상 생성 중',
     'OFFLINE': '작업 실행기가 응답하지 않음',
 }
-# One measured end-to-end run on an A100: 110 photos, 30-second film, 1,679 s. Not a guarantee.
-JOB_MINUTES = 30
+# Measured 2026-11-06 on serverless GPUs with two scene lanes: 108 photos 6 min, 25 photos 7 min (30 s films).
+# A cold GPU adds 3-4 minutes, which overlap photo analysis. Not a guarantee.
+JOB_MINUTES = 10
 
 
 def estimate_note(status, position, worker):
     """Plain-language wait and run estimate; jobs run one at a time on one GPU."""
     if status == 'RUNNING':
-        return f'만들기 시작한 뒤 약 {JOB_MINUTES}분 걸립니다 (실측 1회: 사진 110장·30초 영상 28분).'
+        return f'만들기 시작한 뒤 약 {JOB_MINUTES}분 안에 끝납니다 (실측: 사진 108장·30초 영상 6분).'
     ahead = (position or 1) - 1
     wait = f'앞에 {ahead}개 작업이 있어 시작까지 약 {ahead * JOB_MINUTES}분, ' if ahead else ''
     boot = ' GPU가 꺼져 있으면 켜는 데 몇 분이 더 걸립니다.' if worker in ('WAITING_FOR_GPU', 'STARTING_GPU') else ''

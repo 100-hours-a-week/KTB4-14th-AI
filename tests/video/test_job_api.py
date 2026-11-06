@@ -258,7 +258,7 @@ def test_waiting_behind_another_job_is_explained(monkeypatch):
     monkeypatch.setattr(video_jobs, 'find_job', lambda job, owner: row)
     data = client().get(f'/api/ai/v1/video-jobs/{uuid4()}', headers={'Authorization': 'Bearer test-secret', 'X-Owner-ID': '1'}).json()
     assert '앞 순서의 다른 영상' in data['worker_state_label']
-    assert data['estimate_note'].startswith('앞에 1개 작업이 있어 시작까지 약 30분')
+    assert data['estimate_note'].startswith('앞에 1개 작업이 있어 시작까지 약 10분')
 
 
 @pytest.mark.parametrize('result, status_code, status', [('CANCELLED', 200, 'CANCELLED'), ('CANCELLING', 202, 'CANCELLING')])
