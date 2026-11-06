@@ -22,17 +22,28 @@ echo "$(date -u +%FT%TZ) boot $(hostname)" > "$LOG"
 GATE=/local/gate.py; [ -f "$GATE" ] || GATE=/workspace/audigo/gate.py
 COMFYUI_IO_DIR="$LOCAL/io" python3 "$GATE" >> /workspace/audigo/gate.log 2>&1 &
 start=$(date +%s)
-if timeout 1500 python3 /workspace/download_models.py --models-dir "$LOCAL/models" > /workspace/audigo/model_download_local.log 2>&1; then
+# gpu_power.start_command() writes the current downloader to /local too.
+DOWNLOAD=/local/download_models.py; [ -f "$DOWNLOAD" ] || DOWNLOAD=/workspace/download_models.py
+if timeout 1500 python3 "$DOWNLOAD" --models-dir "$LOCAL/models" > /workspace/audigo/model_download_local.log 2>&1; then
   # is_default puts the local copies first, so ComfyUI loads them instead of the volume's files with the same name.
   printf 'audigo_local:\n  base_path: %s/models\n  is_default: true\n  checkpoints: checkpoints\n  text_encoders: text_encoders\n  diffusion_models: diffusion_models\n  vae: vae\n' \
-    "$LOCAL" > "$COMFY/extra_model_paths.yaml"
+    "$LOCAL" > "$LOCAL/extra_model_paths.yaml"
+  # Passed with --extra-model-paths-config below: without a volume, ComfyUI's folder exists only after /start.sh.
+  rm -f "$COMFY/extra_model_paths.yaml" 2>/dev/null
   echo "$(date -u +%FT%TZ) models on local disk in $(( $(date +%s) - start ))s" >> "$LOG"
 else
+  # Without a network volume there is no slower copy to fall back to: fail so RunPod replaces the worker.
+  if [ ! -f /workspace/download_models.py ]; then
+    echo "$(date -u +%FT%TZ) model download failed and no volume copy exists; exiting" | tee -a "$LOG"
+    exit 1
+  fi
   # Never block the Pod on the download: fall back to the (slower) models on the volume.
   rm -f "$COMFY/extra_model_paths.yaml"
   echo "$(date -u +%FT%TZ) local model download failed after $(( $(date +%s) - start ))s; using the volume's models" >> "$LOG"
 fi
 touch "$LOCAL/ready"  # the gate's /ping answers 200 once ComfyUI is up too
-printf '%s\n' '# Written by gpu_boot.sh' "--input-directory $LOCAL/io/input" "--output-directory $LOCAL/io/output" \
+mkdir -p /workspace/runpod-slim
+EXTRA=(); [ -f "$LOCAL/extra_model_paths.yaml" ] && EXTRA=("--extra-model-paths-config $LOCAL/extra_model_paths.yaml")
+printf '%s\n' '# Written by gpu_boot.sh' "--input-directory $LOCAL/io/input" "--output-directory $LOCAL/io/output" "${EXTRA[@]}" \
   > /workspace/runpod-slim/comfyui_args.txt
 exec /start.sh

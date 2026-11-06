@@ -30,11 +30,14 @@ _GPU_DIR = Path(__file__).resolve().parents[3] / 'deploy' / 'runpod-gpu'
 
 
 def start_command():
-    """gpu_boot.sh preceded by the current gate.py, so a Pod or serverless worker never runs a stale gate."""
-    gate = (_GPU_DIR / 'gate.py').read_text()
-    assert 'AUDIGO_GATE_EOF' not in gate
-    return (f"mkdir -p /local && cat > /local/gate.py <<'AUDIGO_GATE_EOF'\n{gate}AUDIGO_GATE_EOF\n"
-            + (_GPU_DIR / 'gpu_boot.sh').read_text())
+    """gpu_boot.sh preceded by the current gate.py and model downloader, so a Pod or serverless worker needs
+    nothing from a network volume and never runs a stale copy."""
+    parts = ['mkdir -p /local']
+    for name in ('gate.py', 'download_models.py'):
+        text = (_GPU_DIR / name).read_text()
+        assert 'AUDIGO_FILE_EOF' not in text
+        parts.append(f"cat > /local/{name} <<'AUDIGO_FILE_EOF'\n{text}AUDIGO_FILE_EOF")
+    return '\n'.join(parts) + '\n' + (_GPU_DIR / 'gpu_boot.sh').read_text()
 
 
 START_COMMAND = start_command()
