@@ -217,3 +217,5 @@ def test_progress_detail_names_the_exact_step(tmp_path):
     assert progress_detail(tmp_path, 10) == 'GPU에서 장면 2/6 (2번째 시도) 만드는 중 · 통과 1개, 탈락 1개'
     (run / 'scene-03-attempt-00').mkdir()
     assert progress_detail(tmp_path, 10) == 'GPU 2대에서 장면 2/6 (2번째 시도), 4/6 (1번째 시도) 만드는 중 · 통과 1개, 탈락 1개'
+    (run / 'scene-07-attempt-00').mkdir()
+    assert '대체 장면 2 (1번째 시도)' in progress_detail(tmp_path, 10)

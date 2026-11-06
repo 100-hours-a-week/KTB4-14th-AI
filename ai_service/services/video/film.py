@@ -48,22 +48,16 @@ def recovery_shot(shot, reserves, frame_count):
 
 # Every generated clip is at least 12 s long, so a kept scene can fill up to 10 s of the film.
 SMALL_PLAN_MAX_SCENE_SECONDS = 10
-
-
-def clip_frame_count(path):
-    import cv2
-    capture=cv2.VideoCapture(str(path))
-    try:
-        return int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-    finally:
-        capture.release()
+# Larger plans keep more distinct scenes: 6 s each, a 30 s film from at least 5 (was 4.5 s, 7 scenes, which
+# failed the 2026-11-06 Gangneung run with 6 of 10 scenes approved).
+LARGE_PLAN_MAX_SCENE_SECONDS = 6
 
 
 def fallback_minimum(duration, planned_count):
     """Fewest distinct scenes a film may be finished with after rejections. A plan of six scenes or fewer may
     stretch each kept scene to 10 s (a 30 s film from 3 scenes) instead of failing the whole video; larger plans
-    keep their 4.5 s diversity floor and recover with unused photos instead."""
-    maximum=SMALL_PLAN_MAX_SCENE_SECONDS if planned_count<=6 else 4.5
+    allow 6 s per scene and first recover with unused photos."""
+    maximum=SMALL_PLAN_MAX_SCENE_SECONDS if planned_count<=6 else LARGE_PLAN_MAX_SCENE_SECONDS
     return min(math.ceil(duration/maximum),planned_count)
 
 def unused_photo_reserves(plan, clips, frames, limit=2):
@@ -263,7 +257,7 @@ async def finalize_accepted_scenes(http, settings, request, folder):
         if len(approved)<minimum:raise VideoError('memory_film_insufficient_approved_scenes')
         scenes=[lookup[e['scene_key']] for _,e in approved]
         counts=allocate_scene_frames(scenes,request.duration_seconds,24)
-        maximum=max(4.5,request.duration_seconds/minimum)
+        maximum=max(LARGE_PLAN_MAX_SCENE_SECONDS,request.duration_seconds/minimum)
         if any(n/24>maximum for n in counts):
             total=round(request.duration_seconds*24);counts=[total//len(approved)+(i<total%len(approved)) for i in range(len(approved))]
         takes=[];used=set();keys=set();reviews=[];rejected=[]
@@ -271,11 +265,9 @@ async def finalize_accepted_scenes(http, settings, request, folder):
             if scene.scene_key in keys or used.intersection(entry['source_indices']):raise VideoError('memory_film_repeated_scene')
             source=folder/f'scene-{slot:02d}-attempt-{entry["attempt"]:02d}'/'native.mp4'
             refs=[folder/f'photo-{i:04d}.png' for i in entry['source_indices']]
-            # A stretched scene may run past the end of its clip from the old start; start earlier so the
-            # whole window fits, and let the re-review below judge the new frames.
-            native=clip_frame_count(source)
-            anchor=min(entry['start_frame'],max(0,native-count)) if native else entry['start_frame']
-            review=await select_reviewed_take(http,settings,source,refs,duration_seconds=count/24,visible_scene=scene.visible_scene,subject_action=scene.subject_action,excluded_ranges=((0,anchor),(anchor+count,10000000)))
+            # Any window of the clip may be used: the resized take gets the full semantic and people review again,
+            # and requiring the old start frame failed whenever it was not on the review's sampling grid.
+            review=await select_reviewed_take(http,settings,source,refs,duration_seconds=count/24,visible_scene=scene.visible_scene,subject_action=scene.subject_action)
             if not review['accepted']:
                 if review.get('review_status')=='unavailable':raise VideoError('memory_film_review_unavailable')
                 rejected.append(slot);reviews.append({'scene_key':scene.scene_key,'frame_count':count,'review':review});continue

@@ -81,7 +81,10 @@ def progress_detail(workspace: Path, photo_count: int):
         parts = []
         for path in working:
             _, slot, _, attempt = path.name.split('-')
-            parts.append(f'{int(slot) + 1}/{total} ({int(attempt) + 1}번째 시도)')
+            number = int(slot) + 1
+            # Slots past the plan are replacements made from unused photos after rejections.
+            label = f'{number}/{total}' if number <= total else f'대체 장면 {number - total}'
+            parts.append(f'{label} ({int(attempt) + 1}번째 시도)')
         where = 'GPU 2대에서 장면 ' if len(parts) > 1 else 'GPU에서 장면 '
         return f'{where}{", ".join(parts)} 만드는 중 · 통과 {accepted}개, 탈락 {rejected}개'
 

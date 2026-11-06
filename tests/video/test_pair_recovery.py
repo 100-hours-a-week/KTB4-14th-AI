@@ -9,7 +9,8 @@ def test_small_album_reallocation_does_not_relax_large_album_diversity_floor():
     from ai_service.services.video.film import fallback_minimum
     assert fallback_minimum(30,6)==3
     assert fallback_minimum(30,4)==3  # the Gangneung album: 3 of 4 scenes kept still makes a 30 s film
-    assert fallback_minimum(30,15)==7
+    assert fallback_minimum(30,15)==5
+    assert fallback_minimum(30,10)==5
 
 def test_rejected_pair_can_keep_first_reference_without_reusing_other_scenes():
     shot=MemoryFilmShot(scene_key='beach',source_index=1,end_source_index=7,role='landscape',people_visible=True,visible_scene='Waves on a sandy beach.',subject_action='Small waves wash onto shore.',camera_path='A gentle camera glide.',memory_reason='해변에서 보낸 여행의 기억',quality_score=.8,motion_potential=.7,frame_count=120,duration_seconds=5)
