@@ -36,8 +36,12 @@ class ScorePolicy:
     maximum_trailing_quiet_seconds: float = 1.5
     # ACE takes often breathe for about a second before the main section; 0.5 s rejected every take measured
     # on 2026-11-04 (pauses of 1.1 s and 1.8 s) although level, length and ending all passed.
-    maximum_internal_quiet_seconds: float = 1.5
-    maximum_clipped_sample_fraction: float = 0.0001
+    # Measured on 2026-11-06 over 28 ACE takes: 17 were rejected for 0.02-0.22 % of samples at full scale and
+    # 10 for a 1.8-2.1 s pause; only 4 passed, so nearly every video fell back to the built-in music.
+    # Sparse full-scale samples are not audible under the film's 65 % music level; 0.3 % still rejects takes
+    # whose waveform is visibly flattened.
+    maximum_internal_quiet_seconds: float = 2.0
+    maximum_clipped_sample_fraction: float = 0.003
     minimum_ending_drop_db: float = 6
 
     def __post_init__(self):

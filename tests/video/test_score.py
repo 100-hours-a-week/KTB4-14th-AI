@@ -62,7 +62,7 @@ class ScoreSelectionTests(unittest.TestCase):
 
     def test_internal_dead_gap_and_flat_truncated_end_fail(self):
         signal = music_samples()
-        signal[12 * 8000:14 * 8000] = 0
+        signal[12 * 8000:15 * 8000] = 0  # a 3 s dead gap; pauses up to 2 s are allowed
         with self.assertRaises(VideoError) as caught:
             select_score_excerpt(signal, 30, sample_rate=8000)
         self.assertEqual(caught.exception.reason, 'score_no_usable_continuous_excerpt')

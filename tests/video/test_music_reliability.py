@@ -71,3 +71,10 @@ def test_permanent_errors_and_default_clients_do_not_retry():
     with pytest.raises(ServiceUnavailable):
         asyncio.run(client.complete([], {}, 'x'))
     assert len(calls) == 1
+
+
+def test_sparse_full_scale_samples_like_measured_ace_takes_pass():
+    from ai_service.services.video.score import ScorePolicy
+    policy = ScorePolicy()
+    assert policy.maximum_clipped_sample_fraction >= 0.0022  # the worst measured ACE take, 2026-11-06
+    assert policy.maximum_internal_quiet_seconds >= 1.8
