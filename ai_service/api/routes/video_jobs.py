@@ -35,7 +35,7 @@ class JobInput(BaseModel):
     gpu_type: str | None = Field(default=None, min_length=1, max_length=120)
 
 
-SERVERLESS_GPU_LABEL = os.environ.get('VIDEO_SERVERLESS_GPU_LABEL', 'A100 80GB ×1 (서버리스 자동)')
+SERVERLESS_GPU_LABEL = os.environ.get('VIDEO_SERVERLESS_GPU_LABEL', 'A100 80GB · RTX PRO 6000 96GB · H100 80GB 중 빈 GPU 1대 (서버리스 자동)')
 
 
 def store():
@@ -142,7 +142,7 @@ def router(settings):
             # One fixed GPU pool on the RunPod serverless endpoint: nothing to choose.
             return {'default_gpu_type': None, 'items': [], 'serverless': {
                 'label': SERVERLESS_GPU_LABEL,
-                'note': '서버리스 GPU를 씁니다. 요청이 들어오면 RunPod가 GPU를 자동으로 켜고, 10분 동안 일이 없으면 끕니다. '
+                'note': '서버리스 GPU를 씁니다. 요청이 들어오면 RunPod가 위 순서대로 비어 있는 GPU를 자동으로 켜고, 10분 동안 일이 없으면 끕니다. '
                         '꺼져 있던 GPU가 켜지는 데 몇 분 걸리고, GPU가 일한 시간만큼만 요금이 나갑니다.'}}
         models = selectable_gpu_types(settings)
         choices = (*models, AUTO_GPU) if len(models) > 1 else models

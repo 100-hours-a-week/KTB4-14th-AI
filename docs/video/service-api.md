@@ -49,7 +49,8 @@ RunPod Network Volume(MooseFS)은 postgres 사용자에게 모든 폴더를 0777
 GPU는 RunPod 서버리스 **로드밸런싱 엔드포인트** `audigo-video-gpu`(`p0p8deqt3w7fg9`, 템플릿 `0y4yeq8clb`)에서 돌아갑니다. 작업 실행기가 GPU Pod를 직접 만들고 지우지 않습니다.
 
 - 켜고 끄기: 작업 실행기가 `https://p0p8deqt3w7fg9.api.runpod.ai`로 요청을 보내면 RunPod가 워커를 켭니다. 600초(`idleTimeout`) 동안 요청이 없으면 끕니다. 최대 워커 수는 1대입니다.
-- GPU: `AMPERE_80`(A100 80GB)입니다. 네트워크 볼륨 `i1rifh8j8j`가 있는 CA-MTL-3에서만 뜹니다. 시간당 약 $2.7이고 켜져 있는 초만큼만 청구됩니다.
+- GPU: `AMPERE_80`(A100 80GB) → `BLACKWELL_96`(RTX PRO 6000 96GB) → `ADA_80_PRO`(H100 80GB) 순서로, 비어 있는 GPU 1대를 씁니다. 한 종류가 품절이어도 다음 종류로 켜집니다. 네트워크 볼륨 `i1rifh8j8j`가 있는 CA-MTL-3에서만 뜹니다. 켜져 있는 초만큼만 청구됩니다(A100 약 $2.7/시간, H100은 더 비쌈).
+- 남은 품절 위험: 볼륨 때문에 데이터센터가 한 곳뿐입니다. 세 종류가 모두 없으면 작업은 GPU가 생길 때까지 "GPU를 켜는 중"으로 기다립니다. 완전히 없애려면 다른 데이터센터에 같은 내용의 볼륨을 하나 더 만들어 `networkVolumeIds`로 함께 붙이면 됩니다.
 - 시작 시간: 이미지가 캐시돼 있으면 컨테이너 시작 후 모델 6개(53GB)를 Hugging Face에서 워커 디스크로 받는 데 약 4~5분 걸립니다. 그동안 `/ping`은 204(준비 중)를 돌려주고, 끝나면 200을 돌려줍니다.
 - 인증: RunPod 엣지는 `Authorization: Bearer <RUNPOD_API_KEY>`를 검사합니다. 그래서 게이트 토큰은 `X-Audigo-Token`으로 보냅니다(`VideoSettings.gpu_headers()`). `/ping`만 토큰 없이 응답합니다.
 - 볼륨 위치: 서버리스는 볼륨을 `/runpod-volume`에 붙입니다. `gpu_boot.sh`가 `/workspace`를 그곳으로 연결하므로 ComfyUI 설치와 다운로드 스크립트를 Pod와 똑같이 씁니다.
