@@ -46,7 +46,7 @@ RunPod Network Volume(MooseFS)은 postgres 사용자에게 모든 폴더를 0777
 
 ## 서버리스 GPU (2026-11-05, 현재 운영 방식)
 
-GPU는 RunPod 서버리스 **로드밸런싱 엔드포인트** `audigo-video-gpu-anyregion`(`4p4q8wwokz241c`, 템플릿 `po7qysviu7`)에서 돌아갑니다. 네트워크 볼륨을 붙이지 않아 모든 데이터센터의 GPU를 씁니다. 이전 몬트리올 전용 엔드포인트 `p0p8deqt3w7fg9`는 GPU 품절(`throttled`)로 멈춘 적이 있어 최대 워커 0으로 꺼 두었습니다. 작업 실행기가 GPU Pod를 직접 만들고 지우지 않습니다.
+GPU는 RunPod 서버리스 **로드밸런싱 엔드포인트** `audigo-video-gpu-anyregion`(`4p4q8wwokz241c`, 템플릿 `po7qysviu7`)에서 돌아갑니다. 네트워크 볼륨을 붙이지 않아 모든 데이터센터의 GPU를 씁니다. 이전 몬트리올 엔드포인트 `p0p8deqt3w7fg9`는 GPU 품절(`throttled`)로 멈춘 적이 있어 최대 워커 0으로 꺼 두었고, 볼륨 연결도 끊었습니다. 작업 실행기가 GPU Pod를 직접 만들고 지우지 않습니다.
 
 - 장면 동시 생성: 두 번째 엔드포인트 `audigo-video-gpu-anyregion-2`(`381eowoojkelqh`, 같은 템플릿, `idleTimeout` 300초)를 `COMFYUI_EXTRA_URLS`로 붙여 장면을 두 줄로 나눠 만듭니다. 엔드포인트마다 워커가 1대라서 한 장면의 업로드·생성·다운로드가 항상 같은 GPU로 갑니다. 두 번째 GPU가 늦게 켜지거나 품절이어도 첫 번째 GPU 혼자 계속 만들고, 첫 번째 줄이 끝나면 아직 켜지는 중인 두 번째 GPU는 기다리지 않습니다.
 - 켜고 끄기: 작업 실행기가 `https://4p4q8wwokz241c.api.runpod.ai`로 요청을 보내면 RunPod가 워커를 켭니다. 600초(`idleTimeout`) 동안 요청이 없으면 끕니다. 최대 워커 수는 1대입니다.
@@ -63,7 +63,7 @@ GPU는 RunPod 서버리스 **로드밸런싱 엔드포인트** `audigo-video-gpu
 
 ## GPU Pod 구성 (2026-11-04, 이전 방식)
 
-- 모델 보관함: 몬트리올(CA-MTL-3) 네트워크 볼륨 `audigo-gpu-models-mtl`(`i1rifh8j8j`, 100GB)에 영상·음악 모델 6개(53GB)가 있습니다. 처음 한 번 `deploy/runpod-gpu/download_models.py`로 받았으며, GPU를 새로 만들어도 다시 받지 않습니다.
+- 모델 보관함: 없습니다. 서버리스 GPU가 켜질 때마다 `deploy/runpod-gpu/download_models.py`로 Hugging Face에서 모델 6개(53GB)를 받습니다(3~4분). 예전 몬트리올 볼륨 `audigo-gpu-models-mtl`(`i1rifh8j8j`)은 2026-11-09에 지웠습니다.
 - 필요할 때 GPU 만들기: `VIDEO_GPU_AUTOSTART=1`이면 작업 실행기가 이 볼륨에 선택한 GPU Pod(이름 `audigo-video-gpu-…`)를 준비합니다. 기본 선택지는 RTX PRO 6000 96GB와 A100 PCIe 80GB입니다. `AUTO`는 허용 목록 안에서 사용 가능한 GPU 한 대를 사용합니다. GPU 모델별로 준비된 Pod를 재사용하고, 대기열이 10분 동안 비면 관리 중인 Pod를 정리합니다.
 - 모델 확인: GPU의 ComfyUI에 모델 6개가 모두 보일 때만 작업을 가져갑니다. 모델이 없는 GPU에는 작업을 보내지 않습니다.
 - 비밀번호 관문: ComfyUI는 자체 인증이 없으므로 GPU Pod는 `deploy/runpod-gpu/gate.py`(볼륨의 `/workspace/audigo/gate.py`)만 8189 포트로 공개하고 ComfyUI의 8188은 열지 않습니다. `COMFYUI_API_TOKEN`이 맞는 요청만 통과합니다. 실서버에서 비밀번호 없는 요청은 모두 401, 8188 직접 접속은 불가함을 확인했습니다.
