@@ -16,12 +16,15 @@ dependencies = [
   "tokenizers>=0.21,<1",
   "uvicorn[standard]==0.36.0",
   "yt-dlp==2026.8.19",
+  "python-multipart>=0.0.20,<0.1",
 ]
 
 [project.optional-dependencies]
 video = [
+  "psycopg[binary]>=3.2,<4",
   "opencv-python-headless==4.13.0.92",
   "pillow>=11.3,<13",
+  "pillow-heif>=1.1,<2",
 ]
 dev = [
   "pymysql[rsa]==1.1.2",

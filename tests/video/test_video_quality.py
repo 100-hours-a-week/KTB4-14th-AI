@@ -112,7 +112,7 @@ class SemanticQualityTests(unittest.IsolatedAsyncioTestCase):
             return httpx.Response(200, json={'choices': [{'finish_reason': 'stop', 'message': {'content': json.dumps(answer)}}]})
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
             with patch('ai_service.services.video.quality.Settings.from_env', return_value=Settings(openai_api_key='test', openai_model='test')):
-                return await review_take_semantics(http, VideoSettings(), self.video, [self.reference],
+                return await review_take_semantics(http, VideoSettings(scene_model_review=True), self.video, [self.reference],
                     start_frame=24, frame_count=48, visible_scene='An evidenced place.', subject_action='Meaningful world motion.')
 
     async def test_major_geometry_issue_overrides_models_generic_approval(self):
@@ -133,7 +133,7 @@ class SemanticQualityTests(unittest.IsolatedAsyncioTestCase):
     async def test_missing_review_key_never_falls_back_to_unchecked_take(self):
         async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: self.fail('must not call provider without a key'))) as http:
             with patch('ai_service.services.video.quality.Settings.from_env', return_value=Settings()):
-                result = await select_reviewed_take(http, VideoSettings(), self.video, [self.reference],
+                result = await select_reviewed_take(http, VideoSettings(scene_model_review=True), self.video, [self.reference],
                     duration_seconds=2, visible_scene='A place.', subject_action='An action.')
         self.assertFalse(result['accepted'])
         self.assertEqual(result['review_status'], 'unavailable')
@@ -143,3 +143,13 @@ class SemanticQualityTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def test_model_review_is_off_by_default_and_skips_openai():
+    import asyncio
+    from ai_service.services.video.config import VideoSettings
+    from ai_service.services.video.quality import review_people_fidelity
+    settings = VideoSettings()
+    assert settings.scene_model_review is False
+    result = asyncio.run(review_people_fidelity(None, settings, Path('x.mp4'), [], start_frame=0, frame_count=24))
+    assert result['accepted'] is True and result['review_status'] == 'not_reviewed'

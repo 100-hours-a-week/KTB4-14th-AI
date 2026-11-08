@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>영상 서비스 테스트</title>
+<style>
+  :root { --bg: #f7f7f5; --card: #fff; --text: #1d1d1b; --muted: #6b6b66; --line: #e2e2dd; --accent: #2f6fde; --ok: #1f8a4c; --bad: #c4372b; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #161615; --card: #20201f; --text: #ececea; --muted: #a3a39d; --line: #34342f; --accent: #6d9cf0; --ok: #4cc27f; --bad: #ef6b5f; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.55 -apple-system, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; }
+  main { max-width: 680px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p.lead { color: var(--muted); margin: 0 0 20px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 14px; }
+  h2 { font-size: 16px; margin: 0 0 10px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 8px 0 4px; }
+  input[type=text], input[type=password], input[type=number], select { width: 100%; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; }
+  button { margin-top: 12px; padding: 9px 16px; border: 0; border-radius: 8px; background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: .45; cursor: default; }
+  button.danger { background: var(--bad); margin-left: 8px; }
+  .row { display: flex; gap: 10px; } .row > div { flex: 1; }
+  ul { margin: 8px 0 0; padding-left: 18px; font-size: 14px; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .muted { color: var(--muted); font-size: 13px; }
+  .stage { font-size: 18px; font-weight: 600; margin-top: 6px; }
+  video { width: 100%; margin-top: 12px; border-radius: 8px; background: #000; }
+  code { font-size: 12px; word-break: break-all; }
+  ol.steps { list-style: none; padding: 0; margin: 12px 0 0; }
+  ol.steps li { padding: 4px 0; color: var(--muted); }
+  ol.steps li.done { color: var(--ok); } ol.steps li.now { color: var(--text); font-weight: 600; }
+  ol.steps .took { font-weight: 400; color: var(--muted); font-variant-numeric: tabular-nums; margin-left: 6px; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 12px 0 0; font-size: 14px; }
+  dt { color: var(--muted); } dd { margin: 0; }
+  .jobs { list-style: none; padding: 0; margin: 8px 0 14px; display: grid; gap: 6px; }
+  .jobs button { margin: 0; width: 100%; display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; text-align: left;
+                 background: var(--bg); color: var(--text); border: 1px solid var(--line); font-weight: 400; padding: 9px 12px; }
+  .jobs button[aria-current="true"] { border-color: var(--accent); }
+  .jobs .when { color: var(--muted); font-size: 13px; } .jobs .what { font-weight: 600; } .jobs .id { color: var(--muted); font-size: 12px; }
+  button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--line); margin-top: 0; padding: 5px 12px; font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>영상 서비스 테스트</h1>
+  <p class="lead">사진 여러 장을 올리고 영상을 요청한 뒤, 진행 상황과 완성 영상을 확인합니다.</p>
+
+  <section>
+    <h2>1. 로그인 정보</h2>
+    <label for="token">서비스 토큰 (AUDIGO_API_TOKEN)</label>
+    <input id="token" type="password" autocomplete="off" placeholder="팀에서 받은 토큰">
+    <div class="row">
+      <div><label for="owner">테스트 사용자 번호</label><input id="owner" type="number" min="1" value="1"></div>
+      <div><label for="travel">여행 번호</label><input id="travel" type="number" min="1" value="101"></div>
+    </div>
+    <p class="muted">토큰은 이 탭에만 기억해서 새로고침해도 유지되고, 탭을 닫으면 지워집니다.</p>
+  </section>
+
+  <section>
+    <h2>2. 사진 올리기</h2>
+    <input id="files" type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif,.heic,.heif" multiple>
+    <p class="muted">파일 선택 창에서 Shift 또는 Cmd(Ctrl)를 누른 채 여러 장을 고를 수 있습니다. 최대 120장. 올리기 전에 긴 변 2560px로 줄여서 4개씩 동시에 보냅니다.</p>
+    <button id="upload">사진 올리기</button>
+    <p id="uploadSummary"></p>
+    <ul id="uploadList"></ul>
+  </section>
+
+  <section>
+    <h2>3. 영상 만들기</h2>
+    <label for="context">어떤 여행인가요? (선택)</label>
+    <input id="context" type="text" maxlength="500" placeholder="예: 제주 바다 여행">
+    <label for="gpuType">영상 생성 GPU</label>
+    <select id="gpuType" aria-describedby="gpuHelp" disabled><option value="">서버 기본 GPU</option></select>
+    <p id="gpuHelp" class="muted">서비스 토큰을 입력하면 선택할 수 있는 GPU가 표시됩니다.</p>
+    <button id="create" disabled>영상 만들기 요청</button>
+    <p class="muted">GPU가 꺼져 있으면 요청이 들어올 때 켜지고, 켜지는 동안은 "GPU를 켜는 중"으로 표시됩니다. GPU가 일한 시간만큼만 요금이 나갑니다.</p>
+  </section>
+
+  <section>
+    <h2>4. 진행 상황</h2>
+    <div class="row" style="align-items:center"><div><b>내 영상 작업</b> <span class="muted">· 새로고침해도 여기서 다시 고를 수 있습니다</span></div>
+      <div style="flex:0"><button id="reloadJobs" class="ghost">목록 새로고침</button></div></div>
+    <ul id="jobs" class="jobs"><li class="muted">토큰을 넣으면 내 작업 목록이 나타납니다.</li></ul>
+    <label for="jobId">작업 번호 (이미 있는 작업을 확인할 때 직접 입력)</label>
+    <input id="jobId" type="text" placeholder="영상 요청을 보내면 자동으로 채워집니다">
+    <button id="check">상태 확인</button><button id="cancel" class="danger" hidden>이 작업 취소</button>
+    <div id="stage" class="stage"></div>
+    <ol id="steps" class="steps"></ol>
+    <dl id="facts"></dl>
+    <p id="stageDetail" class="muted"></p>
+    <video id="player" controls playsinline hidden></video>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+// Per-tab convenience only: storage can be unavailable (private mode), so every access is guarded.
+const store = {
+  get: (area, key) => { try { return window[area].getItem(key) || ''; } catch { return ''; } },
+  set: (area, key, value) => { try { value ? window[area].setItem(key, value) : window[area].removeItem(key); } catch {} },
+};
+let uploadIds = [];
+let timer = null;
+const gpuLabels = new Map();
+let gpuOptionsReady = false;
+
+function headers(extra = {}) {
+  const token = $('token').value.trim();
+  if (!token) throw new Error('서비스 토큰을 먼저 입력해 주세요.');
+  return { Authorization: 'Bearer ' + token, 'X-Owner-ID': $('owner').value, ...extra };
+}
+
+async function call(path, options = {}) {
+  const response = await fetch(path, options);
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok && response.status !== 207) {
+    const reason = response.status === 401 ? '토큰이 올바르지 않습니다.' : (body.data?.error_message ? `${body.data.error_message} (${body.message})` : body.detail || body.message || '');
+    throw new Error(`요청 실패 (HTTP ${response.status}) ${reason}`);
+  }
+  return body;
+}
+
+// Photos are shrunk in the browser before upload: the film is 1920x1080 and the pipeline analyses at 1024 px,
+// so a 1920 px long edge keeps every detail it uses. Most upload time is the trip to the US server, so smaller
+// files and more parallel requests are what make it faster.
+const MAX_EDGE = 1920, PARALLEL = 6, PER_REQUEST = 3;
+
+async function shrink(file) {
+  try {
+    const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+    const scale = Math.min(1, MAX_EDGE / Math.max(bitmap.width, bitmap.height));
+    if (scale === 1 && file.size < 2_000_000) { bitmap.close(); return file; }
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(bitmap.width * scale); canvas.height = Math.round(bitmap.height * scale);
+    canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close();
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.88));
+    return blob && blob.size < file.size ? new File([blob], file.name.replace(/\.\w+$/, '') + '.jpg', { type: 'image/jpeg' }) : file;
+  } catch {
+    return file;  // A format the browser cannot decode goes up as is; the server decides.
+  }
+}
+
+async function loadGpuOptions() {
+  const token = $('token').value.trim();
+  const picker = $('gpuType');
+  const current = picker.value;
+  gpuOptionsReady = false;
+  picker.disabled = true;
+  picker.replaceChildren(new Option('서버 기본 GPU', ''));
+  $('gpuHelp').textContent = '서비스 토큰을 입력하면 선택할 수 있는 GPU가 표시됩니다.';
+  if (!token) return;
+  try {
+    const result = await call('/api/ai/v1/video-gpu-options', { headers: headers() });
+    if ($('token').value.trim() !== token) return;
+    gpuOptionsReady = true;
+    if (result.serverless) {
+      picker.replaceChildren(new Option(result.serverless.label, ''));
+      $('gpuHelp').textContent = result.serverless.note;
+      return;
+    }
+    if (result.items.length === 0) {
+      $('gpuHelp').textContent = '이 서버는 기본 GPU로 영상을 만듭니다.';
+      return;
+    }
+    picker.replaceChildren(...result.items.map(item => {
+      gpuLabels.set(item.id, item.label);
+      return new Option(item.label, item.id);
+    }));
+    picker.value = result.items.some(item => item.id === current) ? current : result.default_gpu_type;
+    picker.disabled = false;
+    $('gpuHelp').textContent = '모델을 지정하면 해당 GPU를 기다립니다. 자동 선택은 허용 목록에서 자리가 있는 GPU 1대를 사용합니다.';
+  } catch (error) {
+    if ($('token').value.trim() === token) $('gpuHelp').textContent = `GPU 목록을 불러오지 못했습니다. ${error.message}`;
+  }
+}
+
+$('token').addEventListener('change', loadGpuOptions);
+
+$('upload').onclick = async () => {
+  const files = [...$('files').files];
+  const list = $('uploadList');
+  list.innerHTML = '';
+  if (files.length === 0) { $('uploadSummary').textContent = '사진을 먼저 골라 주세요.'; return; }
+  $('upload').disabled = true;
+  uploadIds = [];
+  const started = performance.now();
+  const results = new Array(files.length);
+  let done = 0, sentBytes = 0, originalBytes = 0;
+  const groups = [];
+  for (let i = 0; i < files.length; i += PER_REQUEST) groups.push(files.slice(i, i + PER_REQUEST).map((file, k) => [i + k, file]));
+  const progress = () => {
+    const seconds = (performance.now() - started) / 1000;
+    $('uploadSummary').textContent = `올리는 중… ${done}/${files.length} · ${(sentBytes / 1e6).toFixed(0)}MB 전송 · ${seconds.toFixed(0)}초`;
+  };
+  try {
+    progress();
+    // Several requests at once: one connection through the RunPod proxy carries well under the link's capacity.
+    const worker = async () => {
+      while (groups.length) {
+        const group = groups.shift();
+        const form = new FormData();
+        for (const [, file] of group) {
+          const small = await shrink(file);
+          originalBytes += file.size; sentBytes += small.size;
+          form.append('files', small, small.name);
+        }
+        const result = await call('/api/ai/v1/uploads/batch', { method: 'POST', headers: headers(), body: form });
+        result.items.forEach((item, k) => { results[group[k][0]] = { ...item, filename: group[k][1].name }; });
+        done += group.length;
+        progress();
+      }
+    };
+    await Promise.all(Array.from({ length: PARALLEL }, worker));
+    for (const item of results) {
+      const li = document.createElement('li');
+      li.className = item.upload_id ? 'ok' : 'bad';
+      li.textContent = item.upload_id ? `${item.filename} ✓` : `${item.filename} ✗ ${item.error}`;
+      list.appendChild(li);
+      if (item.upload_id) uploadIds.push(item.upload_id);  // keep the order the photos were chosen in
+    }
+    const failed = files.length - uploadIds.length;
+    const seconds = ((performance.now() - started) / 1000).toFixed(0);
+    $('uploadSummary').innerHTML = `<span class="ok">${uploadIds.length}장 올림</span>` + (failed ? ` · <span class="bad">${failed}장 실패</span>` : '')
+      + ` · ${seconds}초 · ${(originalBytes / 1e6).toFixed(0)}MB → ${(sentBytes / 1e6).toFixed(0)}MB로 줄여 전송`;
+    $('create').disabled = uploadIds.length < 2;
+    if (uploadIds.length < 2) $('uploadSummary').innerHTML += ' · 영상은 사진이 2장 이상 필요합니다.';
+  } catch (error) {
+    $('uploadSummary').innerHTML = `<span class="bad">${error.message}</span>`;
+  } finally {
+    $('upload').disabled = false;
+  }
+};
+
+$('create').onclick = async () => {
+  $('create').disabled = true;
+  try {
+    if (!gpuOptionsReady) await loadGpuOptions();
+    if (!gpuOptionsReady) throw new Error('GPU 목록을 확인해 주세요.');
+    const gpuType = $('gpuType').value;
+    const job = await call('/api/ai/v1/video-jobs', {
+      method: 'POST', headers: headers({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ request_id: crypto.randomUUID(), travel_plan_id: Number($('travel').value),
+                             upload_ids: uploadIds.slice(0, 120), memory_context: $('context').value,
+                             ...(gpuType ? { gpu_type: gpuType } : {}) }),
+    });
+    pick(job.job_id);
+    loadJobs(false);
+  } catch (error) {
+    $('stage').innerHTML = `<span class="bad">${error.message}</span>`;
+    $('create').disabled = false;
+  }
+};
+
+$('check').onclick = follow;
+
+const ACTIVE = ['QUEUED', 'RUNNING', 'HELD'];
+function pick(jobId) {
+  $('jobId').value = jobId;
+  store.set('localStorage', 'video-test:last-job', jobId);
+  document.querySelectorAll('#jobs button').forEach(b => b.setAttribute('aria-current', String(b.dataset.id === jobId)));
+  follow();
+}
+
+async function loadJobs(autoSelect) {
+  if (!$('token').value.trim()) return;
+  try {
+    const { items } = await call('/api/ai/v1/video-jobs', { headers: headers() });
+    const list = $('jobs');
+    list.innerHTML = items.length ? '' : '<li class="muted">아직 요청한 영상이 없습니다.</li>';
+    for (const job of items.slice(0, 10)) {
+      const li = document.createElement('li');
+      const when = new Date(job.created_at).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+      li.innerHTML = `<button type="button" data-id="${job.id}"><span class="what">${job.stage_label} · 사진 ${job.photo_count}장</span>`
+        + `<span class="when">${when}</span><span class="id">${job.id.slice(0, 8)}…</span></button>`;
+      li.querySelector('button').onclick = () => pick(job.id);
+      list.appendChild(li);
+    }
+    if (autoSelect && !$('jobId').value.trim() && items.length) {
+      // Resume what the viewer was watching: a running job first, else the last one they opened, else the newest.
+      const last = store.get('localStorage', 'video-test:last-job');
+      const chosen = items.find(j => ACTIVE.includes(j.status)) || items.find(j => j.id === last) || items[0];
+      pick(chosen.id);
+    }
+  } catch (error) {
+    $('jobs').innerHTML = `<li class="bad">${error.message}</li>`;
+  }
+}
+
+$('reloadJobs').onclick = () => loadJobs(false);
+$('token').addEventListener('change', () => { store.set('sessionStorage', 'video-test:token', $('token').value.trim()); loadJobs(true); });
+$('token').value = store.get('sessionStorage', 'video-test:token');
+loadJobs(true);
+
+$('cancel').onclick = async () => {
+  const jobId = $('jobId').value.trim();
+  if (!jobId || !confirm('이 영상 만들기를 취소할까요? 만들던 내용은 저장되지 않습니다.')) return;
+  $('cancel').disabled = true;
+  try {
+    const result = await call(`/api/ai/v1/video-jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST', headers: headers() });
+    $('stageDetail').textContent = result.message;
+  } catch (error) {
+    $('stageDetail').innerHTML = `<span class="bad">${error.message.includes('409') ? '이미 끝난 작업이라 취소할 수 없습니다.' : error.message}</span>`;
+  } finally {
+    $('cancel').disabled = false;
+    follow();
+  }
+};
+
+const STEPS = [['QUEUED', '대기 중'], ['ANALYZING_PHOTOS', '사진 분석 중'], ['GENERATING_VIDEO', 'AI 영상 생성 중'],
+               ['EDITING_VIDEO', '영상 편집 중'], ['SAVING', '저장 중'], ['COMPLETED', '완료']];
+
+function since(iso) {
+  const minutes = Math.max(0, Math.round((Date.now() - new Date(iso)) / 60000));
+  return minutes < 60 ? `${minutes}분` : `${Math.floor(minutes / 60)}시간 ${minutes % 60}분`;
+}
+
+function clock(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), r = s % 60;
+  return h ? `${h}시간 ${m}분 ${r}초` : m ? `${m}분 ${r}초` : `${r}초`;
+}
+
+// Time per stage from stage_times (when each stage began); the current stage keeps counting every second.
+function stepTimes(job) {
+  const times = { QUEUED: job.created_at, ...(job.stage_times || {}) };
+  const ended = job.completed_at ? Date.parse(job.completed_at) : Date.now();
+  return STEPS.map(([key], i) => {
+    if (!times[key]) return null;
+    const next = STEPS.slice(i + 1).map(([k]) => times[k]).find(Boolean);
+    // A stage with no later start time is only measurable when it is the current one (older jobs lack some times).
+    if (!next && key !== job.stage && !job.completed_at) return null;
+    return { ms: (next ? Date.parse(next) : ended) - Date.parse(times[key]), running: !next && !job.completed_at };
+  });
+}
+
+let shownJob = null;
+setInterval(() => { if (shownJob && !shownJob.completed_at) drawSteps(shownJob); }, 1000);
+
+function drawSteps(job) {
+  const current = STEPS.findIndex(([key]) => key === job.stage);
+  const took = stepTimes(job);
+  $('steps').innerHTML = STEPS.map(([key, label], i) => {
+    const cls = job.status === 'COMPLETED' || i < current ? 'done' : i === current ? 'now' : '';
+    const mark = cls === 'done' ? '✓' : cls === 'now' ? '▶' : '○';
+    const time = took[i] ? `<span class="took">${clock(took[i].ms)}${took[i].running ? '째' : ''}</span>` : '';
+    return `<li class="${cls}">${mark} ${label}${time}</li>`;
+  }).join('');
+}
+
+function render(job) {
+  shownJob = job;
+  drawSteps(job);
+  const facts = [['사진', `${job.photo_count}장`], ['영상 길이', job.duration_seconds ? `${job.duration_seconds}초` : '-'],
+                 ['요청한 지', clock((job.completed_at ? Date.parse(job.completed_at) : Date.now()) - Date.parse(job.created_at))],
+                 ['작업 실행기', job.worker_state_label]];
+  if (job.progress_detail) facts.unshift(['지금 하는 일', job.progress_detail]);
+  if (job.gpu_type) facts.push(['선택한 GPU', gpuLabels.get(job.gpu_type) || `${job.gpu_type} ×1`]);
+  if (job.assigned_gpu_type) facts.push(['사용 GPU', gpuLabels.get(job.assigned_gpu_type) || job.assigned_gpu_type]);
+  if (job.queue_position) facts.push(['대기 순번', job.queue_position === 1 ? '다음 차례' : `${job.queue_position}번째`]);
+  if (job.estimate_note) facts.push(['예상 시간', job.estimate_note]);
+  if (job.completed_at) facts.push(['완료 시각', new Date(job.completed_at).toLocaleString('ko-KR')]);
+  if (job.notice) facts.push(['알림', job.notice]);
+  $('facts').innerHTML = facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+}
+
+async function follow() {
+  clearTimeout(timer);
+  const jobId = $('jobId').value.trim();
+  if (!jobId) { $('stage').textContent = '작업 번호가 없습니다.'; return; }
+  try {
+    const job = await call(`/api/ai/v1/video-jobs/${encodeURIComponent(jobId)}`, { headers: headers() });
+    const doing = job.progress_detail || (job.status === 'QUEUED' ? job.worker_state_label : '');
+    $('stage').textContent = doing ? `${job.stage_label} — ${doing}` : job.stage_label;
+    render(job);
+    $('cancel').hidden = !['QUEUED', 'RUNNING', 'HELD'].includes(job.status) || job.cancel_requested;
+    const checked = new Date().toLocaleTimeString('ko-KR');
+    $('stageDetail').textContent = job.status === 'CANCELLED' ? (job.error_message || '취소된 작업입니다.')
+      : job.status === 'FAILED' ? `실패 이유: ${job.error_message || '알 수 없음'} (오류 코드: ${job.error_code})`
+      : job.status === 'COMPLETED' ? `작업 번호 ${jobId}` : `마지막 확인 ${checked} · 5초마다 자동으로 새로 고칩니다`;
+    if (job.status === 'COMPLETED') {
+      const play = await call(`/api/ai/v1/video-jobs/${encodeURIComponent(jobId)}/video?response_format=json`, { headers: headers() });
+      $('player').src = play.url;
+      $('player').hidden = false;
+      $('stageDetail').textContent = '완성! 아래에서 재생할 수 있습니다.';
+      $('steps').querySelectorAll('li').forEach(li => { li.className = 'done'; li.textContent = '✓ ' + li.textContent.slice(2); });
+    } else if (!['FAILED', 'CANCELLED'].includes(job.status)) {
+      timer = setTimeout(follow, 5000);
+    }
+  } catch (error) {
+    $('stage').innerHTML = `<span class="bad">${error.message}</span>`;
+  }
+}
+
+loadGpuOptions();
+</script>
+</body>
+</html>

@@ -26,7 +26,7 @@ def asset_reference(asset: dict, *, expected_type: str) -> dict:
 class ComfyUI:
     def __init__(self, http: httpx.AsyncClient, endpoint: GpuEndpoint, settings: VideoSettings):
         self.http, self.endpoint, self.settings = http, endpoint, settings
-        self.headers = {"Authorization": f"Bearer {settings.comfyui_token}"} if settings.comfyui_token else {}
+        self.headers = settings.gpu_headers()
 
     async def _json(self, method, route, **kwargs):
         try:

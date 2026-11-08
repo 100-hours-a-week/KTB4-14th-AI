@@ -33,3 +33,10 @@ README.md
 # 도커 자체
 Dockerfile
 .dockerignore
+
+# 사용자 사진·생성 결과는 배포 이미지에 포함하지 않습니다.
+artifacts/
+workspace/
+*.mp4
+*.mov
+*.safetensors

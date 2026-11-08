@@ -12,7 +12,7 @@ class PeopleFidelityTests(unittest.IsolatedAsyncioTestCase):
         value={'reference_people':['A person seen from behind.'],'generated_foreground_people':['A visible traveler.'],'unmatched_foreground_people':list(unmatched),'uncertain_foreground_people':list(uncertain),'rationale':'Motion can be plausible while reference correspondence is missing.'}
         with patch('ai_service.services.video.quality.Settings.from_env',return_value=Settings(openai_api_key='test')),patch('ai_service.services.video.quality._review_images',return_value=[]),patch('ai_service.services.video.quality.OpenAIClient.complete',AsyncMock(return_value=json.dumps(value))):
             async with httpx.AsyncClient() as client:
-                return await review_people_fidelity(client,VideoSettings(),Path('synthetic.mp4'),[],start_frame=0,frame_count=72)
+                return await review_people_fidelity(client,VideoSettings(scene_model_review=True),Path('synthetic.mp4'),[],start_frame=0,frame_count=72)
     async def test_plausible_new_person_is_rejected(self):
         self.assertFalse((await self.decision(unmatched=['A new foreground person.']))['accepted'])
     async def test_uncertain_person_is_not_approved(self):

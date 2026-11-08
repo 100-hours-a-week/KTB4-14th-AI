@@ -62,7 +62,7 @@ class ScoreSelectionTests(unittest.TestCase):
 
     def test_internal_dead_gap_and_flat_truncated_end_fail(self):
         signal = music_samples()
-        signal[12 * 8000:14 * 8000] = 0
+        signal[12 * 8000:15 * 8000] = 0  # a 3 s dead gap; pauses up to 2 s are allowed
         with self.assertRaises(VideoError) as caught:
             select_score_excerpt(signal, 30, sample_rate=8000)
         self.assertEqual(caught.exception.reason, 'score_no_usable_continuous_excerpt')
@@ -190,6 +190,22 @@ class ProductionScoreTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(VideoError) as caught:
             await self.generate(client, folder='no-fallback', policy=ScorePolicy(max_attempts=1))
         self.assertEqual(caught.exception.reason, 'score_quality_failed')
+
+    async def test_two_rejected_scores_use_full_length_preset_without_a_third_submission(self):
+        client = AudioClient([self.bad, self.bad])
+        path, report = await self.generate(client, allow_preset_fallback=True)
+
+        self.assertTrue(path.is_file())
+        self.assertEqual(len(client.submissions), 2)
+        self.assertEqual(report['source'], 'BUILTIN_PRESET_FALLBACK')
+        self.assertEqual(report['selected_preset'], 'BRIGHT')
+        self.assertTrue(report['fallback_used'])
+        self.assertEqual(report['audio']['duration_seconds'], 30)
+        self.assertGreater(report['activity']['active_fraction'], 0.9)
+        self.assertFalse(report['looping_applied'])
+
+        reused, _ = await self.generate(None, allow_preset_fallback=True)
+        self.assertEqual(reused, path)
 
     async def test_explicit_file_none_and_short_file_do_not_call_provider(self):
         user_folder = self.folder / 'user'

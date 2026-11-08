@@ -44,18 +44,35 @@ class VideoSettings:
     hourly_usd: float = 1.11
     max_input_bytes: int = 25_000_000
     max_clip_bytes: int = 500_000_000
+    # 웹 작업 실행기는 자동 작곡이 탈락하면 기본 반주를 사용한다.
+    music_preset_fallback: bool = False
+    # Serverless only: how long the first GPU call of a job waits for a cold worker instead of failing.
+    gpu_wait_seconds: float = 0.0
+    # OpenAI review of each generated scene (content matches the photo, same people). Off by default since
+    # 2026-11-06: it rejected 43 % of scenes that were mostly fine, which cost time and failed whole videos.
+    # Technical checks (unreadable, frozen or too short clips) always run.
+    scene_model_review: bool = False
+    # Extra serverless endpoints (one worker each) that generate scenes in parallel with COMFYUI_URL.
+    comfyui_extra_urls: tuple = field(default=(), repr=False)
+    runpod_gpu_types: tuple[str, ...] = ()
 
     def __post_init__(self):
         if self.generation_profile not in {"standard", "fast"}:
             raise ValueError("VIDEO_GENERATION_PROFILE must be standard or fast")
-        if self.endpoint_mode not in {"static", "runpod"}:
-            raise ValueError("VIDEO_ENDPOINT_MODE must be static or runpod")
+        if self.endpoint_mode not in {"static", "runpod", "serverless"}:
+            raise ValueError("VIDEO_ENDPOINT_MODE must be static, runpod or serverless")
+        if self.endpoint_mode == "serverless" and not (self.runpod_api_key and self.comfyui_token):
+            raise ValueError("VIDEO_ENDPOINT_MODE=serverless needs RUNPOD_API_KEY and COMFYUI_API_TOKEN")
         if min(self.ltx_width,self.ltx_height)<64 or self.ltx_width%32 or self.ltx_height%32:
             raise ValueError('LTX dimensions must be multiples of 32')
-        if self.endpoint_mode == "static":
+        if self.endpoint_mode in {"static", "serverless"}:
             url = urlsplit(self.comfyui_url)
             if url.scheme not in {"http", "https"} or not url.hostname or url.username or url.password or url.query or url.fragment:
                 raise ValueError("COMFYUI_URL must be an HTTP(S) base URL without credentials/query")
+        for extra in self.comfyui_extra_urls:
+            parts = urlsplit(extra)
+            if self.endpoint_mode != "serverless" or parts.scheme != "https" or not parts.hostname or parts.query:
+                raise ValueError("COMFYUI_EXTRA_URLS takes HTTPS serverless endpoint URLs and needs VIDEO_ENDPOINT_MODE=serverless")
         if not self.runpod_prefix or not 1 <= self.runpod_port <= 65535:
             raise ValueError("Invalid RunPod prefix/port")
         for name in ("request_timeout", "prompt_timeout", "job_timeout", "poll_interval", "ffmpeg_timeout", "hourly_usd"):
@@ -66,6 +83,13 @@ class VideoSettings:
         if min(self.max_input_bytes, self.max_clip_bytes) <= 0:
             raise ValueError("Input/download size limits must be positive")
 
+    def gpu_headers(self) -> dict:
+        """Headers for every request to the GPU's password gate. A serverless endpoint checks the RunPod API key
+        in Authorization at RunPod's edge, so the gate token travels in X-Audigo-Token there."""
+        if self.endpoint_mode == "serverless":
+            return {"Authorization": f"Bearer {self.runpod_api_key}", "X-Audigo-Token": self.comfyui_token}
+        return {"Authorization": f"Bearer {self.comfyui_token}"} if self.comfyui_token else {}
+
     @classmethod
     def from_env(cls, env_file: Path = ENV_FILE):
         values = {**dotenv_values(env_file), **os.environ}
@@ -75,7 +99,7 @@ class VideoSettings:
             "comfyui_token": ("COMFYUI_API_TOKEN", str),
             "runpod_api_key": ("RUNPOD_API_KEY", str),
             "runpod_prefix": ("RUNPOD_POD_PREFIX", str),
-            "runpod_pod_id": ("RUNPOD_POD_ID", str),
+            "runpod_pod_id": ("VIDEO_GPU_POD_ID", str),  # RUNPOD_POD_ID는 RunPod가 현재 Pod ID로 설정하므로 별도 변수를 쓴다.
             "runpod_port": ("RUNPOD_COMFYUI_PORT", int),
             "discovery_ttl": ("VIDEO_DISCOVERY_TTL_SECONDS", float),
             "workspace": ("VIDEO_WORKSPACE", Path),
@@ -100,5 +124,8 @@ class VideoSettings:
             "ltx_height": ("VIDEO_LTX_HEIGHT", int),
             "story_model": ("VIDEO_STORY_MODEL", str),
             "hourly_usd": ("VIDEO_GPU_HOURLY_USD", float),
+            "gpu_wait_seconds": ("VIDEO_GPU_WAIT_SECONDS", float),
+            "scene_model_review": ("VIDEO_SCENE_MODEL_REVIEW", lambda text: text.strip().lower() in {"1", "true", "on", "yes"}),
+            "comfyui_extra_urls": ("COMFYUI_EXTRA_URLS", lambda text: tuple(u.strip().rstrip("/") for u in text.split(",") if u.strip())),
         }
         return cls(**{key: cast(values[env]) for key, (env, cast) in mapping.items() if values.get(env)})

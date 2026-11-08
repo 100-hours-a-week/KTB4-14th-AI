@@ -1,5 +1,6 @@
-"""Input-independent, non-repeating memory-film executor with automatic gates."""
+"""사진별 장면을 생성하고 품질 검사를 거쳐 최종 여행 영상을 구성한다."""
 import asyncio,json,math,sys,time,hashlib
+from dataclasses import replace
 from pathlib import Path
 from ai_service.clients.comfyui import ComfyUI
 from ai_service.clients.runpod import EndpointResolver
@@ -15,6 +16,27 @@ from ai_service.services.video.media import Media
 from ai_service.services.video.premium_render import render_premium_film
 from ai_service.services.video.errors import VideoError
 
+
+async def run_lanes(primary, extras):
+    """Run the primary scene lane and any extra GPU lanes. Once the primary lane has no work left, extra lanes
+    that are not in the middle of a scene (for example a second GPU still booting) are stopped, so a slow or
+    sold-out second GPU can never delay the film. The first failure stops every lane."""
+    states=[{'busy':False} for _ in range(1+len(extras))]
+    tasks=[asyncio.create_task(primary(states[0]))]+[asyncio.create_task(make(state)) for make,state in zip(extras,states[1:])]
+    try:
+        await tasks[0]
+        for task,state in zip(tasks[1:],states[1:]):
+            if not state['busy']:
+                task.cancel()
+        for result in await asyncio.gather(*tasks[1:],return_exceptions=True):
+            if isinstance(result,BaseException) and not isinstance(result,asyncio.CancelledError):
+                raise result
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks,return_exceptions=True)
+        raise
+
 def recovery_shot(shot, reserves, frame_count):
     """Try a reserve, or remove a rejected cross-photo guide without inventing a new scene."""
     if reserves:
@@ -24,17 +46,29 @@ def recovery_shot(shot, reserves, frame_count):
             'camera_path':'Keep the camera locked in the reference framing. No pan, zoom or newly revealed areas. Animate only the evidenced subjects and natural environmental motion.'})
     raise VideoError('memory_film_no_usable_reserve')
 
+# A 30 s film uses 10-15 scenes, so the OpenAI photo reading needs at most this many photos (2026-11-06: 102
+# photos took 98 s there, most of it waiting; see storyboard.scene_candidates).
+VISION_PHOTO_LIMIT = 36
+# Every generated clip is at least 12 s long, so a kept scene can fill up to 10 s of the film.
+SMALL_PLAN_MAX_SCENE_SECONDS = 10
+# Larger plans keep more distinct scenes: 6 s each, a 30 s film from at least 5 (was 4.5 s, 7 scenes, which
+# failed the 2026-11-06 Gangneung run with 6 of 10 scenes approved).
+LARGE_PLAN_MAX_SCENE_SECONDS = 6
+
+
 def fallback_minimum(duration, planned_count):
-    # Small albums already allocate up to six seconds per distinct memory.
-    maximum=6 if planned_count<=6 else 4.5
+    """Fewest distinct scenes a film may be finished with after rejections. A plan of six scenes or fewer may
+    stretch each kept scene to 10 s (a 30 s film from 3 scenes) instead of failing the whole video; larger plans
+    allow 6 s per scene and first recover with unused photos."""
+    maximum=SMALL_PLAN_MAX_SCENE_SECONDS if planned_count<=6 else LARGE_PLAN_MAX_SCENE_SECONDS
     return min(math.ceil(duration/maximum),planned_count)
 
-def unused_photo_reserves(plan, clips, frames):
-    """Small-album recovery: at most two untried photos, still subject to every gate."""
+def unused_photo_reserves(plan, clips, frames, limit=2):
+    """Recovery scenes from at most `limit` untried photos, still subject to every gate."""
     from ai_service.services.video.diversity import MemoryFilmShot,usable_photo
     tried={i for c in clips if c['status']=='accepted' or len(c['source_indices'])==1 for i in c['source_indices']}
     photos=sorted((p for p in plan.catalog.photos if p.source_index not in tried and usable_photo(p)),
-                  key=lambda p:(p.motion_potential,p.visual_quality),reverse=True)[:2]
+                  key=lambda p:(p.motion_potential,p.visual_quality),reverse=True)[:limit]
     return [MemoryFilmShot(scene_key=f'recovery-{p.source_index}-{p.scene_key}',
         source_index=p.source_index,end_source_index=p.source_index,role=p.category,
         people_visible=p.people_visible,visible_scene=p.visible_scene,subject_action=p.safe_action,
@@ -79,10 +113,10 @@ async def generate_diverse_film(http,settings,request,folder,*,resolver=None,cat
                         info=await asyncio.to_thread(prepare_photo,source,path,settings.max_input_bytes,fit=request.photo_fit)
                         warnings=info['quality']['warnings']
                         decision='quality_rejected' if set(warnings)&{'BLURRY','UNDEREXPOSED','OVEREXPOSED','LOW_RESOLUTION'} else 'selected'
-                        rows.append({'source_index':i,'decision':decision,'quality_score':quality_score(info),'quality':info['quality']})
+                        rows.append({'source_index':i,'decision':decision,'quality_score':quality_score(info),'quality':info['quality'],'phash':info.get('visual_signature',{}).get('phash')})
                         prepared[i]=path
                     except VideoError as e:rows.append({'source_index':i,'decision':'invalid_input','reason':e.reason})
-                candidates=scene_candidates({'photos':rows,'selected_source_indices':[r['source_index'] for r in rows if r['decision']=='selected']})
+                candidates=scene_candidates({'photos':rows,'selected_source_indices':[r['source_index'] for r in rows if r['decision']=='selected']},limit=VISION_PHOTO_LIMIT,dedupe=True)
             report['photo_screening']=rows;save('planning')
             if resume:
                 from ai_service.services.video.diversity import MemoryFilmPlan
@@ -99,7 +133,11 @@ async def generate_diverse_film(http,settings,request,folder,*,resolver=None,cat
             # Validate all video nodes and weights before the first paid submission.
             for shot in plan.shots:
                 validate_workflow(build_ltx_quality_workflow(settings,images=['first.png','last.png'],duration=min(30,max(12,math.ceil(shot.duration_seconds+3))),prompt='Preflight coherent travel scene.',seed=request.seed,prefix='preflight'),info)
-            score,score_report=await prepare_production_score(media,client,request.music,folder,duration_seconds=request.duration_seconds,style=request.memory_style,context=request.memory_context,seed=request.seed,object_info=info)
+            score, score_report = await prepare_production_score(
+                media, client, request.music, folder, duration_seconds=request.duration_seconds,
+                style=request.memory_style, context=request.memory_context, seed=request.seed,
+                object_info=info, allow_preset_fallback=settings.music_preset_fallback,
+            )
             report['music']=score_report;save('generating_scenes')
             takes=[];used_scenes=set();used_sources=set();reserves=list(plan.reserves);extra_attempts=sum(e["status"]=="rejected" for e in report["clips"])
             existing=[e for e in report["clips"] if e["status"]=="accepted"]
@@ -108,17 +146,23 @@ async def generate_diverse_film(http,settings,request,folder,*,resolver=None,cat
             reserves=[r for r in reserves if r.scene_key not in already_used]
             pending=[*plan.shots,*[s.with_frames(round(request.duration_seconds/len(plan.shots)*24),24)
                      for s in plan.reserves if s.scene_key in report.get('recovery_scene_keys',[])]]
+            # Scenes run in lanes, one per GPU endpoint (COMFYUI_EXTRA_URLS adds serverless endpoints of one
+            # worker each, so a lane's upload, submit, wait and download always reach the same GPU). Takes are
+            # kept by slot, so the film order never depends on which lane finished first.
+            takes_by_slot={};queue=[];budget={'extra':extra_attempts}
             for number,initial in enumerate(pending):
                 if number in existing_by_slot:
                     entry=existing_by_slot[number];path=folder/f'scene-{number:02d}-attempt-{entry["attempt"]:02d}'/'native.mp4'
                     if not path.is_file():raise VideoError('memory_film_resume_asset_missing')
-                    takes.append(FilmTake(path,entry['start_frame'],entry['frame_count'],entry['scene_key']))
+                    takes_by_slot[number]=FilmTake(path,entry['start_frame'],entry['frame_count'],entry['scene_key'])
                     used_scenes.add(entry['scene_key']);used_sources.update(entry['source_indices']);continue
+                queue.append((number,initial))
+            async def run_slot(number,initial,client):
                 shot=initial;local_attempt=max([e.get('attempt',0)+1 for e in report['clips'] if e.get('scene_key')==initial.scene_key]+[0])
                 if number in report.get('skipped_slots',[]) or local_attempt>=3:
                     report.setdefault('skipped_slots',[])
                     if number not in report['skipped_slots']:report['skipped_slots'].append(number)
-                    save('scene_skipped');continue
+                    save('scene_skipped');return
                 if local_attempt>1:
                     shot=recovery_shot(shot,reserves,initial.frame_count)
                 while True:
@@ -152,17 +196,29 @@ async def generate_diverse_film(http,settings,request,folder,*,resolver=None,cat
                             review.update(accepted=False,reasons=['people_fidelity_rejected'],retryable_generation=not fidelity.get('unavailable',False))
                     (attempt_folder/'quality.json').write_text(json.dumps(review,ensure_ascii=False,indent=2))
                     if review['accepted']:
-                        takes.append(FilmTake(output,review['start_frame'],shot.frame_count,shot.scene_key));used_scenes.add(shot.scene_key);used_sources.update(shot.source_indices)
-                        entry.update(status='accepted',start_frame=review['start_frame'],frame_count=shot.frame_count);save('scene_accepted');break
+                        takes_by_slot[number]=FilmTake(output,review['start_frame'],shot.frame_count,shot.scene_key);used_scenes.add(shot.scene_key);used_sources.update(shot.source_indices)
+                        entry.update(status='accepted',start_frame=review['start_frame'],frame_count=shot.frame_count);save('scene_accepted');return
                     entry.update(status='rejected',reasons=review.get('reasons'));save('scene_rejected')
                     if not review.get('retryable_generation'):raise VideoError('memory_film_quality_gate_failed',scene=number)
-                    if extra_attempts>=4:
-                        report.setdefault('skipped_slots',[]).append(number);save('scene_skipped');break
-                    extra_attempts+=1;local_attempt+=1
+                    if budget['extra']>=4:
+                        report.setdefault('skipped_slots',[]).append(number);save('scene_skipped');return
+                    budget['extra']+=1;local_attempt+=1
                     if local_attempt>1:
                         try:shot=recovery_shot(shot,reserves,initial.frame_count)
                         except VideoError:
-                            report.setdefault('skipped_slots',[]).append(number);save('scene_skipped');break
+                            report.setdefault('skipped_slots',[]).append(number);save('scene_skipped');return
+            async def lane(lane_client,state):
+                while queue:
+                    number,initial=queue.pop(0);state['busy']=True
+                    try:await run_slot(number,initial,lane_client)
+                    finally:state['busy']=False
+            async def extra_lane(url,state):
+                # A second GPU that is still booting joins when it is ready; the first lane never waits for it.
+                try:second=await EndpointResolver(http,replace(settings,comfyui_url=url)).resolve()
+                except VideoError:return
+                await lane(ComfyUI(http,second,settings),state)
+            await run_lanes(lambda state:lane(client,state),[(lambda state,url=url:extra_lane(url,state)) for url in settings.comfyui_extra_urls])
+            takes=[takes_by_slot[number] for number in sorted(takes_by_slot)]
             if report.get('skipped_slots'):raise VideoError('memory_film_quality_gate_failed')
             if len(used_scenes)!=len(takes) or len({t.source for t in takes})!=len(takes):raise VideoError('memory_film_repeated_scene')
             result=await render_premium_film(media,takes,folder/'film',score,target_seconds=request.duration_seconds,music_volume=request.music.volume,opening_title=plan.title,closing_title=plan.closing_line,opening_window=(.3,min(2.4,request.duration_seconds-.1)))
@@ -176,9 +232,12 @@ async def generate_diverse_film(http,settings,request,folder,*,resolver=None,cat
             except VideoError as fallback_error:
                 report['fallback_failure_reason']=fallback_error.reason;save('fallback_failed')
                 if (fallback_error.reason=='memory_film_insufficient_approved_scenes'
-                        and not report.get('recovery_pass_started') and len(plan.shots)<=6
-                        and len(request.photos)<=10):
-                    extra=unused_photo_reserves(plan,report['clips'],round(request.duration_seconds/len(plan.shots)*24))
+                        and not report.get('recovery_pass_started')):
+                    # Any album size: replace the missing scenes with photos that were never tried, one spare.
+                    accepted=sum(c['status']=='accepted' for c in report['clips'])
+                    missing=fallback_minimum(request.duration_seconds,len(plan.shots))-accepted
+                    extra=unused_photo_reserves(plan,report['clips'],round(request.duration_seconds/len(plan.shots)*24),
+                                                limit=min(4,max(2,missing+1)))
                     if extra:
                         plan.reserves.extend(extra)
                         (folder/'plan.json').write_text(plan.model_dump_json(indent=2))
@@ -188,47 +247,69 @@ async def generate_diverse_film(http,settings,request,folder,*,resolver=None,cat
         raise
 
 async def finalize_accepted_scenes(http, settings, request, folder):
-    """Graceful scene-count reduction, with every resized take checked again."""
-    from ai_service.services.video.diversity import MemoryFilmPlan,allocate_scene_frames
+    """Finish the film with fewer scenes after rejections, in at most two review rounds.
+
+    Round 1 reviews every approved scene at the length it gets if all of them are used. If any fails, round 2
+    reviews the survivors once at the longest length a scene can ever need (duration / minimum scene count).
+    A scene's final length is never longer than the window it passed, so dropping more scenes never triggers
+    another review. The old loop re-reviewed every scene after each drop; the reviewer's run-to-run variation
+    then rejected scenes that had already passed and the film failed with enough approved scenes
+    (2026-11-06: 9 approved, 5 needed)."""
+    from ai_service.services.video.diversity import MemoryFilmPlan
     from ai_service.services.video.quality import review_people_fidelity
     folder=Path(folder);report=json.loads((folder/'report.json').read_text())
     plan=MemoryFilmPlan.model_validate_json((folder/'plan.json').read_text())
     approved=[(e.get('slot',i),e) for i,e in enumerate(e for e in report['clips'] if e['status']=='accepted')]
     minimum=fallback_minimum(request.duration_seconds,len(plan.shots))
     lookup={s.scene_key:s for s in [*plan.shots,*plan.reserves]}
-    exclusions=[]
-    for round_number in range(3):
-        if len(approved)<minimum:raise VideoError('memory_film_insufficient_approved_scenes')
-        scenes=[lookup[e['scene_key']] for _,e in approved]
-        counts=allocate_scene_frames(scenes,request.duration_seconds,24)
-        maximum=max(4.5,request.duration_seconds/minimum)
-        if any(n/24>maximum for n in counts):
-            total=round(request.duration_seconds*24);counts=[total//len(approved)+(i<total%len(approved)) for i in range(len(approved))]
-        takes=[];used=set();keys=set();reviews=[];rejected=[]
-        for (slot,entry),scene,count in zip(approved,scenes,counts):
-            if scene.scene_key in keys or used.intersection(entry['source_indices']):raise VideoError('memory_film_repeated_scene')
+    total=round(request.duration_seconds*24)
+    if len(approved)<minimum:raise VideoError('memory_film_insufficient_approved_scenes')
+    keys=set();used=set()
+    for _,entry in approved:
+        if entry['scene_key'] in keys or used.intersection(entry['source_indices']):raise VideoError('memory_film_repeated_scene')
+        keys.add(entry['scene_key']);used.update(entry['source_indices'])
+    reviews=[]
+    async def review_round(round_number,pairs,frames):
+        passed=[]
+        for slot,entry in pairs:
+            scene=lookup[entry['scene_key']]
             source=folder/f'scene-{slot:02d}-attempt-{entry["attempt"]:02d}'/'native.mp4'
             refs=[folder/f'photo-{i:04d}.png' for i in entry['source_indices']]
-            anchor=entry['start_frame']
-            review=await select_reviewed_take(http,settings,source,refs,duration_seconds=count/24,visible_scene=scene.visible_scene,subject_action=scene.subject_action,excluded_ranges=((0,anchor),(anchor+count,10000000)))
-            if not review['accepted']:
-                if review.get('review_status')=='unavailable':raise VideoError('memory_film_review_unavailable')
-                rejected.append(slot);reviews.append({'scene_key':scene.scene_key,'frame_count':count,'review':review});continue
-            fidelity=await review_people_fidelity(http,settings,source,refs,start_frame=review['start_frame'],frame_count=count)
-            reviews.append({'scene_key':scene.scene_key,'frame_count':count,'review':review,'people_fidelity':fidelity})
-            (folder/f'final-fidelity-reviews-round-{round_number}.json').write_text(json.dumps(reviews,ensure_ascii=False,indent=2))
+            review=await select_reviewed_take(http,settings,source,refs,duration_seconds=frames/24,visible_scene=scene.visible_scene,subject_action=scene.subject_action)
+            row={'round':round_number,'scene_key':scene.scene_key,'frame_count':frames,'review':review}
+            reviews.append(row)
+            if review['accepted']:
+                fidelity=await review_people_fidelity(http,settings,source,refs,start_frame=review['start_frame'],frame_count=frames)
+                row['people_fidelity']=fidelity
+                if fidelity['accepted']:
+                    passed.append((slot,entry,scene,source,review['start_frame']))
+                elif fidelity.get('unavailable'):raise VideoError('memory_film_people_review_unavailable')
+            elif review.get('review_status')=='unavailable':raise VideoError('memory_film_review_unavailable')
             (folder/'final-fidelity-reviews.json').write_text(json.dumps(reviews,ensure_ascii=False,indent=2))
-            if not fidelity['accepted']:
-                if fidelity.get('unavailable'):raise VideoError('memory_film_people_review_unavailable')
-                rejected.append(slot);continue
-            takes.append(FilmTake(source,review['start_frame'],count,scene.scene_key));keys.add(scene.scene_key);used.update(entry['source_indices'])
-        if rejected:
-            exclusions.extend(rejected);approved=[pair for pair in approved if pair[0] not in rejected];continue
-        media=Media(settings)
-        score,music=await prepare_production_score(media,None,request.music,folder,duration_seconds=request.duration_seconds,style=request.memory_style,context=request.memory_context,seed=request.seed)
-        result=await render_premium_film(media,takes,folder/('verified-film-'+str(round_number)),score,target_seconds=request.duration_seconds,music_volume=request.music.volume,opening_title=plan.title,closing_title=plan.closing_line)
-        report.update(status='completed',output_file=result['output_file'],media=result['media'],scene_count=len(takes),scene_repeat_count=0,source_repeat_count=0,editing=result,music=music,quality_fallback='reallocated_and_rechecked_unique_scenes_with_independent_people_fidelity',excluded_source_slots=exclusions,final_source_indices=sorted(used))
-        report['previous_failure_reason']=report.pop('failure_reason',None)
-        (folder/'report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n')
-        return report
-    raise VideoError('memory_film_fallback_review_failed')
+        return passed
+    # Frames divisible into the film: each round's length must map to whole frames for the review.
+    first_frames=total//len(approved)
+    passed=await review_round(0,approved,first_frames)
+    reviewed=first_frames
+    if len(passed)<len(approved):
+        worst=-(-total//minimum)
+        passed=await review_round(1,[(slot,entry) for slot,entry,*_ in passed],worst)
+        reviewed=worst
+    if len(passed)<minimum:raise VideoError('memory_film_insufficient_approved_scenes')
+    counts=[total//len(passed)+(i<total%len(passed)) for i in range(len(passed))]
+    if max(counts)>reviewed:raise VideoError('memory_film_fallback_review_failed')
+    # Each take starts where its reviewed window starts and is never longer than it.
+    takes=[FilmTake(source,start,count,scene.scene_key) for (slot,entry,scene,source,start),count in zip(passed,counts)]
+    exclusions=sorted({slot for slot,_ in approved}-{slot for slot,*_ in passed})
+    final_sources=sorted({i for _,entry,*_ in passed for i in entry['source_indices']})
+    media=Media(settings)
+    score, music = await prepare_production_score(
+        media, None, request.music, folder, duration_seconds=request.duration_seconds,
+        style=request.memory_style, context=request.memory_context, seed=request.seed,
+        allow_preset_fallback=settings.music_preset_fallback,
+    )
+    result=await render_premium_film(media,takes,folder/'verified-film',score,target_seconds=request.duration_seconds,music_volume=request.music.volume,opening_title=plan.title,closing_title=plan.closing_line)
+    report.update(status='completed',output_file=result['output_file'],media=result['media'],scene_count=len(takes),scene_repeat_count=0,source_repeat_count=0,editing=result,music=music,quality_fallback='fewer_scenes_each_within_its_reviewed_window_with_independent_people_fidelity',excluded_source_slots=exclusions,final_source_indices=final_sources)
+    report['previous_failure_reason']=report.pop('failure_reason',None)
+    (folder/'report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n')
+    return report

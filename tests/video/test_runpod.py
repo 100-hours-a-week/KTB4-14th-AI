@@ -7,6 +7,7 @@ import httpx
 from ai_service.clients.runpod import EndpointResolver
 from ai_service.services.video.config import VideoSettings
 from ai_service.services.video.errors import VideoError
+from ai_service.services.video.gpu_power import A100_PCIE, RTX_PRO_6000
 
 
 def pod(identifier, *, name="audigo-video-test", status="RUNNING", ports=None):
@@ -54,6 +55,24 @@ class DiscoveryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((first.pod_id, second.pod_id), ("old", "new"))
             self.assertEqual(len(lists), 2)
 
+    async def test_selection_ignores_other_models_and_multi_gpu_pods(self):
+        probes = []
+        pods = [dict(pod('a'), gpu={'id': RTX_PRO_6000, 'count': 1}),
+                dict(pod('b'), gpu={'id': A100_PCIE, 'count': 2}),
+                dict(pod('c'), gpu={'id': A100_PCIE, 'count': 1})]
+
+        def handle(request):
+            if request.url.host == 'rest.runpod.io':
+                return httpx.Response(200, json=pods)
+            probes.append(request.url.host)
+            return httpx.Response(200, json={'system': {}, 'devices': []})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            endpoint = await EndpointResolver(http, self.settings(runpod_gpu_types=(A100_PCIE,))).resolve()
+
+        self.assertEqual((endpoint.pod_id, endpoint.gpu_type), ('c', A100_PCIE))
+        self.assertEqual(probes, ['c-8188.proxy.runpod.net'])
+
     async def test_expired_cache_api_outage_no_candidates_and_pin(self):
         for response, reason in ((httpx.Response(503), "runpod_discovery_unavailable"),
                                  (httpx.Response(200, json={}), "runpod_response_invalid"),
@@ -71,3 +90,37 @@ class DiscoveryTests(unittest.IsolatedAsyncioTestCase):
                 await resolver.resolve()
             endpoint = await EndpointResolver(http, VideoSettings(comfyui_url="http://localhost:8188/")).resolve()
             self.assertEqual(endpoint.url, "http://localhost:8188")
+
+
+def test_serverless_resolver_waits_for_a_cold_gpu(monkeypatch):
+    import asyncio
+    import httpx
+    from ai_service.clients import runpod
+    from ai_service.services.video.config import VideoSettings
+    calls = []
+
+    def handler(request):
+        calls.append(request.headers.get('X-Audigo-Token'))
+        if len(calls) < 3:
+            return httpx.Response(504)
+        return httpx.Response(200, json={'system': {}, 'devices': []})
+
+    async def no_sleep(_):
+        return None
+
+    monkeypatch.setattr(runpod.asyncio, 'sleep', no_sleep)
+    settings = VideoSettings(endpoint_mode='serverless', comfyui_url='https://abc.api.runpod.ai', comfyui_token='t' * 40,
+                             runpod_api_key='edge', gpu_wait_seconds=600)
+
+    async def run(current):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            return await runpod.EndpointResolver(http, current).resolve()
+
+    assert asyncio.run(run(settings)).url == 'https://abc.api.runpod.ai'
+    assert calls == ['t' * 40] * 3
+    calls.clear()
+    from dataclasses import replace
+    import pytest
+    from ai_service.services.video.errors import VideoError
+    with pytest.raises(VideoError):  # without a wait budget a cold GPU fails at once, as before
+        asyncio.run(run(replace(settings, gpu_wait_seconds=0)))

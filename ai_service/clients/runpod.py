@@ -14,6 +14,13 @@ from ai_service.services.video.errors import VideoError
 class GpuEndpoint:
     url: str
     pod_id: str | None = None
+    gpu_type: str | None = None
+
+
+def matches_single_gpu(pod: dict, gpu_type: str) -> bool:
+    """RunPod가 보고한 GPU 모델과 장착 수를 확인한다."""
+    gpu = pod.get('gpu') or {}
+    return gpu.get('id') == gpu_type and gpu.get('count') == 1
 
 
 class EndpointResolver:
@@ -29,7 +36,7 @@ class EndpointResolver:
             self._expires = 0.0
 
     async def _ready(self, endpoint: GpuEndpoint) -> bool:
-        headers = {"Authorization": f"Bearer {self.settings.comfyui_token}"} if self.settings.comfyui_token else {}
+        headers = self.settings.gpu_headers()
         try:
             response = await self.http.get(endpoint.url + "/system_stats", headers=headers, timeout=self.settings.request_timeout)
             response.raise_for_status()
@@ -45,10 +52,15 @@ class EndpointResolver:
                 if await self._ready(self._cached):
                     return self._cached
                 self._cached = None
-            if self.settings.endpoint_mode == "static":
+            if self.settings.endpoint_mode in {"static", "serverless"}:
                 endpoint = GpuEndpoint(self.settings.comfyui_url.rstrip("/"))
-                if not await self._ready(endpoint):
-                    raise VideoError("comfyui_not_ready")
+                # A job's photos are analysed while its serverless GPU boots, so the first GPU call may find the
+                # worker still starting; wait for it (each readiness request also keeps RunPod starting it).
+                deadline = time.monotonic() + (self.settings.gpu_wait_seconds if self.settings.endpoint_mode == "serverless" else 0)
+                while not await self._ready(endpoint):
+                    if time.monotonic() >= deadline:
+                        raise VideoError("comfyui_not_ready")
+                    await asyncio.sleep(10)
                 return endpoint
             if not self.settings.runpod_api_key:
                 raise VideoError("runpod_key_missing")
@@ -74,9 +86,12 @@ class EndpointResolver:
                         or not isinstance(name, str) or not name.startswith(self.settings.runpod_prefix)
                         or pod.get("desiredStatus") != "RUNNING"
                         or f"{self.settings.runpod_port}/http" not in (pod.get("ports") or [])
+                        or (self.settings.runpod_gpu_types and not any(matches_single_gpu(pod, model)
+                                                                      for model in self.settings.runpod_gpu_types))
                         or (self.settings.runpod_pod_id and pod_id != self.settings.runpod_pod_id)):
                     continue
-                candidates.append(GpuEndpoint(f"https://{pod_id}-{self.settings.runpod_port}.proxy.runpod.net", pod_id))
+                candidates.append(GpuEndpoint(f"https://{pod_id}-{self.settings.runpod_port}.proxy.runpod.net",
+                                              pod_id, (pod.get('gpu') or {}).get('id')))
             # 후보를 일정한 순서로 살피며 실행 상태뿐 아니라 실제 ComfyUI 준비 여부도 확인한다.
             for endpoint in sorted(candidates, key=lambda e: e.pod_id):
                 if await self._ready(endpoint):

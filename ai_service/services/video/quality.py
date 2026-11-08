@@ -295,7 +295,7 @@ async def review_take_semantics(http, settings, video_path: Path, reference_path
         images = await asyncio.to_thread(_review_images, video_path, reference_paths,
                                          start_frame, frame_count, policy.semantic_samples)
         content = [{'type': 'text', 'text': f'Intended evidenced scene: {visible_scene}\nIntended action: {subject_action}\nEvaluate the actual frames, not this intention.'}, *images]
-        client = OpenAIClient(http, replace(core, openai_model=model, model_timeout_seconds=90))
+        client = OpenAIClient(http, retries=2, settings=replace(core, openai_model=model, model_timeout_seconds=90))
         raw = await client.complete([{'role': 'system', 'content': REVIEW_INSTRUCTIONS},
                                      {'role': 'user', 'content': content}],
                                     _SemanticReview.model_json_schema(), 'generated_memory_take_review')
@@ -332,6 +332,10 @@ async def select_reviewed_take(http, settings, video_path: Path, reference_paths
     if not ranked['accepted']:
         return {**ranked, 'review_status': 'technical_rejected', 'retryable_generation': True,
                 'analysis': summary, 'evaluations': []}
+    if not getattr(settings, 'scene_model_review', True):
+        # Model review off: the technically best window is used as is.
+        return {**ranked['candidates'][0], 'accepted': True, 'review_status': 'technical_only',
+                'retryable_generation': False, 'analysis': summary, 'evaluations': []}
     evaluations = []
     for candidate in ranked['candidates']:
         semantic = await review_take_semantics(http, settings, video_path, reference_paths,
@@ -359,9 +363,11 @@ class _PeopleFidelity(BaseModel):
 
 async def review_people_fidelity(http, settings, video_path, reference_paths, *, start_frame, frame_count):
     """Independent reference-first check; plausible crowds are not identity evidence."""
+    if not getattr(settings, 'scene_model_review', True):
+        return {'accepted': True, 'review_status': 'not_reviewed', 'reasons': []}
     core=Settings.from_env()
     model=settings.story_model or core.openai_model
-    client=OpenAIClient(http,replace(core,openai_model=model,model_timeout_seconds=90))
+    client=OpenAIClient(http,retries=2,settings=replace(core,openai_model=model,model_timeout_seconds=90))
     content=await asyncio.to_thread(_review_images,video_path,reference_paths,start_frame,frame_count,8)
     instructions=('First inventory people actually visible in the REFERENCE images, using visible appearance/clothing only. '
         'Then compare every prominent generated person with that evidence. Do not infer names, nationality or ethnicity. '
