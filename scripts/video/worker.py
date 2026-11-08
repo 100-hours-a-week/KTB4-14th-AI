@@ -92,10 +92,14 @@ def progress_detail(workspace: Path, photo_count: int):
     return 'GPU에서 장면 생성을 시작하는 중'
 
 
+SOLD_OUT_RECYCLE_SECONDS = 120  # a worker stuck "throttled" this long is replaced (2026-11-09: one stayed 30 min)
+
+
 async def track_progress(job_id, workspace: Path, photo_count=0, settings=None):
     current, detail = PROGRESS[0], None
     settings = settings or VideoSettings.from_env()
     gpu_state, checked = 'STARTING_GPU', -1e9
+    sold_out_since, recycles = None, 0
     while True:
         await asyncio.sleep(2)
         stage = stage_from_reports(workspace)
@@ -110,11 +114,63 @@ async def track_progress(job_id, workspace: Path, photo_count=0, settings=None):
             now = asyncio.get_running_loop().time()
             if now - checked > 15:
                 gpu_state, checked = await serverless_state(settings), now
-            text = ('GPU 품절: 빈 GPU가 생기기를 기다리는 중 (사진 분석은 끝남)' if gpu_state == 'GPU_SOLD_OUT'
+                sold_out_since = (sold_out_since or now) if gpu_state == 'GPU_SOLD_OUT' else None
+                # RunPod keeps a throttled worker waiting for a GPU on its first machine; dropping it lets the
+                # endpoint schedule a fresh worker wherever an allowed GPU is free.
+                if sold_out_since is not None and now - sold_out_since >= SOLD_OUT_RECYCLE_SECONDS:
+                    recycles += 1
+                    logging.info('Job %s: GPU sold out for %ds; asking RunPod for another GPU (%d)',
+                                 job_id, int(now - sold_out_since), recycles)
+                    await recycle_endpoint(settings)
+                    sold_out_since = None
+            text = (f"GPU 품절: 다른 빈 GPU를 찾는 중 ({recycles}번 다시 찾음, 사진 분석은 끝남)" if gpu_state == 'GPU_SOLD_OUT' and recycles
+                    else 'GPU 품절: 빈 GPU가 생기기를 기다리는 중 (사진 분석은 끝남)' if gpu_state == 'GPU_SOLD_OUT'
                     else 'GPU가 켜지기를 기다리는 중 (사진 분석은 끝남, 켜는 데 약 4~5분)')
         if text != detail:
             await asyncio.to_thread(set_detail, job_id, text)
             detail = text
+
+
+async def allow_one_worker(settings):
+    """Put max workers back to 1; a job killed in the middle of recycle_endpoint could leave it at 0."""
+    endpoint_id = urlsplit(settings.comfyui_url).hostname.split('.')[0]
+    try:
+        async with httpx.AsyncClient(timeout=20) as http:
+            (await http.patch(f'https://rest.runpod.io/v1/endpoints/{endpoint_id}', json={'workersMax': 1},
+                              headers={'Authorization': f'Bearer {settings.runpod_api_key}'})).raise_for_status()
+    except httpx.HTTPError as exc:
+        logging.warning('Could not set max workers to 1 on %s (%s)', endpoint_id, type(exc).__name__)
+
+
+async def recycle_endpoint(settings, http=None, wait_seconds=60):
+    """Drop the endpoint's waiting worker (max workers 0) and allow one again (max 1). Best effort: any error
+    leaves the endpoint at max 1 so the job keeps waiting as before."""
+    endpoint_id = urlsplit(settings.comfyui_url).hostname.split('.')[0]
+    url = f'https://rest.runpod.io/v1/endpoints/{endpoint_id}'
+    headers = {'Authorization': f'Bearer {settings.runpod_api_key}'}
+    loop = asyncio.get_running_loop()
+    own = http is None
+    http = http or httpx.AsyncClient(timeout=20)
+    try:
+        (await http.patch(url, json={'workersMax': 0}, headers=headers)).raise_for_status()
+        deadline = loop.time() + wait_seconds
+        while loop.time() < deadline:
+            response = await http.get(f'https://api.runpod.ai/v2/{endpoint_id}/health', headers=headers)
+            if not sum(response.json().get('workers', {}).values()):
+                break
+            await asyncio.sleep(5)
+    except (httpx.HTTPError, ValueError, AttributeError) as exc:
+        logging.warning('GPU recycle: could not drop the waiting worker (%s)', type(exc).__name__)
+    finally:
+        for attempt in range(3):
+            try:
+                (await http.patch(url, json={'workersMax': 1}, headers=headers)).raise_for_status()
+                break
+            except httpx.HTTPError as exc:
+                logging.warning('GPU recycle: max workers back to 1 failed (%s), retrying', type(exc).__name__)
+                await asyncio.sleep(5)
+        if own:
+            await http.aclose()
 
 
 # User photos and generated media; text reports stay for debugging.
@@ -409,7 +465,10 @@ async def run_on_gpus(lease, base, row, urls):
     logging.info('Job %s: %d GPU endpoint(s) %s', row['id'], len(urls), ', '.join(urls))
     process = await asyncio.create_subprocess_exec(sys.executable, '-m', 'scripts.video.worker', '--job', str(row['id']),
                                                    env=job_env(urls), start_new_session=True)
-    await supervise(lease, row, job_settings, process, warmup, beat=False)
+    try:
+        await supervise(lease, row, job_settings, process, warmup, beat=False)
+    finally:
+        await asyncio.gather(*[allow_one_worker(each) for each in gpu_endpoints(job_settings)])
 
 
 async def serve_parallel(lease, base):
@@ -417,6 +476,7 @@ async def serve_parallel(lease, base):
     running job gets endpoints of its own. Jobs run at once with one or two GPUs each, up to one per endpoint."""
     urls = [base.comfyui_url, *base.comfyui_extra_urls]
     busy, released, tasks = {}, {}, set()
+    await asyncio.gather(*[allow_one_worker(each) for each in gpu_endpoints(base)])
     loop = asyncio.get_running_loop()
 
     def finished(task, chosen):

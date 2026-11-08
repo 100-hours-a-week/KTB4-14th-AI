@@ -74,6 +74,10 @@ def test_serve_parallel_runs_jobs_at_once_and_reuses_released_gpus(monkeypatch):
     monkeypatch.setattr(worker, 'claim', claim)
     monkeypatch.setattr(worker, 'run_on_gpus', run_on_gpus)
     monkeypatch.setattr(worker, 'heartbeat', lambda lease, state: states.append(state))
+    async def allow(settings):
+        pass
+    monkeypatch.setattr(worker, 'allow_one_worker', allow)
+    monkeypatch.setattr(worker, 'gpu_endpoints', lambda settings: [])
 
     async def scenario():
         real_sleep = asyncio.sleep
@@ -107,3 +111,84 @@ def test_status_estimate_when_every_gpu_is_busy(monkeypatch):
     assert 'GPU 10대가 모두 사용 중' in note and '앞에 2개' in note
     assert '10분' in video_jobs.estimate_note('RUNNING', None, 'BUSY', '서버리스 GPU 1대')
     assert '앞에' not in video_jobs.estimate_note('QUEUED', 2, 'BUSY')
+
+
+def test_recycle_drops_the_stuck_worker_then_allows_one_again():
+    import httpx
+    calls, health = [], iter([{'throttled': 1}, {}])
+
+    def handler(request):
+        calls.append((request.method, request.url.path, request.content.decode()))
+        if request.method == 'GET':
+            return httpx.Response(200, json={'workers': next(health)})
+        return httpx.Response(200, json={})
+
+    settings = SimpleNamespace(comfyui_url='https://abc123.api.runpod.ai', runpod_api_key='k')
+
+    async def run():
+        real_sleep = asyncio.sleep
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            worker.asyncio.sleep, saved = (lambda s: real_sleep(0)), worker.asyncio.sleep
+            try:
+                await worker.recycle_endpoint(settings, http=http)
+            finally:
+                worker.asyncio.sleep = saved
+
+    asyncio.run(run())
+    patches = [body for method, _, body in calls if method == 'PATCH']
+    assert patches == ['{"workersMax":0}', '{"workersMax":1}']
+    assert all(path in ('/v1/endpoints/abc123', '/v2/abc123/health') for _, path, _ in calls)
+
+
+def test_recycle_always_restores_one_worker_even_if_dropping_fails():
+    import httpx
+    bodies = []
+
+    def handler(request):
+        bodies.append(request.content.decode())
+        if request.content.decode() == '{"workersMax":0}':
+            return httpx.Response(500)
+        return httpx.Response(200, json={})
+
+    settings = SimpleNamespace(comfyui_url='https://abc123.api.runpod.ai', runpod_api_key='k')
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            await worker.recycle_endpoint(settings, http=http)
+
+    asyncio.run(run())
+    assert bodies[-1] == '{"workersMax":1}'
+
+
+def test_tracker_recycles_a_gpu_sold_out_for_too_long(tmp_path, monkeypatch):
+    run = tmp_path / 'run'
+    run.mkdir()
+    (run / 'report.json').write_text('{"events": [{"stage": "planned"}]}')
+    recycled, details = [], []
+    monkeypatch.setattr(worker, 'SOLD_OUT_RECYCLE_SECONDS', 0)
+    monkeypatch.setattr(worker, 'set_detail', lambda job, text: details.append(text))
+    monkeypatch.setattr(worker, 'update', lambda *a, **k: None)
+
+    async def sold_out(settings):
+        return 'GPU_SOLD_OUT'
+
+    async def recycle(settings):
+        recycled.append(settings)
+
+    monkeypatch.setattr(worker, 'serverless_state', sold_out)
+    monkeypatch.setattr(worker, 'recycle_endpoint', recycle)
+    settings = SimpleNamespace(endpoint_mode='serverless')
+
+    async def scenario():
+        real_sleep = asyncio.sleep
+        monkeypatch.setattr(worker.asyncio, 'sleep', lambda seconds: real_sleep(0))
+        task = asyncio.create_task(worker.track_progress('job', tmp_path, 3, settings))
+        for _ in range(50):
+            await real_sleep(0)
+            if recycled:
+                break
+        task.cancel()
+
+    asyncio.run(scenario())
+    assert recycled
+    assert any('다른 빈 GPU를 찾는 중' in text for text in details)
