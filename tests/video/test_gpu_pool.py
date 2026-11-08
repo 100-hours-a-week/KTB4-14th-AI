@@ -8,7 +8,8 @@ from ai_service.api.routes import video_jobs
 from scripts.video import worker
 
 
-def test_two_gpus_per_job_until_more_people_wait():
+def test_two_gpus_per_job_until_more_people_wait(monkeypatch):
+    monkeypatch.setattr(worker, 'MAX_GPUS_PER_JOB', 2)
     assert worker.gpu_allocation(10, 1) == 2
     assert worker.gpu_allocation(2, 1) == 2
     assert worker.gpu_allocation(10, 10) == 1
@@ -29,7 +30,14 @@ def simulate(people):
     return given
 
 
-def test_five_people_get_two_gpus_each_and_ten_people_one_each():
+def test_one_gpu_per_job_by_default():
+    assert worker.MAX_GPUS_PER_JOB == 1
+    assert worker.gpu_allocation(10, 1) == 1
+    assert simulate(5) == [1] * 5
+
+
+def test_five_people_get_two_gpus_each_and_ten_people_one_each(monkeypatch):
+    monkeypatch.setattr(worker, 'MAX_GPUS_PER_JOB', 2)
     assert simulate(5) == [2, 2, 2, 2, 2]
     assert simulate(10) == [1] * 10
     assert simulate(3) == [2, 2, 2]
@@ -44,6 +52,7 @@ def test_child_job_is_pinned_to_its_own_endpoints(monkeypatch):
 
 
 def test_serve_parallel_runs_jobs_at_once_and_reuses_released_gpus(monkeypatch):
+    monkeypatch.setattr(worker, 'MAX_GPUS_PER_JOB', 2)
     urls = [f'https://e{i}.api.runpod.ai' for i in range(4)]
     base = SimpleNamespace(comfyui_url=urls[0], comfyui_extra_urls=tuple(urls[1:]))
     queue = ['j1', 'j2', 'j3']
@@ -96,6 +105,5 @@ def test_status_estimate_when_every_gpu_is_busy(monkeypatch):
     monkeypatch.setattr(video_jobs, 'gpu_pool_size', lambda: 10)
     note = video_jobs.estimate_note('QUEUED', 3, 'ALL_GPUS_BUSY')
     assert 'GPU 10대가 모두 사용 중' in note and '앞에 2개' in note
-    assert '15분' in video_jobs.estimate_note('RUNNING', None, 'BUSY', '서버리스 GPU 1대')
-    assert '10분' in video_jobs.estimate_note('RUNNING', None, 'BUSY', '서버리스 GPU 2대')
+    assert '10분' in video_jobs.estimate_note('RUNNING', None, 'BUSY', '서버리스 GPU 1대')
     assert '앞에' not in video_jobs.estimate_note('QUEUED', 2, 'BUSY')

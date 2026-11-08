@@ -4,6 +4,7 @@ from dataclasses import replace
 import hashlib
 import json
 import logging
+import os
 import tempfile
 from pathlib import Path
 
@@ -378,7 +379,9 @@ async def supervise(lease, row, job_settings, process, warmup, power=None, beat=
         await gpu_cleanup(job_settings)
 
 
-MAX_GPUS_PER_JOB = 2
+# One GPU per video is the cheapest: every GPU pays its own 3-4 minute boot and idle minute, so a second GPU
+# made a film ~2-3 minutes faster for ~60% more GPU cost (2026-11-09). VIDEO_MAX_GPUS_PER_JOB=2 restores it.
+MAX_GPUS_PER_JOB = max(1, int(os.environ.get('VIDEO_MAX_GPUS_PER_JOB', '1')))
 
 
 def gpu_allocation(free, waiting):

@@ -35,7 +35,7 @@ class JobInput(BaseModel):
     gpu_type: str | None = Field(default=None, min_length=1, max_length=120)
 
 
-SERVERLESS_GPU_LABEL = os.environ.get('VIDEO_SERVERLESS_GPU_LABEL', 'A100 80GB · RTX PRO 6000 96GB · H100 80GB 중 빈 GPU (서버리스 자동, 영상 1개에 1~2대)')
+SERVERLESS_GPU_LABEL = os.environ.get('VIDEO_SERVERLESS_GPU_LABEL', 'A100 80GB · RTX PRO 6000 96GB · H100 80GB 중 빈 GPU (서버리스 자동, 영상 1개에 1대)')
 
 
 def store():
@@ -63,11 +63,9 @@ WORKER_LABELS = {
     'ALL_GPUS_BUSY': 'GPU가 모두 다른 영상을 만드는 중이라, 빈 GPU가 생기면 바로 시작',
     'OFFLINE': '작업 실행기가 응답하지 않음',
 }
-# Measured 2026-11-06 on serverless GPUs with two scene lanes: 108 photos 6 min, 25 photos 7 min (30 s films).
-# A cold GPU adds 3-4 minutes, which overlap photo analysis. One GPU (when many jobs share the pool) takes longer.
-# Not a guarantee.
+# Measured 2026-11-06 with two GPUs per film: 108 photos 6 min. One GPU per film (the default since 2026-11-09,
+# cheaper) is estimated at 8-9 minutes including a 3-4 minute cold GPU start. Not a guarantee.
 JOB_MINUTES = 10
-ONE_GPU_JOB_MINUTES = 15
 
 
 def gpu_pool_size():
@@ -78,15 +76,13 @@ def gpu_pool_size():
 def estimate_note(status, position, worker, assigned=None):
     """Plain-language wait and run estimate. Serverless jobs run in parallel, one or two GPUs each."""
     if status == 'RUNNING':
-        if assigned and assigned.endswith(' 1대'):
-            return f'다른 영상과 GPU를 나눠 쓰는 중이라 GPU 1대로 만듭니다. 시작한 뒤 약 {ONE_GPU_JOB_MINUTES}분 안에 끝납니다.'
-        return f'만들기 시작한 뒤 약 {JOB_MINUTES}분 안에 끝납니다 (실측: 사진 108장·30초 영상 6분).'
+        return f'만들기 시작한 뒤 약 {JOB_MINUTES}분 안에 끝납니다 (GPU가 꺼져 있었으면 켜는 3~4분 포함).'
     ahead = (position or 1) - 1
     if worker == 'ALL_GPUS_BUSY':
         # Roughly one GPU frees per running job; each freed GPU takes the next queued job.
         rounds = 1 + ahead // max(gpu_pool_size(), 1)
         return (f'GPU {gpu_pool_size()}대가 모두 사용 중입니다. 앞에 {ahead}개 작업이 기다리고 있어 시작까지 약 '
-                f'{rounds * ONE_GPU_JOB_MINUTES}분 이내, 시작 후 약 {ONE_GPU_JOB_MINUTES}분 걸립니다.')
+                f'{rounds * JOB_MINUTES}분 이내, 시작 후 약 {JOB_MINUTES}분 걸립니다.')
     wait = f'앞에 {ahead}개 작업이 있어 시작까지 약 {ahead * JOB_MINUTES}분, ' if ahead and gpu_pool_size() == 1 else ''
     boot = ' GPU가 꺼져 있으면 켜는 데 몇 분이 더 걸립니다.' if worker in ('WAITING_FOR_GPU', 'STARTING_GPU', 'IDLE', 'BUSY') else ''
     if worker == 'GPU_SOLD_OUT':
@@ -199,7 +195,7 @@ def router(settings):
             # One fixed GPU pool on the RunPod serverless endpoint: nothing to choose.
             return {'default_gpu_type': None, 'items': [], 'serverless': {
                 'label': SERVERLESS_GPU_LABEL,
-                'note': f'서버리스 GPU를 최대 {gpu_pool_size()}대까지 씁니다. 영상 여러 개를 동시에 만들고, 한가하면 영상 1개에 GPU 2대, 붐비면 1대씩 나눠 씁니다. '
+                'note': f'서버리스 GPU를 최대 {gpu_pool_size()}대까지 씁니다. 영상 1개에 GPU 1대씩, 여러 영상을 동시에 만듭니다. '
                         '일이 끝나고 1분 동안 요청이 없으면 꺼지고, 꺼져 있던 GPU가 켜지는 데 3~4분 걸립니다. GPU가 일한 시간만큼만 요금이 나갑니다.'}}
         models = selectable_gpu_types(settings)
         choices = (*models, AUTO_GPU) if len(models) > 1 else models
