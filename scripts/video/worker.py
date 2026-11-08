@@ -329,6 +329,120 @@ def heartbeat(conn, state):
     conn.execute("INSERT INTO video_worker(id,state) VALUES(1,%s) ON CONFLICT(id) DO UPDATE SET state=EXCLUDED.state,heartbeat_at=now()", (state,))
 
 
+async def supervise(lease, row, job_settings, process, warmup, power=None, beat=True):
+    """Wait for one job's child process; on cancel, timeout or shutdown stop it and clean its GPUs up."""
+    import os, signal
+    cancelled = False
+    try:
+        async with asyncio.timeout(7200):
+            while process.returncode is None:
+                if beat:
+                    heartbeat(lease, 'BUSY')
+                if power:
+                    power.mark_busy()
+                if cancel_requested(row['id']):
+                    cancelled = True
+                    break
+                await asyncio.sleep(2)
+        if cancelled:
+            logging.info('Job %s: cancel requested; stopping generation', row['id'])
+            os.killpg(process.pid, signal.SIGTERM)
+            try:
+                await asyncio.wait_for(process.wait(), 15)
+            except TimeoutError:
+                os.killpg(process.pid, signal.SIGKILL)
+                await process.wait()
+            await gpu_interrupt(job_settings)
+            with connection() as conn:
+                mark_cancelled(conn, row['id'])
+            # The killed child cannot run its own cleanup, so remove its local copies here.
+            workspace = VideoSettings.from_env().workspace / f"job-{row['id']}-attempt-{row['attempts']}"
+            if workspace.is_dir():
+                purge_media(workspace)
+        with connection() as conn:
+            conn.execute("""UPDATE video_jobs SET status='FAILED',stage='FAILED',error_code='WORKER_PROCESS_FAILED',
+                            error_message='영상 생성 프로세스가 비정상 종료되었습니다.',completed_at=now(),updated_at=now()
+                            WHERE id=%s AND status='RUNNING'""", (row['id'],))
+    finally:
+        if warmup:
+            warmup.cancel()
+        # Lease loss / shutdown / timeout kills the whole child process group, including encoders.
+        if process.returncode is None:
+            os.killpg(process.pid, signal.SIGTERM)
+            try:
+                await asyncio.wait_for(process.wait(), 15)
+            except TimeoutError:
+                os.killpg(process.pid, signal.SIGKILL)
+                await process.wait()
+        # Photos and clips uploaded to the GPU stay on its persistent volume unless removed.
+        await gpu_cleanup(job_settings)
+
+
+MAX_GPUS_PER_JOB = 2
+
+
+def gpu_allocation(free, waiting):
+    """GPUs for the next job: two scene lanes (faster) while that still leaves a GPU for every other waiting
+    job, else one, so up to one job per GPU runs at once when many people ask together."""
+    if free <= 0 or waiting <= 0:
+        return 0
+    return MAX_GPUS_PER_JOB if free >= MAX_GPUS_PER_JOB and free - MAX_GPUS_PER_JOB >= waiting - 1 else 1
+
+
+def job_env(urls):
+    """Environment that pins a child job to its own serverless endpoints (one worker each)."""
+    import os
+    env = os.environ.copy()
+    env['COMFYUI_URL'], env['COMFYUI_EXTRA_URLS'] = urls[0], ','.join(urls[1:])
+    env.setdefault('VIDEO_GPU_WAIT_SECONDS', str(GPU_WAIT_SECONDS))
+    return env
+
+
+async def run_on_gpus(lease, base, row, urls):
+    import sys
+    job_settings = replace(base, comfyui_url=urls[0], comfyui_extra_urls=tuple(urls[1:]))
+    # Boot this job's GPUs while the CPU analyses its photos.
+    warmup = asyncio.gather(*[warm_gpu(each) for each in gpu_endpoints(job_settings)])
+    logging.info('Job %s: %d GPU endpoint(s) %s', row['id'], len(urls), ', '.join(urls))
+    process = await asyncio.create_subprocess_exec(sys.executable, '-m', 'scripts.video.worker', '--job', str(row['id']),
+                                                   env=job_env(urls), start_new_session=True)
+    await supervise(lease, row, job_settings, process, warmup, beat=False)
+
+
+async def serve_parallel(lease, base):
+    """Serverless mode: each endpoint has at most one GPU worker, which keeps a job's ComfyUI files, so every
+    running job gets endpoints of its own. Jobs run at once with one or two GPUs each, up to one per endpoint."""
+    urls = [base.comfyui_url, *base.comfyui_extra_urls]
+    busy, released, tasks = {}, {}, set()
+    loop = asyncio.get_running_loop()
+
+    def finished(task, chosen):
+        for url in chosen:
+            busy.pop(url, None)
+            released[url] = loop.time()
+        tasks.discard(task)
+        if not task.cancelled() and task.exception():
+            logging.error('Job supervisor failed: %r', task.exception())
+
+    while True:
+        waiting = lease.execute("SELECT id FROM video_jobs WHERE status='QUEUED' ORDER BY created_at,id").fetchall()
+        # Most recently released first: its GPU may still be warm (idle timeout), so the job skips the boot.
+        free = sorted((url for url in urls if url not in busy), key=lambda url: released.get(url, 0), reverse=True)
+        count = gpu_allocation(len(free), len(waiting))
+        if count:
+            row = claim(lease, waiting[0]['id'], f'서버리스 GPU {count}대')
+            if row:
+                chosen = free[:count]
+                for url in chosen:
+                    busy[url] = row['id']
+                task = asyncio.create_task(run_on_gpus(lease, base, row, chosen))
+                tasks.add(task)
+                task.add_done_callback(lambda done, chosen=chosen: finished(done, chosen))
+            continue
+        heartbeat(lease, 'ALL_GPUS_BUSY' if waiting else 'BUSY' if busy else 'IDLE')
+        await asyncio.sleep(2)
+
+
 async def main():
     import os, signal, sys
     from ai_service.services.video.gpu_power import GpuPower, PowerSettings
@@ -346,6 +460,9 @@ async def main():
             raise SystemExit('Another video worker already owns this queue')
         # A job left RUNNING by a crash or restart goes back to the queue instead of being lost.
         recover_interrupted(lease)
+        if serverless:
+            await serve_parallel(lease, base)
+            return
         while True:
             heartbeat(lease, 'IDLE')
             pending = lease.execute("SELECT id,request FROM video_jobs WHERE status='QUEUED' ORDER BY created_at,id LIMIT 1").fetchone()
@@ -403,49 +520,7 @@ async def main():
                 env['VIDEO_GPU_POD_ID'] = endpoint.pod_id
             process = await asyncio.create_subprocess_exec(sys.executable, '-m', 'scripts.video.worker', '--job', str(row['id']),
                                                            env=env, start_new_session=True)
-            cancelled = False
-            try:
-                async with asyncio.timeout(7200):
-                    while process.returncode is None:
-                        heartbeat(lease, 'BUSY')
-                        if power:
-                            power.mark_busy()
-                        if cancel_requested(row['id']):
-                            cancelled = True
-                            break
-                        await asyncio.sleep(2)
-                if cancelled:
-                    logging.info('Job %s: cancel requested; stopping generation', row['id'])
-                    os.killpg(process.pid, signal.SIGTERM)
-                    try:
-                        await asyncio.wait_for(process.wait(), 15)
-                    except TimeoutError:
-                        os.killpg(process.pid, signal.SIGKILL)
-                        await process.wait()
-                    await gpu_interrupt(job_settings)
-                    with connection() as conn:
-                        mark_cancelled(conn, row['id'])
-                    # The killed child cannot run its own cleanup, so remove its local copies here.
-                    workspace = VideoSettings.from_env().workspace / f"job-{row['id']}-attempt-{row['attempts']}"
-                    if workspace.is_dir():
-                        purge_media(workspace)
-                with connection() as conn:
-                    conn.execute("""UPDATE video_jobs SET status='FAILED',stage='FAILED',error_code='WORKER_PROCESS_FAILED',
-                                    error_message='영상 생성 프로세스가 비정상 종료되었습니다.',completed_at=now(),updated_at=now()
-                                    WHERE id=%s AND status='RUNNING'""", (row['id'],))
-            finally:
-                if warmup:
-                    warmup.cancel()
-                # Lease loss / shutdown / timeout kills the whole child process group, including encoders.
-                if process.returncode is None:
-                    os.killpg(process.pid, signal.SIGTERM)
-                    try:
-                        await asyncio.wait_for(process.wait(), 15)
-                    except TimeoutError:
-                        os.killpg(process.pid, signal.SIGKILL)
-                        await process.wait()
-                # Photos and clips uploaded to the GPU stay on its persistent volume unless removed.
-                await gpu_cleanup(job_settings)
+            await supervise(lease, row, job_settings, process, warmup, power)
 
 
 async def child(job_id):
