@@ -200,7 +200,7 @@ def router(settings):
             return {'default_gpu_type': None, 'items': [], 'serverless': {
                 'label': SERVERLESS_GPU_LABEL,
                 'note': f'서버리스 GPU를 최대 {gpu_pool_size()}대까지 씁니다. 영상 여러 개를 동시에 만들고, 한가하면 영상 1개에 GPU 2대, 붐비면 1대씩 나눠 씁니다. '
-                        '일이 없으면 5~10분 뒤 꺼지고, 꺼져 있던 GPU가 켜지는 데 몇 분 걸립니다. GPU가 일한 시간만큼만 요금이 나갑니다.'}}
+                        '일이 끝나고 1분 동안 요청이 없으면 꺼지고, 꺼져 있던 GPU가 켜지는 데 3~4분 걸립니다. GPU가 일한 시간만큼만 요금이 나갑니다.'}}
         models = selectable_gpu_types(settings)
         choices = (*models, AUTO_GPU) if len(models) > 1 else models
         return {'default_gpu_type': default_gpu_type(models),
