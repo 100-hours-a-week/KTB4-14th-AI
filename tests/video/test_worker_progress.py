@@ -245,3 +245,17 @@ def test_progress_detail_names_the_exact_step(tmp_path):
     assert progress_detail(tmp_path, 10) == 'GPU 2대에서 장면 2/6 (2번째 시도), 4/6 (1번째 시도) 만드는 중 · 통과 1개, 탈락 1개'
     (run / 'scene-07-attempt-00').mkdir()
     assert '대체 장면 2 (1번째 시도)' in progress_detail(tmp_path, 10)
+
+
+def test_photo_motion_film_skips_unreadable_photos(tmp_path):
+    from PIL import Image
+    from ai_service.services.video.config import VideoSettings
+    from scripts.video import worker
+    good = []
+    for i in range(3):
+        path = tmp_path / f'{i}.jpg'
+        Image.new('RGB', (64, 48), (40 * i, 90, 120)).save(path)
+        good.append(path)
+    broken = tmp_path / 'broken.jpg'
+    broken.write_bytes(b'not a photo')
+    assert worker.readable_photo(good[0]) and not worker.readable_photo(broken)

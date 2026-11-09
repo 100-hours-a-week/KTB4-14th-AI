@@ -6,6 +6,12 @@ import cv2
 import numpy as np
 from PIL import Image
 
+try:  # iPhone HEIC; uploads are already stored as JPEG, this covers files given to the pipeline directly
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+except ImportError:  # the base (non-video) install has no pillow-heif
+    pass
+
 from ai_service.services.video.errors import VideoError
 
 MAX_PIXELS = 50_000_000

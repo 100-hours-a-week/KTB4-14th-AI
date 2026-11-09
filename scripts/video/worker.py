@@ -298,12 +298,28 @@ async def generate_and_publish(job_id, payload, photos, settings):
     update(job_id, 'COMPLETED', status='COMPLETED', publication=publication, notice=notice)
 
 
+def readable_photo(path):
+    """One unreadable file must not stop the last-resort film; it is simply left out."""
+    from PIL import Image
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+    try:
+        with Image.open(path) as image:
+            image.verify()
+        return True
+    except Exception:
+        return False
+
+
 async def photo_motion_film(payload, photos, settings, preset, seed):
     """GPU 없이 CPU(ffmpeg)로 만드는 마지막 대안: 고르게 뽑은 사진 최대 10장에 천천히 움직이는 효과와 자체 합성
     배경음악을 넣는다. 사진을 읽을 수만 있으면 항상 끝난다."""
     from ai_service.schemas.video import VideoRequest
-    step = max(1, len(photos) / PHOTO_MOTION_MAX_PHOTOS)
-    chosen = [photos[int(i * step)] for i in range(min(len(photos), PHOTO_MOTION_MAX_PHOTOS))]
+    readable = await asyncio.to_thread(lambda: [path for path in photos if readable_photo(path)])
+    if not readable:
+        raise VideoError('photo_motion_no_readable_photos')
+    step = max(1, len(readable) / PHOTO_MOTION_MAX_PHOTOS)
+    chosen = [readable[int(i * step)] for i in range(min(len(readable), PHOTO_MOTION_MAX_PHOTOS))]
     if len(chosen) < 2:
         chosen = chosen * 2
     request = VideoRequest(photos=chosen, duration_seconds=max(10, payload['duration_seconds']), story_mode='PHOTO_MOTION',
