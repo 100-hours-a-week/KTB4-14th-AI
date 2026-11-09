@@ -265,8 +265,13 @@ async def run_job(row):
 MUSIC_FALLBACK_NOTICE = '자동 작곡 대신 여행 분위기에 맞는 기본 배경음악을 넣었습니다.'
 
 
+PHOTO_MOTION_NOTICE = 'AI 영상 생성이 원활하지 않아, 사진에 움직임을 넣은 영상으로 대신 만들었습니다.'
+PHOTO_MOTION_MAX_PHOTOS = 10
+
+
 async def generate_and_publish(job_id, payload, photos, settings):
-    """배경음악이 들어간 최종 영상만 저장하고 작업을 완료한다."""
+    """배경음악이 들어간 최종 영상을 저장하고 작업을 완료한다. AI 영상이 어떤 이유로든 안 되면(GPU 품절,
+    품질 검사, 장면 부족, 모델 오류) GPU 없이 사진에 움직임을 넣은 영상으로 대신 완성한다."""
     preset = payload.get('music', 'AUTO')
     # 배포 전에 대기열에 들어온 무음 요청도 배경음악을 포함해 처리한다.
     if preset == 'NONE':
@@ -274,16 +279,42 @@ async def generate_and_publish(job_id, payload, photos, settings):
     request = MemoryVideoRequest(photos=photos, duration_seconds=payload['duration_seconds'],
                                  memory_context=payload['memory_context'], memory_style=payload['memory_style'],
                                  music=MusicSelection(preset=preset), seed=job_seed(job_id))
-    async with httpx.AsyncClient(follow_redirects=False) as http:
-        result = await VideoPipeline(http, settings, execution_mode='live').generate(request)
-    if result.get('status') != 'completed' or not result.get('output_file'):
-        raise RuntimeError(result.get('failure_reason') or 'Pipeline did not complete')
-    if result['media'].get('audio_streams') != 1:
-        raise VideoError('final_video_music_missing')
-    notice = MUSIC_FALLBACK_NOTICE if result['music'].get('source') == 'BUILTIN_PRESET_FALLBACK' else None
+    try:
+        async with httpx.AsyncClient(follow_redirects=False) as http:
+            result = await VideoPipeline(http, settings, execution_mode='live').generate(request)
+        if result.get('status') != 'completed' or not result.get('output_file'):
+            raise RuntimeError(result.get('failure_reason') or 'Pipeline did not complete')
+        if result['media'].get('audio_streams') != 1:
+            raise VideoError('final_video_music_missing')
+        notice = MUSIC_FALLBACK_NOTICE if result['music'].get('source') == 'BUILTIN_PRESET_FALLBACK' else None
+    except Exception as exc:
+        reason = getattr(exc, 'reason', None) or type(exc).__name__
+        logging.warning('Job %s: AI video failed (%s); making the photo-motion film instead', job_id, reason)
+        set_detail(job_id, 'AI 영상 생성이 원활하지 않아 사진에 움직임을 넣은 영상으로 만드는 중')
+        result = await photo_motion_film(payload, photos, settings, preset, job_seed(job_id))
+        notice = PHOTO_MOTION_NOTICE
     update(job_id, 'SAVING')
     publication = await publish_video(Path(result['output_file']))
     update(job_id, 'COMPLETED', status='COMPLETED', publication=publication, notice=notice)
+
+
+async def photo_motion_film(payload, photos, settings, preset, seed):
+    """GPU 없이 CPU(ffmpeg)로 만드는 마지막 대안: 고르게 뽑은 사진 최대 10장에 천천히 움직이는 효과와 자체 합성
+    배경음악을 넣는다. 사진을 읽을 수만 있으면 항상 끝난다."""
+    from ai_service.schemas.video import VideoRequest
+    step = max(1, len(photos) / PHOTO_MOTION_MAX_PHOTOS)
+    chosen = [photos[int(i * step)] for i in range(min(len(photos), PHOTO_MOTION_MAX_PHOTOS))]
+    if len(chosen) < 2:
+        chosen = chosen * 2
+    request = VideoRequest(photos=chosen, duration_seconds=max(10, payload['duration_seconds']), story_mode='PHOTO_MOTION',
+                           memory_context=payload['memory_context'], memory_style=payload['memory_style'],
+                           music=MusicSelection(preset=preset), seed=seed % (2**63))
+    local = replace(settings, workspace=settings.workspace / 'photo-motion')
+    async with httpx.AsyncClient(follow_redirects=False) as http:
+        result = await VideoPipeline(http, local, execution_mode='live').generate(request)
+    if result.get('status') != 'completed' or not result.get('output_file'):
+        raise VideoError('photo_motion_failed')
+    return result
 
 
 def job_seed(job_id):
@@ -399,7 +430,9 @@ async def drop_worker(settings, wait_seconds=60):
         logging.warning('Could not stop the GPU on %s (%s)', endpoint_id(settings), type(exc).__name__)
 
 
-GPU_WAIT_SECONDS = 1800  # a cold start takes 4-5 minutes; a sold-out GPU may take longer
+# A cold start takes 4-6 minutes. After 15 minutes without a GPU the job stops waiting and makes the
+# photo-motion film on the CPU instead, so the whole job stays well under 30 minutes.
+GPU_WAIT_SECONDS = 900
 
 
 async def warm_gpu(settings):
