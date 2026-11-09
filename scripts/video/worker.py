@@ -92,7 +92,10 @@ def progress_detail(workspace: Path, photo_count: int):
     return 'GPU에서 장면 생성을 시작하는 중'
 
 
-SOLD_OUT_RECYCLE_SECONDS = 120  # a worker stuck "throttled" this long is replaced (2026-11-09: one stayed 30 min)
+# A worker stuck "throttled" this long is replaced (2026-11-09: one stayed 30 min). RunPod also reports
+# "throttled" while it copies the cached models (53 GB) onto a new host for the first time, which took 9 minutes,
+# so replacing sooner would restart that copy every time.
+SOLD_OUT_RECYCLE_SECONDS = int(os.environ.get('VIDEO_SOLD_OUT_RECYCLE_SECONDS', '660'))
 
 
 async def track_progress(job_id, workspace: Path, photo_count=0, settings=None):
@@ -124,8 +127,8 @@ async def track_progress(job_id, workspace: Path, photo_count=0, settings=None):
                     await recycle_endpoint(settings)
                     sold_out_since = None
             text = (f"GPU 품절: 다른 빈 GPU를 찾는 중 ({recycles}번 다시 찾음, 사진 분석은 끝남)" if gpu_state == 'GPU_SOLD_OUT' and recycles
-                    else 'GPU 품절: 빈 GPU가 생기기를 기다리는 중 (사진 분석은 끝남)' if gpu_state == 'GPU_SOLD_OUT'
-                    else 'GPU가 켜지기를 기다리는 중 (사진 분석은 끝남, 켜는 데 약 4~5분)')
+                    else 'GPU 준비 중: 빈 GPU를 찾거나 모델을 옮기는 중 (사진 분석은 끝남)' if gpu_state == 'GPU_SOLD_OUT'
+                    else 'GPU가 켜지기를 기다리는 중 (사진 분석은 끝남, 보통 1분 안, 처음 쓰는 장비면 최대 10분)')
         if text != detail:
             await asyncio.to_thread(set_detail, job_id, text)
             detail = text
@@ -446,9 +449,10 @@ async def drop_worker(settings, wait_seconds=60):
         logging.warning('Could not stop the GPU on %s (%s)', endpoint_id(settings), type(exc).__name__)
 
 
-# A cold start takes 4-6 minutes. After 15 minutes without a GPU the job stops waiting and makes the
-# photo-motion film on the CPU instead, so the whole job stays well under 30 minutes.
-GPU_WAIT_SECONDS = 900
+# With the RunPod model cache a GPU on a host that already has the models is ready in about 20 seconds; a new host
+# first copies them (about 9 minutes, not billed). After 20 minutes without a GPU the job makes the photo-motion
+# film on the CPU instead (about 30 seconds), so the whole job stays under 30 minutes.
+GPU_WAIT_SECONDS = 1200
 
 
 async def warm_gpu(settings):

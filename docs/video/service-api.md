@@ -190,3 +190,9 @@ URL은 서버 기능을 찾아가는 주소입니다. URL 자체가 DB이거나 
 - 서버리스 GPU 1대 약 $5/시간 (GPU 9대 동시 가동 시 계정 전체 $44.9/시간 확인).
 - GPU 비용은 켜지는 시간(모델 내려받기 3~4분) + 생성 시간 + 끝난 뒤 대기(60초)에 모두 붙습니다.
 - 동시에 몇 개를 만들든 영상 1개 값은 같고, 한꺼번에 몰리면 시간당 비용만 커집니다(10대면 약 $50/시간).
+
+### 모델 캐시 (2026-11-09)
+- 모델 6개(53GB)만 담은 비공개 Hugging Face 저장소 `SSaBaSSaBa/audigo-video-models`(ComfyUI 폴더 구조)를 10개 엔드포인트의 RunPod 모델 캐시로 등록했습니다(엔드포인트 env `MODEL_NAME`, `HF_TOKEN`; GraphQL `saveEndpoint`의 `modelName`+`env`로 설정. REST PATCH로는 env를 바꿀 수 없음).
+- `gpu_boot.sh`가 `/runpod-volume/huggingface-cache/hub/models--SSaBaSSaBa--audigo-video-models/snapshots/*/`에 파일이 다 있으면 그 경로를 ComfyUI 모델 경로로 쓰고, 없으면 예전처럼 내려받습니다.
+- 실측: 캐시가 있는 장비에서 컨테이너 시작 → ComfyUI 준비 19초(이전 4분 이상). 처음 쓰는 장비는 RunPod가 모델을 옮기는 데 9분(이 시간은 과금 없음, 상태 API에는 `throttled`로 보임).
+- 그래서 품절 재시도 기준은 11분(`VIDEO_SOLD_OUT_RECYCLE_SECONDS`), GPU 대기 한도는 20분, 그 뒤에는 CPU 사진 움직임 영상으로 완성합니다.
