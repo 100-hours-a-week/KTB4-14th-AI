@@ -248,6 +248,89 @@ def test_job_end_stops_a_gpu_that_is_still_booting(monkeypatch):
     endpoints = [SimpleNamespace(name='cold'), SimpleNamespace(name='warm')]
     monkeypatch.setattr(worker, 'gpu_endpoints', lambda s: endpoints)
     monkeypatch.setattr(worker, 'replace', lambda base, **k: base)
+    from contextlib import contextmanager
+
+    @contextmanager
+    def conn():
+        yield SimpleNamespace(execute=lambda *a: SimpleNamespace(fetchone=lambda: {'status': 'COMPLETED'}))
+    monkeypatch.setattr(worker, 'connection', conn)
     asyncio.run(worker.run_on_gpus(None, SimpleNamespace(), {'id': 'j'}, ['https://a.api.runpod.ai']))
     assert ('drop', 'cold') in calls and ('drop', 'warm') not in calls
     assert ('allow', 'cold') in calls and ('allow', 'warm') in calls
+
+
+def test_gpu_that_never_starts_sends_the_job_to_another_gpu(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock, Mock
+    from ai_service.services.video.config import VideoSettings
+    from ai_service.services.video.errors import VideoError
+    monkeypatch.setattr(worker, 'VideoPipeline', Mock(return_value=Mock(generate=AsyncMock(side_effect=VideoError('comfyui_not_ready')))))
+    photo_motion = AsyncMock()
+    monkeypatch.setattr(worker, 'photo_motion_film', photo_motion)
+    payload = {'music': 'AUTO', 'duration_seconds': 30, 'memory_context': '', 'memory_style': 'WARM'}
+    monkeypatch.setenv('VIDEO_GPU_RETRY', '1')
+    import pytest
+    with pytest.raises(worker.GpuRetry):
+        asyncio.run(worker.generate_and_publish('job', payload, [tmp_path / 'a.jpg', tmp_path / 'b.jpg'], VideoSettings()))
+    photo_motion.assert_not_awaited()
+    # On the last attempt the job is still finished, with the photo-motion film.
+    monkeypatch.setenv('VIDEO_GPU_RETRY', '0')
+    monkeypatch.setattr(worker, 'photo_motion_film', AsyncMock(return_value={'status': 'completed', 'output_file': str(tmp_path / 'f.mp4')}))
+    monkeypatch.setattr(worker, 'publish_video', AsyncMock(return_value={}))
+    monkeypatch.setattr(worker, 'update', Mock())
+    monkeypatch.setattr(worker, 'set_detail', Mock())
+    asyncio.run(worker.generate_and_publish('job', payload, [tmp_path / 'a.jpg', tmp_path / 'b.jpg'], VideoSettings()))
+    worker.photo_motion_film.assert_awaited_once()
+
+
+def test_retry_flag_only_on_first_attempt():
+    assert worker.job_env(['https://a.api.runpod.ai'], 1)['VIDEO_GPU_RETRY'] == '1'
+    assert worker.job_env(['https://a.api.runpod.ai'], 2)['VIDEO_GPU_RETRY'] == '0'
+
+
+def test_endpoint_whose_gpu_never_started_is_picked_last(monkeypatch):
+    urls = [f'https://e{i}.api.runpod.ai' for i in range(3)]
+    base = SimpleNamespace(comfyui_url=urls[0], comfyui_extra_urls=tuple(urls[1:]))
+    queue, started, gate = ['j1'], [], {}
+
+    class Lease:
+        def execute(self, sql, *args):
+            return SimpleNamespace(fetchall=lambda: [{'id': job} for job in queue])
+
+    def claim(lease, job_id, assigned=None):
+        queue.remove(job_id)
+        return {'id': job_id}
+
+    async def run_on_gpus(lease, base, row, chosen):
+        started.append(chosen[0])
+        gate[len(started)] = asyncio.Event()
+        await gate[len(started)].wait()
+        if len(started) == 1:
+            queue.append('j1')  # handed back for another GPU
+            return True
+        return False
+
+    async def allow(settings):
+        pass
+    monkeypatch.setattr(worker, 'claim', claim)
+    monkeypatch.setattr(worker, 'run_on_gpus', run_on_gpus)
+    monkeypatch.setattr(worker, 'heartbeat', lambda *a: None)
+    monkeypatch.setattr(worker, 'allow_one_worker', allow)
+    monkeypatch.setattr(worker, 'gpu_endpoints', lambda s: [])
+
+    async def scenario():
+        real_sleep = asyncio.sleep
+        monkeypatch.setattr(worker.asyncio, 'sleep', lambda s: real_sleep(0))
+        server = asyncio.create_task(worker.serve_parallel(Lease(), base))
+        for _ in range(10):
+            await real_sleep(0)
+        gate[1].set()
+        for _ in range(20):
+            await real_sleep(0)
+        server.cancel()
+        try:
+            await server
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(scenario())
+    assert len(started) == 2 and started[1] != started[0]

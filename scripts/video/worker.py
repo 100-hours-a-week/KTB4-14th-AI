@@ -95,7 +95,7 @@ def progress_detail(workspace: Path, photo_count: int):
 # A worker stuck "throttled" this long is replaced (2026-11-09: one stayed 30 min). RunPod also reports
 # "throttled" while it copies the cached models (53 GB) onto a new host for the first time, which took 9 minutes,
 # so replacing sooner would restart that copy every time.
-SOLD_OUT_RECYCLE_SECONDS = int(os.environ.get('VIDEO_SOLD_OUT_RECYCLE_SECONDS', '660'))
+SOLD_OUT_RECYCLE_SECONDS = int(os.environ.get('VIDEO_SOLD_OUT_RECYCLE_SECONDS', '600'))
 
 
 async def track_progress(job_id, workspace: Path, photo_count=0, settings=None):
@@ -268,6 +268,14 @@ async def run_job(row):
 MUSIC_FALLBACK_NOTICE = '자동 작곡 대신 여행 분위기에 맞는 기본 배경음악을 넣었습니다.'
 
 
+class GpuRetry(Exception):
+    """The job's GPU never became ready; the job goes back to the queue for another endpoint."""
+
+
+def gpu_retry_allowed():
+    return os.environ.get('VIDEO_GPU_RETRY') == '1'
+
+
 PHOTO_MOTION_NOTICE = 'AI 영상 생성이 원활하지 않아, 사진에 움직임을 넣은 영상으로 대신 만들었습니다.'
 PHOTO_MOTION_MAX_PHOTOS = 10
 
@@ -292,6 +300,10 @@ async def generate_and_publish(job_id, payload, photos, settings):
         notice = MUSIC_FALLBACK_NOTICE if result['music'].get('source') == 'BUILTIN_PRESET_FALLBACK' else None
     except Exception as exc:
         reason = getattr(exc, 'reason', None) or type(exc).__name__
+        if reason == 'comfyui_not_ready' and gpu_retry_allowed():
+            # The GPU never came up (a new host still copying models, or sold out). Another endpoint that just
+            # finished a job is usually warm, so try the AI film again there instead of a slideshow.
+            raise GpuRetry() from exc
         logging.warning('Job %s: AI video failed (%s); making the photo-motion film instead', job_id, reason)
         set_detail(job_id, 'AI 영상 생성이 원활하지 않아 사진에 움직임을 넣은 영상으로 만드는 중')
         result = await photo_motion_film(payload, photos, settings, preset, job_seed(job_id))
@@ -450,9 +462,11 @@ async def drop_worker(settings, wait_seconds=60):
 
 
 # With the RunPod model cache a GPU on a host that already has the models is ready in about 20 seconds; a new host
-# first copies them (about 9 minutes, not billed). After 20 minutes without a GPU the job makes the photo-motion
-# film on the CPU instead (about 30 seconds), so the whole job stays under 30 minutes.
-GPU_WAIT_SECONDS = 1200
+# first copies them (about 9 minutes, not billed). A job whose GPU is not ready in 12 minutes goes back to the queue
+# and gets another endpoint, usually one that just finished a job and is still warm. Only if that second GPU also
+# never starts does the job make the photo-motion film on the CPU (about 30 seconds), staying under 30 minutes.
+GPU_WAIT_SECONDS = 720  # per attempt; a job tries two GPUs (MAX_GPU_ATTEMPTS) before the photo-motion film
+MAX_GPU_ATTEMPTS = 2
 
 
 async def warm_gpu(settings):
@@ -547,12 +561,13 @@ def gpu_allocation(free, waiting):
     return MAX_GPUS_PER_JOB if free >= MAX_GPUS_PER_JOB and free - MAX_GPUS_PER_JOB >= waiting - 1 else 1
 
 
-def job_env(urls):
-    """Environment that pins a child job to its own serverless endpoints (one worker each)."""
-    import os
+def job_env(urls, attempt=1):
+    """Environment that pins a child job to its own serverless endpoints (one worker each). The first attempt
+    waits GPU_WAIT_SECONDS for its GPU and may then retry on another endpoint; the second attempt is the last."""
     env = os.environ.copy()
     env['COMFYUI_URL'], env['COMFYUI_EXTRA_URLS'] = urls[0], ','.join(urls[1:])
     env.setdefault('VIDEO_GPU_WAIT_SECONDS', str(GPU_WAIT_SECONDS))
+    env['VIDEO_GPU_RETRY'] = '1' if attempt < MAX_GPU_ATTEMPTS else '0'
     return env
 
 
@@ -563,9 +578,12 @@ async def run_on_gpus(lease, base, row, urls):
     warmup = asyncio.gather(*[warm_gpu(each) for each in gpu_endpoints(job_settings)])
     logging.info('Job %s: %d GPU endpoint(s) %s', row['id'], len(urls), ', '.join(urls))
     process = await asyncio.create_subprocess_exec(sys.executable, '-m', 'scripts.video.worker', '--job', str(row['id']),
-                                                   env=job_env(urls), start_new_session=True)
+                                                   env=job_env(urls, row.get('attempts') or 1), start_new_session=True)
     try:
         await supervise(lease, row, job_settings, process, warmup, beat=False)
+        with connection() as conn:
+            again = conn.execute("SELECT status FROM video_jobs WHERE id=%s", (row['id'],)).fetchone()
+        return bool(again and again['status'] == 'QUEUED')  # handed back for another GPU
     finally:
         async def release(each):
             # A job that failed or was cancelled before its GPU was ready would otherwise pay for the whole
@@ -585,9 +603,11 @@ async def serve_parallel(lease, base):
     loop = asyncio.get_running_loop()
 
     def finished(task, chosen):
+        retried = not task.cancelled() and task.exception() is None and task.result() is True
         for url in chosen:
             busy.pop(url, None)
-            released[url] = loop.time()
+            # An endpoint whose GPU never started goes to the back, so the retry lands on a different one.
+            released[url] = -1.0 if retried else loop.time()
         tasks.discard(task)
         if not task.cancelled() and task.exception():
             logging.error('Job supervisor failed: %r', task.exception())
@@ -698,6 +718,13 @@ async def child(job_id):
         raise SystemExit('Job is not running')
     try:
         await run_job(row)
+    except GpuRetry:
+        with connection() as conn:
+            conn.execute("""UPDATE video_jobs SET status='QUEUED',stage='QUEUED',assigned_gpu_type=NULL,
+                            progress_detail='GPU가 준비되지 않아 다른 GPU로 다시 만드는 중',updated_at=now()
+                            WHERE id=%s AND status='RUNNING'""", (row['id'],))
+        logging.info('Job %s: GPU not ready; back in the queue for another GPU', row['id'])
+        raise SystemExit(0)
     except Exception as exc:
         reason = getattr(exc, 'reason', None) or type(exc).__name__
         update(row['id'], 'FAILED', status='FAILED', error=reason[:100], message=failure_message(reason))

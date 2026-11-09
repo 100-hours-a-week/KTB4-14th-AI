@@ -147,3 +147,20 @@ class CalmAlbumTests(unittest.TestCase):
     def test_enough_lively_photos_leave_calm_ones_out(self):
         photos = [photo(i) for i in range(5)] + [photo(i, 'food', motion_potential=.3) for i in range(5, 8)]
         self.assertEqual({s.source_index for s in scene_candidates_from_catalog(catalog(photos))}, set(range(5)))
+
+
+class NeverGiveUpTests(unittest.TestCase):
+    def test_album_the_model_rejected_still_gets_ai_scenes(self):
+        from ai_service.services.video.diversity import promote_for_film, usable_photo
+        photos = [photo(i, 'food', motion_potential=.1, visual_quality=.3 + i * .01, usable=False,
+                        rejection_reason='static plate') for i in range(10)]
+        promoted = promote_for_film(photos)
+        chosen = [p for p in promoted if usable_photo(p)]
+        self.assertEqual([p.source_index for p in chosen], [6, 7, 8, 9])  # the best-looking four
+        plan = build_memory_film_plan(catalog(promoted), duration=30)
+        self.assertEqual(sum(s.frame_count for s in plan.shots), 720)
+
+    def test_enough_usable_photos_are_left_alone(self):
+        from ai_service.services.video.diversity import promote_for_film
+        photos = [photo(i) for i in range(5)] + [photo(5, usable=False, rejection_reason='screenshot')]
+        self.assertIs(promote_for_film(photos), photos)
