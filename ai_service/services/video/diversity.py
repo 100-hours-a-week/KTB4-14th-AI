@@ -109,6 +109,26 @@ def usable_photo(photo: MemoryPhotoAnalysis) -> bool:
             and photo.visual_quality >= 0.35 and photo.motion_potential >= 0.2)
 
 
+MIN_FILM_PHOTOS = 4
+
+
+def promote_for_film(photos: list[MemoryPhotoAnalysis], minimum: int = MIN_FILM_PHOTOS) -> list[MemoryPhotoAnalysis]:
+    """Never give up on an album: when fewer than ``minimum`` photos pass the usual bar (plated food, shelves,
+    night lights, or photos the model marked unusable), the best-looking others are made AI scenes too, with a gentle
+    motion. 2026-11-09: a ten-photo restaurant album fell back to a slideshow instead of an AI film."""
+    usable = [photo for photo in photos if usable_photo(photo)]
+    if len(usable) >= minimum:
+        return photos
+    rest = sorted((photo for photo in photos if not usable_photo(photo)),
+                  key=lambda photo: (photo.subject_focus == 'BLURRY', -photo_score(photo), photo.source_index))
+    promoted = {photo.source_index: photo.model_copy(update={
+        'usable': True, 'rejection_reason': None,
+        'subject_focus': 'SOFT' if photo.subject_focus == 'BLURRY' else photo.subject_focus,
+        'visual_quality': max(photo.visual_quality, 0.35), 'motion_potential': max(photo.motion_potential, 0.5)})
+        for photo in rest[:minimum - len(usable)]}
+    return [promoted.get(photo.source_index, photo) for photo in photos]
+
+
 def photo_score(photo: MemoryPhotoAnalysis) -> float:
     focus_penalty = {'CLEAR': 0, 'SOFT': 0.12, 'UNKNOWN': 0.18, 'BLURRY': 1}[photo.subject_focus]
     return round(0.6 * photo.visual_quality + 0.4 * photo.motion_potential - focus_penalty, 6)
@@ -134,10 +154,13 @@ def validate_catalog(catalog: MemoryCatalog, candidate_indices: list[int]) -> No
             raise VideoError('memory_scene_pair_invalid')
 
 
+MIN_LIVELY_SCENES = 4
+
+
 def scene_candidates_from_catalog(catalog: MemoryCatalog) -> list[MemorySceneCandidate]:
     """One candidate per distinct memory; an uncertain pair becomes one-photo FLF."""
     lookup = {photo.source_index: photo for photo in catalog.photos}
-    scenes = []
+    scenes, calm = [], []
     for group in catalog.grouping.groups:
         photos = [lookup[index] for index in group.source_indices if usable_photo(lookup[index])]
         if not photos:
@@ -150,9 +173,10 @@ def scene_candidates_from_catalog(catalog: MemoryCatalog) -> list[MemorySceneCan
         if pair and pair[1] - pair[0] <= 8 and all(usable_photo(lookup[i]) for i in pair):
             first, last = pair
             best = lookup[first]
-        if best.motion_potential < 0.5:
-            continue
-        scenes.append(MemorySceneCandidate(
+        # Calm shots (plated food, shop shelves, night lights) are kept aside and used only when an album has
+        # too few lively ones; an album of only such photos used to fail outright (2026-11-09).
+        target = calm if best.motion_potential < 0.5 else scenes
+        target.append(MemorySceneCandidate(
             scene_key=group.scene_key, source_index=first, end_source_index=last,
             role=best.category, people_visible=any(lookup[i].people_visible for i in {first, last}),
             visible_scene=best.visible_scene, subject_action=best.safe_action,
@@ -160,6 +184,9 @@ def scene_candidates_from_catalog(catalog: MemoryCatalog) -> list[MemorySceneCan
             quality_score=round(sum(photo_score(lookup[i]) for i in {first, last}) / len({first, last}), 6),
             motion_potential=best.motion_potential,
         ))
+    if len(scenes) < MIN_LIVELY_SCENES:
+        calm.sort(key=lambda scene: (-scene.quality_score, scene.source_index))
+        scenes += calm[:MIN_LIVELY_SCENES - len(scenes)]
     return sorted(scenes, key=lambda scene: (scene.source_index, scene.scene_key))
 
 

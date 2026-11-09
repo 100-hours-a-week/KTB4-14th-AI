@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
+from ai_service.services.video.errors import VideoError
 
 from ai_service.services.video.gpu_power import A100_PCIE, AUTO_GPU, RTX_PRO_6000, GpuPower, PowerSettings
 from scripts.video.worker import stage_from_reports
@@ -186,13 +187,38 @@ def test_web_worker_requires_music_before_publishing(tmp_path, monkeypatch, audi
         update.assert_called_with('job', 'COMPLETED', status='COMPLETED', publication=publish.return_value,
                                   notice=worker.MUSIC_FALLBACK_NOTICE)
     else:
-        with pytest.raises(VideoError) as failure:
-            asyncio.run(task)
-        assert failure.value.reason == 'final_video_music_missing'
-        publish.assert_not_awaited()
-        update.assert_not_called()
+        # A film without music is not published; the job falls back to the photo-motion film instead of failing.
+        fallback = tmp_path / 'photo-motion.mp4'
+        photo_motion = AsyncMock(return_value={'status': 'completed', 'output_file': str(fallback)})
+        monkeypatch.setattr(worker, 'photo_motion_film', photo_motion)
+        monkeypatch.setattr(worker, 'set_detail', Mock())
+        asyncio.run(task)
+        photo_motion.assert_awaited_once()
+        publish.assert_awaited_once_with(fallback)
+        update.assert_called_with('job', 'COMPLETED', status='COMPLETED', publication=publish.return_value,
+                                  notice=worker.PHOTO_MOTION_NOTICE)
     generate.assert_awaited_once()
     assert generate.await_args.args[0].music.preset == 'AUTO'
+
+
+@pytest.mark.parametrize('error', [VideoError('comfyui_not_ready'), VideoError('memory_film_quality_gate_failed'),
+                                   VideoError('insufficient_usable_memory_scenes'), RuntimeError('boom')])
+def test_any_ai_failure_still_publishes_a_video(tmp_path, monkeypatch, error):
+    from ai_service.services.video.config import VideoSettings
+    from scripts.video import worker
+    monkeypatch.setattr(worker, 'VideoPipeline', Mock(return_value=Mock(generate=AsyncMock(side_effect=error))))
+    fallback = tmp_path / 'photo-motion.mp4'
+    monkeypatch.setattr(worker, 'photo_motion_film', AsyncMock(return_value={'status': 'completed', 'output_file': str(fallback)}))
+    publish = AsyncMock(return_value={'video_key': 'k'})
+    update = Mock()
+    monkeypatch.setattr(worker, 'publish_video', publish)
+    monkeypatch.setattr(worker, 'update', update)
+    monkeypatch.setattr(worker, 'set_detail', Mock())
+    payload = {'music': 'AUTO', 'duration_seconds': 30, 'memory_context': '', 'memory_style': 'WARM'}
+    asyncio.run(worker.generate_and_publish('job', payload, [tmp_path / 'a.jpg', tmp_path / 'b.jpg'], VideoSettings()))
+    publish.assert_awaited_once_with(fallback)
+    assert update.call_args.kwargs['status'] == 'COMPLETED'
+    assert update.call_args.kwargs['notice'] == worker.PHOTO_MOTION_NOTICE
 
 
 def test_progress_detail_names_the_exact_step(tmp_path):
@@ -219,3 +245,17 @@ def test_progress_detail_names_the_exact_step(tmp_path):
     assert progress_detail(tmp_path, 10) == 'GPU 2대에서 장면 2/6 (2번째 시도), 4/6 (1번째 시도) 만드는 중 · 통과 1개, 탈락 1개'
     (run / 'scene-07-attempt-00').mkdir()
     assert '대체 장면 2 (1번째 시도)' in progress_detail(tmp_path, 10)
+
+
+def test_photo_motion_film_skips_unreadable_photos(tmp_path):
+    from PIL import Image
+    from ai_service.services.video.config import VideoSettings
+    from scripts.video import worker
+    good = []
+    for i in range(3):
+        path = tmp_path / f'{i}.jpg'
+        Image.new('RGB', (64, 48), (40 * i, 90, 120)).save(path)
+        good.append(path)
+    broken = tmp_path / 'broken.jpg'
+    broken.write_bytes(b'not a photo')
+    assert worker.readable_photo(good[0]) and not worker.readable_photo(broken)

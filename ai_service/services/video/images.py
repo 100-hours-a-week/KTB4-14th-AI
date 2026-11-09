@@ -6,6 +6,12 @@ import cv2
 import numpy as np
 from PIL import Image
 
+try:  # iPhone HEIC; uploads are already stored as JPEG, this covers files given to the pipeline directly
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+except ImportError:  # the base (non-video) install has no pillow-heif
+    pass
+
 from ai_service.services.video.errors import VideoError
 
 MAX_PIXELS = 50_000_000
@@ -60,7 +66,7 @@ def prepare_photo(source: Path, destination: Path, max_bytes: int, *, fit='lette
             with Image.open(source) as image:
                 # iPhone JPEG가 보조 사진을 포함하면 Pillow는 MPO로 인식한다.
                 # 일반 JPEG와 동일하게 첫 번째(주) 사진만 사용한다.
-                if image.format not in {"JPEG", "MPO", "PNG", "WEBP"}:
+                if image.format not in {"JPEG", "MPO", "PNG", "WEBP", "HEIF"}:
                     raise VideoError("photo_format_unsupported")
                 image.seek(0)
                 width, height = image.size

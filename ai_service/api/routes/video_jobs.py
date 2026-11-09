@@ -35,7 +35,7 @@ class JobInput(BaseModel):
     gpu_type: str | None = Field(default=None, min_length=1, max_length=120)
 
 
-SERVERLESS_GPU_LABEL = os.environ.get('VIDEO_SERVERLESS_GPU_LABEL', 'A100 80GB · RTX PRO 6000 96GB · H100 80GB 중 빈 GPU 1대 (서버리스 자동)')
+SERVERLESS_GPU_LABEL = os.environ.get('VIDEO_SERVERLESS_GPU_LABEL', 'A100 80GB · RTX PRO 6000 96GB · H100 80GB 중 빈 GPU (서버리스 자동, 영상 1개에 1대)')
 
 
 def store():
@@ -60,20 +60,31 @@ WORKER_LABELS = {
     'GPU_MODELS_MISSING': 'GPU는 켜졌지만 영상 모델이 없어 기다리는 중',
     'GPU_BUSY': 'GPU가 다른 작업을 처리하는 중',
     'BUSY': '영상 생성 중',
+    'ALL_GPUS_BUSY': 'GPU가 모두 다른 영상을 만드는 중이라, 빈 GPU가 생기면 바로 시작',
     'OFFLINE': '작업 실행기가 응답하지 않음',
 }
-# Measured 2026-11-06 on serverless GPUs with two scene lanes: 108 photos 6 min, 25 photos 7 min (30 s films).
-# A cold GPU adds 3-4 minutes, which overlap photo analysis. Not a guarantee.
+# Measured 2026-11-06 with two GPUs per film: 108 photos 6 min. One GPU per film (the default since 2026-11-09,
+# cheaper) is estimated at 8-9 minutes including a 3-4 minute cold GPU start. Not a guarantee.
 JOB_MINUTES = 10
 
 
-def estimate_note(status, position, worker):
-    """Plain-language wait and run estimate; jobs run one at a time on one GPU."""
+def gpu_pool_size():
+    settings = VideoSettings.from_env()
+    return 1 + len(settings.comfyui_extra_urls) if settings.endpoint_mode == 'serverless' else 1
+
+
+def estimate_note(status, position, worker, assigned=None):
+    """Plain-language wait and run estimate. Serverless jobs run in parallel, one or two GPUs each."""
     if status == 'RUNNING':
-        return f'만들기 시작한 뒤 약 {JOB_MINUTES}분 안에 끝납니다 (실측: 사진 108장·30초 영상 6분).'
+        return f'만들기 시작한 뒤 약 {JOB_MINUTES}분 안에 끝납니다 (GPU가 꺼져 있었으면 켜는 시간 포함).'
     ahead = (position or 1) - 1
-    wait = f'앞에 {ahead}개 작업이 있어 시작까지 약 {ahead * JOB_MINUTES}분, ' if ahead else ''
-    boot = ' GPU가 꺼져 있으면 켜는 데 몇 분이 더 걸립니다.' if worker in ('WAITING_FOR_GPU', 'STARTING_GPU') else ''
+    if worker == 'ALL_GPUS_BUSY':
+        # Roughly one GPU frees per running job; each freed GPU takes the next queued job.
+        rounds = 1 + ahead // max(gpu_pool_size(), 1)
+        return (f'GPU {gpu_pool_size()}대가 모두 사용 중입니다. 앞에 {ahead}개 작업이 기다리고 있어 시작까지 약 '
+                f'{rounds * JOB_MINUTES}분 이내, 시작 후 약 {JOB_MINUTES}분 걸립니다.')
+    wait = f'앞에 {ahead}개 작업이 있어 시작까지 약 {ahead * JOB_MINUTES}분, ' if ahead and gpu_pool_size() == 1 else ''
+    boot = ' GPU가 꺼져 있으면 켜는 데 몇 분이 더 걸립니다.' if worker in ('WAITING_FOR_GPU', 'STARTING_GPU', 'IDLE', 'BUSY') else ''
     if worker == 'GPU_SOLD_OUT':
         boot = ' 지금은 허용한 GPU가 모두 품절이라, 빈 GPU가 생기면 바로 시작합니다.'
     if worker == 'WAITING_FOR_GPU_CAPACITY':
@@ -82,10 +93,12 @@ def estimate_note(status, position, worker):
 
 
 def queue_position(job_id):
-    """1 means next in line; counts queued and running jobs submitted earlier by anyone."""
+    """1 means next in line. Serverless jobs run in parallel, so only queued jobs count; a single GPU runs one
+    job at a time, so running jobs count there too."""
+    states = "('QUEUED')" if gpu_pool_size() > 1 else "('QUEUED','RUNNING')"
     with connection() as conn:
-        row = conn.execute("""SELECT count(*) AS ahead FROM video_jobs
-            WHERE status IN ('QUEUED','RUNNING') AND created_at < (SELECT created_at FROM video_jobs WHERE id=%s)""",
+        row = conn.execute(f"""SELECT count(*) AS ahead FROM video_jobs
+            WHERE status IN {states} AND created_at < (SELECT created_at FROM video_jobs WHERE id=%s)""",
                            (job_id,)).fetchone()
     return row['ahead'] + 1
 
@@ -182,8 +195,8 @@ def router(settings):
             # One fixed GPU pool on the RunPod serverless endpoint: nothing to choose.
             return {'default_gpu_type': None, 'items': [], 'serverless': {
                 'label': SERVERLESS_GPU_LABEL,
-                'note': '서버리스 GPU를 씁니다. 요청이 들어오면 RunPod가 위 순서대로 비어 있는 GPU를 자동으로 켜고, 10분 동안 일이 없으면 끕니다. '
-                        '꺼져 있던 GPU가 켜지는 데 몇 분 걸리고, GPU가 일한 시간만큼만 요금이 나갑니다.'}}
+                'note': f'서버리스 GPU를 최대 {gpu_pool_size()}대까지 씁니다. 영상 1개에 GPU 1대씩, 여러 영상을 동시에 만듭니다. '
+                        '일이 끝나고 1분 동안 요청이 없으면 꺼지고, 꺼져 있던 GPU는 보통 수십 초 안에 켜지고, 처음 쓰는 장비면 모델을 옮기느라 최대 10분쯤 걸립니다. GPU가 일한 시간만큼만 요금이 나갑니다.'}}
         models = selectable_gpu_types(settings)
         choices = (*models, AUTO_GPU) if len(models) > 1 else models
         return {'default_gpu_type': default_gpu_type(models),
@@ -297,7 +310,7 @@ def router(settings):
         request_body = row.get('request') or {}
         position = queue_position(job_id) if row['status'] == 'QUEUED' else None
         worker_label = WORKER_LABELS.get(worker, worker)
-        if position and position > 1 and worker == 'BUSY':
+        if position and position > 1 and worker == 'BUSY' and gpu_pool_size() == 1:
             worker_label = '앞 순서의 다른 영상을 만드는 중 (이 작업은 그다음 차례)'
         cancelling = row['status'] == 'RUNNING' and row.get('cancel_requested')
         return {'job_id': str(job_id), 'status': row['status'], 'stage': row['stage'],
@@ -311,7 +324,7 @@ def router(settings):
                 'assigned_gpu_type': row.get('assigned_gpu_type'),
                 'queue_position': position,
                 'worker_state': worker, 'worker_state_label': worker_label,
-                'estimate_note': estimate_note(row['status'], position, worker) if active else None,
+                'estimate_note': estimate_note(row['status'], position, worker, row.get('assigned_gpu_type')) if active else None,
                 'error_code': row['error_code'], 'error_message': korean_failure(row),
                 'notice': row.get('notice'),
                 'progress_detail': row.get('progress_detail') if row['status'] == 'RUNNING' else None,

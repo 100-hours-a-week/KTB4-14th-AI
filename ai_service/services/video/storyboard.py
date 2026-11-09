@@ -147,7 +147,7 @@ from pathlib import Path
 
 from ai_service.services.video.diversity import (
     MemoryCatalog, MemoryFilmPlan, MemoryPhotoAnalysis, MemoryPhotoBatch,
-    MemorySceneGrouping, build_memory_film_plan, usable_photo, validate_catalog,
+    MemorySceneGrouping, build_memory_film_plan, promote_for_film, usable_photo, validate_catalog,
 )
 
 MEMORY_CATALOG_INSTRUCTIONS = (
@@ -286,6 +286,7 @@ async def catalog_memory_photos(http, settings, candidates, *, context='', batch
             raise VideoError('memory_photo_catalog_failed', provider_error=type(result).__name__) from result
         photos.extend(result)
     photos.sort(key=lambda photo: photo.source_index)
+    photos = promote_for_film(photos)
     eligible = [photo for photo in photos if usable_photo(photo)]
     if not eligible:
         raise VideoError('insufficient_usable_memory_scenes')
