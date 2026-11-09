@@ -299,13 +299,13 @@ async def generate_and_publish(job_id, payload, photos, settings):
 
 
 def readable_photo(path):
-    """One unreadable file must not stop the last-resort film; it is simply left out."""
-    from PIL import Image
-    from pillow_heif import register_heif_opener
-    register_heif_opener()
+    """One unreadable file must not stop the last-resort film; it is left out. Uses the same check the
+    pipeline applies (prepare_photo), into a throwaway file."""
+    import tempfile
+    from ai_service.services.video.images import prepare_photo
     try:
-        with Image.open(path) as image:
-            image.verify()
+        with tempfile.TemporaryDirectory() as folder:
+            prepare_photo(Path(path), Path(folder) / 'check.png', 100_000_000)
         return True
     except Exception:
         return False
