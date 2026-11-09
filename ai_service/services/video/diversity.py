@@ -134,10 +134,13 @@ def validate_catalog(catalog: MemoryCatalog, candidate_indices: list[int]) -> No
             raise VideoError('memory_scene_pair_invalid')
 
 
+MIN_LIVELY_SCENES = 4
+
+
 def scene_candidates_from_catalog(catalog: MemoryCatalog) -> list[MemorySceneCandidate]:
     """One candidate per distinct memory; an uncertain pair becomes one-photo FLF."""
     lookup = {photo.source_index: photo for photo in catalog.photos}
-    scenes = []
+    scenes, calm = [], []
     for group in catalog.grouping.groups:
         photos = [lookup[index] for index in group.source_indices if usable_photo(lookup[index])]
         if not photos:
@@ -150,9 +153,10 @@ def scene_candidates_from_catalog(catalog: MemoryCatalog) -> list[MemorySceneCan
         if pair and pair[1] - pair[0] <= 8 and all(usable_photo(lookup[i]) for i in pair):
             first, last = pair
             best = lookup[first]
-        if best.motion_potential < 0.5:
-            continue
-        scenes.append(MemorySceneCandidate(
+        # Calm shots (plated food, shop shelves, night lights) are kept aside and used only when an album has
+        # too few lively ones; an album of only such photos used to fail outright (2026-11-09).
+        target = calm if best.motion_potential < 0.5 else scenes
+        target.append(MemorySceneCandidate(
             scene_key=group.scene_key, source_index=first, end_source_index=last,
             role=best.category, people_visible=any(lookup[i].people_visible for i in {first, last}),
             visible_scene=best.visible_scene, subject_action=best.safe_action,
@@ -160,6 +164,9 @@ def scene_candidates_from_catalog(catalog: MemoryCatalog) -> list[MemorySceneCan
             quality_score=round(sum(photo_score(lookup[i]) for i in {first, last}) / len({first, last}), 6),
             motion_potential=best.motion_potential,
         ))
+    if len(scenes) < MIN_LIVELY_SCENES:
+        calm.sort(key=lambda scene: (-scene.quality_score, scene.source_index))
+        scenes += calm[:MIN_LIVELY_SCENES - len(scenes)]
     return sorted(scenes, key=lambda scene: (scene.source_index, scene.scene_key))
 
 

@@ -200,6 +200,8 @@ async def gpu_interrupt(settings):
     ComfyUI's global interrupt cannot touch anyone else's work."""
     from ai_service.clients.runpod import EndpointResolver
     for each in gpu_endpoints(settings):
+        if each.endpoint_mode == 'serverless' and not await gpu_ready_now(each):
+            continue  # no running GPU: nothing to stop, and a request would boot one
         headers = each.gpu_headers()
         try:
             async with httpx.AsyncClient(timeout=30) as http:
@@ -220,6 +222,8 @@ async def gpu_cleanup(settings):
     """Ask the GPU's password gate to delete this service's ComfyUI inputs and outputs (best effort)."""
     from ai_service.clients.runpod import EndpointResolver
     for each in gpu_endpoints(settings):
+        if each.endpoint_mode == 'serverless' and not await gpu_ready_now(each):
+            continue  # a GPU that is off or still booting has none of this job's files yet
         try:
             async with httpx.AsyncClient(timeout=60) as http:
                 endpoint = await EndpointResolver(http, each).resolve()
@@ -353,6 +357,48 @@ async def serverless_state(settings):
     return 'GPU_SOLD_OUT' if workers.get('throttled') and not starting else 'STARTING_GPU'
 
 
+def endpoint_id(settings):
+    return urlsplit(settings.comfyui_url).hostname.split('.')[0]
+
+
+async def gpu_workers(settings, http):
+    """Worker counts from RunPod's health API, which never starts a worker (unlike a request to the endpoint)."""
+    response = await http.get(f'https://api.runpod.ai/v2/{endpoint_id(settings)}/health',
+                              headers={'Authorization': f'Bearer {settings.runpod_api_key}'})
+    return response.json().get('workers', {})
+
+
+async def gpu_ready_now(settings):
+    """True only when a serverless worker exists and ComfyUI answers. A request to a load-balancing endpoint
+    without a worker queues and boots a GPU (2026-11-09: cancelled jobs' cleanup calls woke ten GPUs), so the
+    health API is asked first and the endpoint is touched only when a worker is already there."""
+    try:
+        async with httpx.AsyncClient(timeout=15) as http:
+            workers = await gpu_workers(settings, http)
+            if not any(workers.get(state) for state in ('idle', 'ready', 'running')):
+                return False
+            from ai_service.clients.runpod import EndpointResolver, GpuEndpoint
+            return await EndpointResolver(http, settings)._ready(GpuEndpoint(settings.comfyui_url.rstrip('/')))
+    except (httpx.HTTPError, ValueError, AttributeError):
+        return False
+
+
+async def drop_worker(settings, wait_seconds=60):
+    """Stop the endpoint's GPU now (max workers 0) instead of letting it finish booting and idle; the caller
+    restores max workers 1 with allow_one_worker."""
+    url = f'https://rest.runpod.io/v1/endpoints/{endpoint_id(settings)}'
+    loop = asyncio.get_running_loop()
+    try:
+        async with httpx.AsyncClient(timeout=20) as http:
+            (await http.patch(url, json={'workersMax': 0},
+                              headers={'Authorization': f'Bearer {settings.runpod_api_key}'})).raise_for_status()
+            deadline = loop.time() + wait_seconds
+            while loop.time() < deadline and sum((await gpu_workers(settings, http)).values()):
+                await asyncio.sleep(5)
+    except (httpx.HTTPError, ValueError, AttributeError) as exc:
+        logging.warning('Could not stop the GPU on %s (%s)', endpoint_id(settings), type(exc).__name__)
+
+
 GPU_WAIT_SECONDS = 1800  # a cold start takes 4-5 minutes; a sold-out GPU may take longer
 
 
@@ -468,7 +514,13 @@ async def run_on_gpus(lease, base, row, urls):
     try:
         await supervise(lease, row, job_settings, process, warmup, beat=False)
     finally:
-        await asyncio.gather(*[allow_one_worker(each) for each in gpu_endpoints(job_settings)])
+        async def release(each):
+            # A job that failed or was cancelled before its GPU was ready would otherwise pay for the whole
+            # boot plus the idle minute. A ready GPU stays on for its idle minute so the next job can reuse it.
+            if not await gpu_ready_now(each):
+                await drop_worker(each)
+            await allow_one_worker(each)
+        await asyncio.gather(*[release(each) for each in gpu_endpoints(job_settings)])
 
 
 async def serve_parallel(lease, base):

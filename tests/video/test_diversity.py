@@ -125,3 +125,25 @@ class DiversityTests(unittest.TestCase):
         c = catalog([photo(0), photo(1), photo(2, people_visible=True)], [
             MemorySceneGroup(scene_key='one-view-with-distant-passerby', source_indices=[0, 1, 2], first_last_pair=[0, 1])])
         self.assertFalse(scene_candidates_from_catalog(c)[0].people_visible)
+
+
+class CalmAlbumTests(unittest.TestCase):
+    def test_album_of_only_calm_photos_still_makes_a_film(self):
+        # 2026-11-09: ten restaurant photos (plated food, motion potential below 0.5) failed the whole job.
+        photos = [photo(i, 'food', motion_potential=.3 + i * .01) for i in range(10)]
+        scenes = scene_candidates_from_catalog(catalog(photos))
+        self.assertEqual(len(scenes), 4)
+        plan = build_memory_film_plan(catalog(photos), duration=30)
+        self.assertEqual(sum(s.frame_count for s in plan.shots), 720)
+
+    def test_calm_photos_only_fill_up_a_thin_album(self):
+        lively = [photo(i) for i in range(2)]
+        calm = [photo(i, 'food', motion_potential=.3, visual_quality=.5 + i * .01) for i in range(2, 8)]
+        scenes = scene_candidates_from_catalog(catalog(lively + calm))
+        self.assertEqual(len(scenes), 4)
+        self.assertEqual({0, 1} <= {s.source_index for s in scenes}, True)
+        self.assertEqual({s.source_index for s in scenes} - {0, 1}, {6, 7})  # best-looking calm shots
+
+    def test_enough_lively_photos_leave_calm_ones_out(self):
+        photos = [photo(i) for i in range(5)] + [photo(i, 'food', motion_potential=.3) for i in range(5, 8)]
+        self.assertEqual({s.source_index for s in scene_candidates_from_catalog(catalog(photos))}, set(range(5)))

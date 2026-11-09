@@ -192,3 +192,62 @@ def test_tracker_recycles_a_gpu_sold_out_for_too_long(tmp_path, monkeypatch):
     asyncio.run(scenario())
     assert recycled
     assert any('다른 빈 GPU를 찾는 중' in text for text in details)
+
+
+def test_cancel_and_cleanup_never_wake_a_sleeping_serverless_gpu(monkeypatch):
+    # 2026-11-09: cleanup requests to ten cancelled jobs' endpoints queued at RunPod and booted ten GPUs.
+    from ai_service.clients import runpod
+    touched = []
+
+    async def asleep(settings):
+        return False
+
+    class Resolver:
+        def __init__(self, *a):
+            touched.append('endpoint')
+
+    monkeypatch.setattr(worker, 'gpu_ready_now', asleep)
+    monkeypatch.setattr(runpod, 'EndpointResolver', Resolver)
+    settings = SimpleNamespace(endpoint_mode='serverless', comfyui_extra_urls=())
+    monkeypatch.setattr(worker, 'gpu_endpoints', lambda s: [settings])
+    asyncio.run(worker.gpu_interrupt(settings))
+    asyncio.run(worker.gpu_cleanup(settings))
+    assert touched == []
+
+
+def test_job_end_stops_a_gpu_that_is_still_booting(monkeypatch):
+    calls = []
+
+    async def ready(settings):
+        return settings.name == 'warm'
+
+    async def drop(settings):
+        calls.append(('drop', settings.name))
+
+    async def allow(settings):
+        calls.append(('allow', settings.name))
+
+    async def supervise(*a, **k):
+        pass
+
+    async def warm(settings):
+        pass
+
+    class Process:
+        pid = 1
+
+    async def spawn(*a, **k):
+        return Process()
+
+    monkeypatch.setattr(worker, 'gpu_ready_now', ready)
+    monkeypatch.setattr(worker, 'drop_worker', drop)
+    monkeypatch.setattr(worker, 'allow_one_worker', allow)
+    monkeypatch.setattr(worker, 'supervise', supervise)
+    monkeypatch.setattr(worker, 'warm_gpu', warm)
+    monkeypatch.setattr(worker.asyncio, 'create_subprocess_exec', spawn)
+    endpoints = [SimpleNamespace(name='cold'), SimpleNamespace(name='warm')]
+    monkeypatch.setattr(worker, 'gpu_endpoints', lambda s: endpoints)
+    monkeypatch.setattr(worker, 'replace', lambda base, **k: base)
+    asyncio.run(worker.run_on_gpus(None, SimpleNamespace(), {'id': 'j'}, ['https://a.api.runpod.ai']))
+    assert ('drop', 'cold') in calls and ('drop', 'warm') not in calls
+    assert ('allow', 'cold') in calls and ('allow', 'warm') in calls
