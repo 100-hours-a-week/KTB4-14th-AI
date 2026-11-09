@@ -85,9 +85,18 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--models-dir', type=Path, default=Path('/workspace/runpod-slim/ComfyUI/models'))
     parser.add_argument('--check', action='store_true', help='verify existing files only')
+    parser.add_argument('--check-sizes', action='store_true',
+                        help='only confirm every file exists with the right size (fast; for the RunPod model cache)')
     args = parser.parse_args()
     needed = sum(size for *_, size, _ in MODELS)
     missing = []
+    if args.check_sizes:
+        missing = [f'{folder}/{name}' for folder, name, _, size, _ in MODELS
+                   if not (args.models_dir / folder / name).is_file() or (args.models_dir / folder / name).stat().st_size != size]
+        if missing:
+            raise SystemExit('missing or wrong size: ' + ', '.join(missing))
+        print(f'All {len(MODELS)} model files present in {args.models_dir}')
+        return 0
     for folder, name, url, size, digest in MODELS:
         target = args.models_dir / folder / name
         print(f'{folder}/{name} ({size / 1e9:.1f} GB)', flush=True)

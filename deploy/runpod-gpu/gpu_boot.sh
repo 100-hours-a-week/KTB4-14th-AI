@@ -7,7 +7,9 @@
 set -u
 # A serverless worker mounts the network volume at /runpod-volume, a Pod at /workspace. The image and the
 # volume's ComfyUI install expect /workspace, so point it at the volume there.
-if [ -d /runpod-volume ] && ! mountpoint -q /workspace; then
+# The RunPod model cache also appears under /runpod-volume, so only a real network volume (with ComfyUI on it)
+# replaces /workspace.
+if [ -d /runpod-volume/runpod-slim ] && ! mountpoint -q /workspace; then
   # Leave /workspace first: a process whose working directory was deleted fails on os.getcwd().
   cd / && rm -rf /workspace && ln -s /runpod-volume /workspace
 fi
@@ -24,13 +26,22 @@ COMFYUI_IO_DIR="$LOCAL/io" python3 "$GATE" >> /workspace/audigo/gate.log 2>&1 &
 start=$(date +%s)
 # gpu_power.start_command() writes the current downloader to /local too.
 DOWNLOAD=/local/download_models.py; [ -f "$DOWNLOAD" ] || DOWNLOAD=/workspace/download_models.py
-if timeout 1500 python3 "$DOWNLOAD" --models-dir "$LOCAL/models" > /workspace/audigo/model_download_local.log 2>&1; then
+# RunPod model cache (endpoint "Model" = AUDIGO_MODEL_REPO): the six files are already on the host, laid out in
+# ComfyUI folders, so nothing is downloaded and the worker starts in seconds. Without it, download as before.
+CACHE_REPO=${AUDIGO_MODEL_REPO:-SSaBaSSaBa/audigo-video-models}
+CACHE=$(ls -d /runpod-volume/huggingface-cache/hub/models--${CACHE_REPO/\//--}/snapshots/*/ 2>/dev/null | head -1)
+if [ -n "$CACHE" ] && python3 "$DOWNLOAD" --check-sizes --models-dir "$CACHE" >> "$LOG" 2>&1; then
+  printf 'audigo_cache:\n  base_path: %s\n  is_default: true\n  checkpoints: checkpoints\n  text_encoders: text_encoders\n  diffusion_models: diffusion_models\n  vae: vae\n' \
+    "${CACHE%/}" > "$LOCAL/extra_model_paths.yaml"
+  rm -f "$COMFY/extra_model_paths.yaml" 2>/dev/null
+  echo "$(date -u +%FT%TZ) models from the RunPod model cache in $(( $(date +%s) - start ))s" | tee -a "$LOG"
+elif timeout 1500 python3 "$DOWNLOAD" --models-dir "$LOCAL/models" > /workspace/audigo/model_download_local.log 2>&1; then
   # is_default puts the local copies first, so ComfyUI loads them instead of the volume's files with the same name.
   printf 'audigo_local:\n  base_path: %s/models\n  is_default: true\n  checkpoints: checkpoints\n  text_encoders: text_encoders\n  diffusion_models: diffusion_models\n  vae: vae\n' \
     "$LOCAL" > "$LOCAL/extra_model_paths.yaml"
   # Passed with --extra-model-paths-config below: without a volume, ComfyUI's folder exists only after /start.sh.
   rm -f "$COMFY/extra_model_paths.yaml" 2>/dev/null
-  echo "$(date -u +%FT%TZ) models on local disk in $(( $(date +%s) - start ))s" >> "$LOG"
+  echo "$(date -u +%FT%TZ) models on local disk in $(( $(date +%s) - start ))s" | tee -a "$LOG"
 else
   # Without a network volume there is no slower copy to fall back to: fail so RunPod replaces the worker.
   if [ ! -f /workspace/download_models.py ]; then
